@@ -13,8 +13,14 @@ from typing import Any
 import yaml
 
 from .accessions import AcquisitionError
+from .artifacts import (
+    read_final_bam_manifest,
+    read_master_manifest,
+    sha256_file,
+)
 from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
+from .workflow_config import workflow_semantic_sha256
 
 
 GENOME_DEFAULTS = {
@@ -287,7 +293,7 @@ def _write_config_if_changed(path: Path, config: dict[str, object]) -> None:
 
 def generate_configs(
     *,
-    manifest_path: Path,
+    manifest_path: Path | None,
     sample_sheet_path: Path,
     output_dir: Path,
     project: str,
@@ -299,16 +305,121 @@ def generate_configs(
     genome: str = "dm6",
     atac_minimum_replicates: int = 2,
     atac_overlap_fraction: float = 0.5,
+    input_stage: str = "accessions",
+    final_bam_manifest_path: Path | None = None,
+    master_manifest_path: Path | None = None,
 ) -> list[Path]:
     project = _safe_id(project, "project ID")
     run_id = _safe_id(run_id, "run ID")
     if genome not in GENOME_DEFAULTS:
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
-    manifest_rows = read_manifest(manifest_path)
+    if input_stage not in {"accessions", "final-bam", "master"}:
+        raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
+    if input_stage == "accessions" and manifest_path is None:
+        raise AcquisitionError("Accession mode requires a download manifest")
+    if input_stage == "final-bam" and final_bam_manifest_path is None:
+        raise AcquisitionError("Final-BAM mode requires a final-BAM manifest")
+    if input_stage == "master" and master_manifest_path is None:
+        raise AcquisitionError("Master mode requires a master manifest")
+
     sheet_rows = read_sample_sheet(sample_sheet_path, schema_path=schema_path)
+    sample_sheet_sha256 = sha256_file(sample_sheet_path)
+    schema_sha256 = sha256_file(schema_path)
+
+    if input_stage == "master":
+        if not any(row["assay"] == "atac" for row in sheet_rows):
+            raise AcquisitionError("Master reuse requires ATAC metadata in the sample sheet")
+        master = read_master_manifest(
+            master_manifest_path,
+            require_files=require_fastq_files,
+        )
+        if master["genome"] != genome:
+            raise AcquisitionError(
+                f"Master manifest genome {master['genome']!r} does not match {genome!r}"
+            )
+        assays = {str(row["assay"]) for row in sheet_rows}
+        group_project = project if assays == {"atac"} else f"{project}.atac.{genome}"
+        external_master = {
+            key: (
+                _display_path(value, path_base)
+                if key
+                in {
+                    "master_bed",
+                    "summits_bed",
+                    "membership_tsv",
+                    "context_matrix_tsv",
+                    "stats_json",
+                }
+                else value
+            )
+            for key, value in master.items()
+        }
+        config: dict[str, Any] = {
+            "project": group_project,
+            "run_id": run_id,
+            "output_dir": "results",
+            "assay": "atac",
+            "input_stage": "master",
+            "reference": _reference_config(genome, reference_root, path_base),
+            "samples": [],
+            "external_master": external_master,
+            "provenance": {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "input_mode": "external_master_manifest",
+                "sample_sheet": _display_path(sample_sheet_path, path_base),
+                "sample_sheet_sha256": sample_sheet_sha256,
+                "sample_sheet_schema": _display_path(schema_path, path_base),
+                "sample_sheet_schema_sha256": schema_sha256,
+                "master_manifest": _display_path(master_manifest_path, path_base),
+                "master_manifest_sha256": sha256_file(master_manifest_path),
+            },
+        }
+        config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{group_project}.yaml"
+        _write_config_if_changed(output_path, config)
+        return [output_path.resolve()]
+
+    manifest_rows = read_manifest(manifest_path) if input_stage == "accessions" else []
     manifest_by_request: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in manifest_rows:
         manifest_by_request[row["requested_accession"]].append(row)
+
+    final_bams = (
+        read_final_bam_manifest(
+            final_bam_manifest_path,
+            require_files=require_fastq_files,
+        )
+        if input_stage == "final-bam"
+        else {}
+    )
+    if final_bams:
+        sheet_library_assay = {
+            str(row["library_id"]): str(row["assay"]) for row in sheet_rows
+        }
+        unknown = sorted(set(final_bams) - set(sheet_library_assay))
+        if unknown:
+            raise AcquisitionError(
+                "Final-BAM manifest contains libraries absent from the sample sheet: "
+                + ", ".join(unknown)
+            )
+        selected_assays = {
+            sheet_library_assay[library_id] for library_id in final_bams
+        }
+        expected = {
+            library_id
+            for library_id, assay in sheet_library_assay.items()
+            if assay in selected_assays
+        }
+        missing = sorted(expected - set(final_bams))
+        if missing:
+            raise AcquisitionError(
+                "Final-BAM manifest is incomplete for its selected assay(s): "
+                + ", ".join(missing)
+            )
+        sheet_rows = [
+            row for row in sheet_rows if str(row["library_id"]) in final_bams
+        ]
 
     sheet_by_library: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in sheet_rows:
@@ -318,12 +429,29 @@ def generate_configs(
     for library_id, rows in sheet_by_library.items():
         first = rows[0]
         accessions = list(dict.fromkeys(str(row["accession"]) for row in rows))
-        runs = _manifest_runs_for_accessions(accessions, manifest_by_request)
-        layout, r1, r2 = _sample_fastqs(
-            runs,
-            path_base=path_base,
-            require_files=require_fastq_files,
-        )
+        artifact: dict[str, str] | None = None
+        if input_stage == "accessions":
+            runs = _manifest_runs_for_accessions(accessions, manifest_by_request)
+            layout, r1, r2 = _sample_fastqs(
+                runs,
+                path_base=path_base,
+                require_files=require_fastq_files,
+            )
+        else:
+            artifact = final_bams[library_id]
+            for field in ("assay", "context", "role"):
+                if str(artifact[field]) != str(first[field]):
+                    raise AcquisitionError(
+                        f"Final-BAM manifest {field} for {library_id!r} "
+                        "does not match the sample sheet"
+                    )
+            if artifact["genome"] != genome:
+                raise AcquisitionError(
+                    f"Final-BAM manifest genome for {library_id!r} "
+                    f"is {artifact['genome']!r}, expected {genome!r}"
+                )
+            layout = artifact["layout"]
+            r1, r2 = [], []
         prepared.append(
             {
                 "id": library_id,
@@ -338,6 +466,7 @@ def generate_configs(
                 "r2": r2,
                 "peak_caller": _peak_config(first, layout),
                 "parameters": _processing_config(first, path_base),
+                "artifact": artifact,
             }
         )
 
@@ -358,11 +487,17 @@ def generate_configs(
                 "context": item["context"],
                 "role": item["role"],
                 "layout": item["layout"],
-                "r1": item["r1"],
                 "parameters": item["parameters"],
             }
-            if item["layout"] == "paired":
-                sample["r2"] = item["r2"]
+            if input_stage == "accessions":
+                sample["r1"] = item["r1"]
+                if item["layout"] == "paired":
+                    sample["r2"] = item["r2"]
+            else:
+                artifact = dict(item["artifact"])
+                artifact["bam"] = _display_path(artifact["bam"], path_base)
+                artifact["bai"] = _display_path(artifact["bai"], path_base)
+                sample["final_bam"] = artifact
             if item["role"] == "treatment":
                 sample["peak_caller"] = item["peak_caller"]
             if assay.startswith("chip") and item["role"] == "treatment":
@@ -389,16 +524,36 @@ def generate_configs(
             "run_id": run_id,
             "output_dir": "results",
             "assay": assay,
+            "input_stage": input_stage,
             "reference": _reference_config(genome, reference_root, path_base),
             "samples": samples,
             "provenance": {
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "input_mode": "accession_sample_sheet",
+                "input_mode": (
+                    "accession_sample_sheet"
+                    if input_stage == "accessions"
+                    else "external_final_bam_manifest"
+                ),
                 "sample_sheet": _display_path(sample_sheet_path, path_base),
+                "sample_sheet_sha256": sample_sheet_sha256,
                 "sample_sheet_schema": _display_path(schema_path, path_base),
-                "download_manifest": _display_path(manifest_path, path_base),
+                "sample_sheet_schema_sha256": schema_sha256,
             },
         }
+        if input_stage == "accessions":
+            config["provenance"]["download_manifest"] = _display_path(
+                manifest_path, path_base
+            )
+            config["provenance"]["download_manifest_sha256"] = sha256_file(
+                manifest_path
+            )
+        else:
+            config["provenance"]["final_bam_manifest"] = _display_path(
+                final_bam_manifest_path, path_base
+            )
+            config["provenance"]["final_bam_manifest_sha256"] = sha256_file(
+                final_bam_manifest_path
+            )
         if assay == "atac":
             from .consensus import condition_specs
 
@@ -441,6 +596,7 @@ def generate_configs(
                 "replicate_overlap_fraction": atac_overlap_fraction,
             }
             config["atac_master"] = dict(ATAC_MASTER_DEFAULTS)
+        config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
         output_path = output_dir / f"{group_project}.yaml"
         _write_config_if_changed(output_path, config)
         output_paths.append(output_path.resolve())

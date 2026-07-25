@@ -1,0 +1,27 @@
+schema_version: 1
+name: immutable master-DHS bundle manifest
+formats: [tsv]
+path_resolution: Relative artifact paths are resolved against the manifest directory.
+row_model: The manifest contains exactly one data row for one complete master-DHS bundle.
+required_columns:
+  - genome
+  - method
+  - source_project
+  - source_run_id
+  - master_bed
+  - master_bed_sha256
+  - summits_bed
+  - summits_bed_sha256
+  - membership_tsv
+  - membership_tsv_sha256
+  - context_matrix_tsv
+  - context_matrix_tsv_sha256
+  - stats_json
+  - stats_json_sha256
+rules:
+  - Every artifact path must exist and be distinct.
+  - Full SHA-256 values are mandatory for all five files.
+  - The master BED must be non-empty, strict BED6, sorted, uniquely named, and non-overlapping.
+  - Summit, membership, context-matrix, and statistics records must agree exactly with the master BED.
+  - The statistics method must equal the manifest method.
+  - A missing or invalid bundle is an error; the workflow never reconstructs a replacement automatically.

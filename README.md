@@ -50,7 +50,7 @@ the local profile. Bioinformatics packages are not installed globally.
 
 ## Input files
 
-The only required user input is a CSV or TSV following
+The primary public-data input is a CSV or TSV following
 [`schemas/sample-sheet.schema.yaml`](schemas/sample-sheet.schema.yaml). One row
 is one public `SRR`, `SRX`, `ERR`, or `ERX` accession.
 
@@ -138,6 +138,109 @@ python src/run_pipeline.py samples.tsv --skip-download \
 Run these through `micromamba run --prefix "$PWD/.venv"` as in the main
 example.
 
+## Reuse existing artifacts
+
+The workflow starting stage is explicit:
+
+| `--from-stage` | Required artifact | First scientific processing step |
+|---|---|---|
+| `accessions` | accession sample sheet | FASTQ acquisition |
+| `final-bam` | complete final-BAM manifest | ATAC/ChIP downstream processing |
+| `master` | complete master-DHS bundle manifest | bundle validation only at the current endpoint |
+
+`accessions` is the default and preserves the original behavior. Reuse modes
+are strict: a missing, mismatched, rejected, or corrupt artifact is an error.
+They never fall back to FASTQ download, trimming, alignment, duplicate marking,
+or general BAM filtering.
+
+### Start from filtered BAMs
+
+The final-BAM manifest follows
+[`schemas/final-bam-manifest.schema.yaml`](schemas/final-bam-manifest.schema.yaml).
+Paths are relative to the manifest directory unless absolute. Every biological
+library in each represented assay must occur exactly once. A manifest may
+select only ATAC from a mixed accession sheet, but it may not contain only some
+ATAC libraries.
+
+Create a manifest from exact `<library_id>.final.bam` filenames:
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/create_final_bam_manifest.py \
+  resources/atlas_samples_ip_only.tsv \
+  --assay atac \
+  --bam-dir results/atac \
+  --output data/raw/drosophila-atlas/atlas-atac.final-bams.tsv \
+  --genome dm6 --layout paired \
+  --qc-status accepted \
+  --source-project atlas-atac-dm6 --source-run-id imported-final-bams
+```
+
+The command computes full BAM/BAI SHA-256 values and writes the manifest
+atomically without replacing identical content. Then build the qpois master
+directly from those BAMs:
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage final-bam \
+  --final-bam-manifest data/raw/drosophila-atlas/atlas-atac.final-bams.tsv \
+  --project drosophila-atlas --run-id qpois-master-v1 --genome dm6 \
+  --config-dir data/raw/drosophila-atlas/configs/qpois-master-v1 \
+  --cores 24
+```
+
+Before any peak or QC job consumes an imported BAM, a validation rule checks:
+
+- the declared full BAM and BAI SHA-256 values;
+- `samtools quickcheck`;
+- readability of the explicitly declared index;
+- coordinate sort order;
+- exact chromosome names, order, and lengths against the selected reference;
+- the `short-read-processing-final-v1` filtering contract and
+  `qc_status=accepted`.
+
+Validation receipts are written under
+`provenance/external_bams/<library_id>.validated.json`. The imported BAMs and
+indexes remain immutable and are never copied, indexed, touched, or rewritten.
+
+### Reuse a frozen master set
+
+The complete bundle, rather than only `master_dhs.bed`, is frozen with
+[`schemas/master-manifest.schema.yaml`](schemas/master-manifest.schema.yaml):
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/create_master_manifest.py \
+  results/drosophila-atlas/qpois-master-v1/atac/master \
+  --output data/raw/drosophila-atlas/qpois-master-v1.master.tsv \
+  --genome dm6 \
+  --method reciprocal_summit_complete_linkage_v2 \
+  --source-project drosophila-atlas --source-run-id qpois-master-v1
+```
+
+Validate and register it in another run namespace:
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage master \
+  --master-manifest data/raw/drosophila-atlas/qpois-master-v1.master.tsv \
+  --project drosophila-atlas --run-id reuse-master-v1 --genome dm6 \
+  --config-dir data/raw/drosophila-atlas/configs/reuse-master-v1 \
+  --cores 2
+```
+
+Because the master registry is currently the final processing endpoint, master
+mode performs bundle validation and provenance registration only. The planned
+activity-table branch will consume the same validated external paths directly.
+`build_atac_master_dhs` is deliberately absent from this DAG.
+
+Every resolved configuration records sample-sheet, schema, and artifact
+manifest hashes plus a timestamp-independent semantic SHA-256. Changing an
+artifact, parameter, or scientific selection requires a new `run-id`; the
+pipeline does not overwrite a scientifically different result namespace.
+
 ### Curated dm6 inputs
 
 ```bash
@@ -153,6 +256,13 @@ micromamba run --prefix "$PWD/.venv" \
   python src/run_pipeline.py resources/atlas_samples_with_inputs.tsv \
   --project drosophila-atlas --run-id matched-inputs --genome dm6 \
   --output-dir data/raw/drosophila-atlas \
+  --cores 24
+
+# Reprocess the D17 ATAC/H3K27ac comparator (not an automatic qnorm choice)
+micromamba run --prefix "$PWD/.venv" \
+  python src/run_pipeline.py resources/hq_cell_line_samples.tsv \
+  --project drosophila-cell-line-reference --run-id d17-reference --genome dm6 \
+  --output-dir data/raw/drosophila-cell-line-reference \
   --cores 24
 ```
 
@@ -298,6 +408,9 @@ Re-run the identical command to resume:
 - reference preparation and every processing stage are Snakemake outputs;
 - temporary scientific outputs are written in staging paths before promotion;
 - completed alignments are reused when peak parameters change;
+- validated external BAMs and master bundles are immutable workflow inputs;
+- identical manifests/configurations retain stable semantic hashes and do not
+  replace unchanged resolved YAML;
 - a changed scientific parameter set should use a new `run-id`.
 
 Independent accessions, technical lanes, biological libraries, and contexts

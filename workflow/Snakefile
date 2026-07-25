@@ -10,6 +10,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from short_read_processing.consensus import condition_specs
 from short_read_processing.workflow_config import (
+    guard_result_namespace,
     resolve_input_paths,
     validate_workflow_config,
     wildcard_regex,
@@ -24,10 +25,21 @@ resolve_input_paths(config, Path.cwd())
 PROJECT = str(config["project"])
 RUN_ID = str(config["run_id"])
 ASSAY = str(config["assay"])
+INPUT_STAGE = str(config.get("input_stage", "accessions"))
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
+guard_result_namespace(
+    config,
+    Path(RESULT_ROOT) / "provenance" / "resolved_config.json",
+)
 SAMPLES = {str(sample["id"]): sample for sample in config["samples"]}
 SAMPLE_IDS = list(SAMPLES)
+BUILD_SAMPLE_IDS = [
+    sample for sample in SAMPLE_IDS if "final_bam" not in SAMPLES[sample]
+]
+EXTERNAL_BAM_SAMPLES = [
+    sample for sample in SAMPLE_IDS if "final_bam" in SAMPLES[sample]
+]
 TREATMENTS = [sample for sample in SAMPLE_IDS if SAMPLES[sample]["role"] == "treatment"]
 CHIP_TREATMENTS = TREATMENTS if ASSAY.startswith("chip") else []
 CHIP_CONTROLLED_TREATMENTS = [
@@ -61,11 +73,13 @@ ATAC_QPOIS = config.get(
 )
 ATAC_CONSENSUS = config.get("atac_consensus", {"enabled": False})
 ATAC_CONSENSUS_ENABLED = bool(ATAC_CONSENSUS.get("enabled"))
+EXTERNAL_MASTER = config.get("external_master")
 ATAC_MASTER = config.get(
     "atac_master",
     {"summit_max_distance": 150, "minimum_summit_separation": 50},
 )
-ATAC_MASTER_ENABLED = ATAC_CONSENSUS_ENABLED
+ATAC_MASTER_BUILD_ENABLED = ATAC_CONSENSUS_ENABLED and EXTERNAL_MASTER is None
+ATAC_MASTER_ENABLED = ATAC_MASTER_BUILD_ENABLED or EXTERNAL_MASTER is not None
 ATAC_CONDITION_SPECS = (
     condition_specs(
         ATAC_CONSENSUS["conditions"],
@@ -120,6 +134,8 @@ ATAC_HMMRATAC_CONDITIONS = [
 ]
 
 SAMPLE_RE = wildcard_regex(SAMPLE_IDS)
+BUILD_SAMPLE_RE = wildcard_regex(BUILD_SAMPLE_IDS)
+EXTERNAL_BAM_SAMPLE_RE = wildcard_regex(EXTERNAL_BAM_SAMPLES)
 ATAC_RE = wildcard_regex(ATAC_SAMPLES)
 ATAC_QPOIS_RE = wildcard_regex(ATAC_QPOIS_SAMPLES)
 ATAC_QPOIS_PE_RE = wildcard_regex(ATAC_QPOIS_PE_SAMPLES)
@@ -134,6 +150,8 @@ LANES = {}
 RAW_FASTQ_BY_UNIT = {}
 TRIMMED_FASTQ_BY_UNIT = {}
 for sample_id, sample in SAMPLES.items():
+    if sample_id not in BUILD_SAMPLE_IDS:
+        continue
     for index, r1 in enumerate(sample["r1"], start=1):
         lane = f"L{index:03d}"
         key = (sample_id, lane)
@@ -190,8 +208,26 @@ BT2_SUFFIXES = [".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt
 BT2_INDEX = [BT2_PREFIX + suffix for suffix in BT2_SUFFIXES]
 FASTA_INDEX = str(REFERENCE["fasta"]) + ".fai"
 
-FINAL_BAMS = {sample: f"{RESULT_ROOT}/bam/{sample}.final.bam" for sample in SAMPLE_IDS}
-FINAL_BAIS = {sample: FINAL_BAMS[sample] + ".bai" for sample in SAMPLE_IDS}
+FINAL_BAMS = {
+    sample: (
+        str(SAMPLES[sample]["final_bam"]["bam"])
+        if sample in EXTERNAL_BAM_SAMPLES
+        else f"{RESULT_ROOT}/bam/{sample}.final.bam"
+    )
+    for sample in SAMPLE_IDS
+}
+FINAL_BAIS = {
+    sample: (
+        str(SAMPLES[sample]["final_bam"]["bai"])
+        if sample in EXTERNAL_BAM_SAMPLES
+        else FINAL_BAMS[sample] + ".bai"
+    )
+    for sample in SAMPLE_IDS
+}
+EXTERNAL_BAM_VALIDATIONS = {
+    sample: f"{RESULT_ROOT}/provenance/external_bams/{sample}.validated.json"
+    for sample in EXTERNAL_BAM_SAMPLES
+}
 CHIP_BIGWIGS = {
     sample: f"{RESULT_ROOT}/tracks/{sample}.CPM.bw" for sample in CHIP_TREATMENTS
 }
@@ -326,11 +362,36 @@ ATAC_CONDITION_SIGNAL_BW = {
     for condition in ATAC_CONDITION_IDS
 }
 ATAC_MASTER_ROOT = f"{ATAC_ROOT}/master"
-ATAC_MASTER_BED = f"{ATAC_MASTER_ROOT}/master_dhs.bed"
-ATAC_MASTER_SUMMITS = f"{ATAC_MASTER_ROOT}/master_dhs_summits.bed"
-ATAC_MASTER_MEMBERSHIP = f"{ATAC_MASTER_ROOT}/master_dhs_membership.tsv"
-ATAC_MASTER_CONTEXT_MATRIX = f"{ATAC_MASTER_ROOT}/master_dhs_context_matrix.tsv"
-ATAC_MASTER_STATS = f"{ATAC_MASTER_ROOT}/master_dhs.json"
+ATAC_MASTER_BED = (
+    str(EXTERNAL_MASTER["master_bed"])
+    if EXTERNAL_MASTER
+    else f"{ATAC_MASTER_ROOT}/master_dhs.bed"
+)
+ATAC_MASTER_SUMMITS = (
+    str(EXTERNAL_MASTER["summits_bed"])
+    if EXTERNAL_MASTER
+    else f"{ATAC_MASTER_ROOT}/master_dhs_summits.bed"
+)
+ATAC_MASTER_MEMBERSHIP = (
+    str(EXTERNAL_MASTER["membership_tsv"])
+    if EXTERNAL_MASTER
+    else f"{ATAC_MASTER_ROOT}/master_dhs_membership.tsv"
+)
+ATAC_MASTER_CONTEXT_MATRIX = (
+    str(EXTERNAL_MASTER["context_matrix_tsv"])
+    if EXTERNAL_MASTER
+    else f"{ATAC_MASTER_ROOT}/master_dhs_context_matrix.tsv"
+)
+ATAC_MASTER_STATS = (
+    str(EXTERNAL_MASTER["stats_json"])
+    if EXTERNAL_MASTER
+    else f"{ATAC_MASTER_ROOT}/master_dhs.json"
+)
+EXTERNAL_MASTER_VALIDATION = (
+    f"{RESULT_ROOT}/provenance/external_master.validated.json"
+    if EXTERNAL_MASTER
+    else None
+)
 ATAC_MASTER_TARGETS = (
     [
         ATAC_MASTER_BED,
@@ -339,7 +400,9 @@ ATAC_MASTER_TARGETS = (
         ATAC_MASTER_CONTEXT_MATRIX,
         ATAC_MASTER_STATS,
     ]
-    if ATAC_MASTER_ENABLED
+    if ATAC_MASTER_BUILD_ENABLED
+    else [EXTERNAL_MASTER_VALIDATION]
+    if EXTERNAL_MASTER
     else []
 )
 
@@ -409,15 +472,17 @@ METRICS_TSV = f"{RESULT_ROOT}/qc/metrics.tsv"
 METRICS_JSON = f"{RESULT_ROOT}/qc/metrics.json"
 MULTIQC_REPORT = f"{RESULT_ROOT}/qc/multiqc/multiqc_report.html"
 RESOLVED_CONFIG = f"{RESULT_ROOT}/provenance/resolved_config.json"
-REFERENCE_TARGETS = BT2_INDEX + [
-    FASTA_INDEX,
-    str(REFERENCE["chrom_sizes"]),
-    str(REFERENCE["blacklist_bed"]),
-    str(REFERENCE["tss_bed"]),
-    str(REFERENCE["autosomes_file"]),
-]
+REFERENCE_TARGETS = (
+    (BT2_INDEX + [FASTA_INDEX] if BUILD_SAMPLE_IDS else [])
+    + [
+        str(REFERENCE["chrom_sizes"]),
+        str(REFERENCE["blacklist_bed"]),
+        str(REFERENCE["tss_bed"]),
+        str(REFERENCE["autosomes_file"]),
+    ]
+)
 
-FINAL_TARGETS = (
+STANDARD_FINAL_TARGETS = (
     REFERENCE_TARGETS
     + list(FINAL_BAMS.values())
     + list(FINAL_BAIS.values())
@@ -442,7 +507,13 @@ FINAL_TARGETS = (
     + list(FRAGMENT_HISTOGRAMS.values())
     + list(FINGERPRINTS.values())
     + list(CROSSCORRELATION.values())
+    + list(EXTERNAL_BAM_VALIDATIONS.values())
     + [METRICS_TSV, METRICS_JSON, MULTIQC_REPORT, RESOLVED_CONFIG]
+)
+FINAL_TARGETS = (
+    [EXTERNAL_MASTER_VALIDATION, RESOLVED_CONFIG]
+    if INPUT_STAGE == "master"
+    else STANDARD_FINAL_TARGETS
 )
 
 
@@ -455,6 +526,7 @@ rule all:
 
 
 include: "rules/reference.smk"
+include: "rules/artifact_validation.smk"
 include: "rules/read_processing.smk"
 include: "rules/alignment.smk"
 include: "rules/peaks.smk"

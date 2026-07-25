@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import re
 import subprocess
@@ -10,7 +11,11 @@ import yaml
 
 from short_read_processing.accessions import AcquisitionError
 from short_read_processing.configuration import ATAC_QPOIS_DEFAULTS, REFERENCE_SOURCES
-from short_read_processing.workflow_config import validate_workflow_config
+from short_read_processing.workflow_config import (
+    guard_result_namespace,
+    validate_workflow_config,
+    workflow_semantic_sha256,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +75,43 @@ def _dry_run(tmp_path: Path, config: dict, name: str = "workflow") -> str:
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     return output
+
+
+def test_result_namespace_accepts_same_semantic_configuration(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["provenance"] = {}
+    config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+    resolved = tmp_path / "results" / "project" / "run" / "provenance" / (
+        "resolved_config.json"
+    )
+    resolved.parent.mkdir(parents=True)
+    resolved.write_text(json.dumps(config), encoding="utf-8")
+
+    guard_result_namespace(config, resolved)
+
+
+def test_result_namespace_rejects_changed_semantic_configuration(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["provenance"] = {}
+    config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+    resolved = tmp_path / "results" / "project" / "run" / "provenance" / (
+        "resolved_config.json"
+    )
+    resolved.parent.mkdir(parents=True)
+    existing = copy.deepcopy(config)
+    existing["provenance"]["semantic_sha256"] = "0" * 64
+    resolved.write_text(json.dumps(existing), encoding="utf-8")
+
+    with pytest.raises(AcquisitionError, match="Use a new run_id"):
+        guard_result_namespace(config, resolved)
+
+
+def test_workflow_config_rejects_stale_semantic_digest():
+    config = copy.deepcopy(BASE_CONFIG)
+    config["provenance"] = {"semantic_sha256": "0" * 64}
+
+    with pytest.raises(AcquisitionError, match="does not match"):
+        validate_workflow_config(config)
 
 
 @pytest.mark.parametrize(
@@ -248,3 +290,92 @@ def test_workflow_config_rejects_unchecked_reference_source():
     }
     with pytest.raises(AcquisitionError, match="checksum"):
         validate_workflow_config(config)
+
+
+def _external_final_bam(sample: str, tmp_path: Path) -> dict:
+    bam = tmp_path / "external" / f"{sample}.bam"
+    bai = tmp_path / "external" / f"{sample}.bam.bai"
+    bam.parent.mkdir(exist_ok=True)
+    bam.write_bytes(sample.encode())
+    bai.write_bytes((sample + "-index").encode())
+    return {
+        "library_id": sample,
+        "assay": "atac",
+        "context": "example",
+        "role": "treatment",
+        "layout": "paired",
+        "bam": str(bam),
+        "bai": str(bai),
+        "genome": "dm6",
+        "filtering_contract": "short-read-processing-final-v1",
+        "bam_sha256": "a" * 64,
+        "bai_sha256": "b" * 64,
+        "qc_status": "accepted",
+    }
+
+
+def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    _add_second_replicate(config)
+    _enable_consensus(config)
+    config["input_stage"] = "final-bam"
+    for sample in config["samples"]:
+        sample.pop("r1")
+        sample.pop("r2")
+        sample["final_bam"] = _external_final_bam(sample["id"], tmp_path)
+
+    output = _dry_run(tmp_path, config, "external-final-bams")
+
+    assert "validate_external_final_bam" in output
+    assert "prepare_atac_tn5_insertions" in output
+    assert "build_atac_master_dhs" in output
+    for forbidden in (
+        "fastqc_raw",
+        "trim_pe",
+        "trim_se",
+        "align_lane",
+        "merge_and_mark_duplicates",
+        "filter_bam",
+        "bowtie2_index",
+    ):
+        assert forbidden not in output
+
+
+def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["input_stage"] = "master"
+    config["samples"] = []
+    config.pop("atac_qpois")
+    artifacts = {}
+    for field in (
+        "master_bed",
+        "summits_bed",
+        "membership_tsv",
+        "context_matrix_tsv",
+        "stats_json",
+    ):
+        path = tmp_path / "master" / field
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(field)
+        artifacts[field] = str(path)
+        artifacts[f"{field}_sha256"] = "a" * 64
+    config["external_master"] = {
+        "genome": "dm6",
+        "method": "reciprocal_summit_complete_linkage_v2",
+        "source_project": "atlas",
+        "source_run_id": "master-v1",
+        **artifacts,
+    }
+
+    output = _dry_run(tmp_path, config, "external-master")
+
+    assert "validate_external_master" in output
+    assert "resolved_config_provenance" in output
+    for forbidden in (
+        "validate_external_final_bam",
+        "prepare_atac_tn5_insertions",
+        "build_atac_master_dhs",
+        "align_lane",
+        "filter_bam",
+    ):
+        assert forbidden not in output

@@ -8,18 +8,25 @@ digraph workflow {
   download [label="Parallel FASTQ download"];
   preprocess [label="FastQC + Cutadapt"];
   align [label="Bowtie2 + BAM processing"];
+  bammanifest [label="Checksummed final-BAM manifest", fillcolor="#eef6ff"];
+  bamvalidate [label="Validate immutable BAM + BAI", fillcolor="#eef6ff"];
+  finalbam [label="Final filtered BAM + BAI", fillcolor="#e5f1ff"];
   atac [label="ATAC replicate peaks\nTn5/MACS3-qpois (default)\nor HMMRATAC", fillcolor="#e8f4ff"];
   pool [label="Pool biological libraries\nwithin each context", fillcolor="#e8f4ff"];
   consensus [label="Replicate-supported\ncontext ATAC peaks", fillcolor="#dff3e5"];
   master [label="Summit-aware cross-context\nmaster DHS registry", fillcolor="#ccebd6"];
+  mastermanifest [label="Checksummed master-bundle manifest", fillcolor="#e7f5eb"];
+  mastervalidate [label="Validate complete master bundle", fillcolor="#e7f5eb"];
   chip [label="MACS3 ChIP peaks\noptional matched input", fillcolor="#fff2df"];
   chipout [label="Per-biosample ChIP\npeaks + CPM BigWig", fillcolor="#fff2df"];
   qc [label="FRiP + assay QC + MultiQC", fillcolor="#f1e9fa"];
 
-  accessions -> download -> preprocess -> align;
-  align -> atac -> pool -> consensus -> master;
-  align -> chip -> chipout;
-  align -> qc;
+  accessions -> download -> preprocess -> align -> finalbam;
+  bammanifest -> bamvalidate -> finalbam;
+  finalbam -> atac -> pool -> consensus -> master;
+  finalbam -> chip -> chipout;
+  finalbam -> qc;
   consensus -> qc;
   chipout -> qc;
+  mastermanifest -> mastervalidate -> master;
 }

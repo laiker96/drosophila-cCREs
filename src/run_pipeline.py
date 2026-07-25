@@ -63,6 +63,25 @@ def main() -> int:
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--config-only", action="store_true")
     parser.add_argument("--snakemake-dry-run", action="store_true")
+    parser.add_argument(
+        "--from-stage",
+        choices=("accessions", "final-bam", "master"),
+        default="accessions",
+        help=(
+            "Explicit workflow starting artifact. final-bam and master are "
+            "strict reuse-only modes with no upstream fallback."
+        ),
+    )
+    parser.add_argument(
+        "--final-bam-manifest",
+        type=Path,
+        help="Complete immutable final-BAM manifest for --from-stage final-bam",
+    )
+    parser.add_argument(
+        "--master-manifest",
+        type=Path,
+        help="Immutable master-DHS bundle manifest for --from-stage master",
+    )
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
     parser.add_argument(
@@ -81,21 +100,65 @@ def main() -> int:
         parser.error("--max-threads must be positive")
     if args.download_only and args.config_only:
         parser.error("--download-only and --config-only are mutually exclusive")
+    if args.from_stage == "accessions":
+        if args.final_bam_manifest or args.master_manifest:
+            parser.error(
+                "artifact manifests require the matching --from-stage final-bam or master"
+            )
+    else:
+        incompatible = (
+            args.skip_download
+            or args.download_only
+            or args.dry_run
+            or args.manifest is not None
+        )
+        if incompatible:
+            parser.error(
+                "--manifest, --skip-download, --download-only, and acquisition --dry-run "
+                "are valid only with --from-stage accessions"
+            )
+        if args.from_stage == "final-bam":
+            if not args.final_bam_manifest:
+                parser.error("--from-stage final-bam requires --final-bam-manifest")
+            if args.master_manifest:
+                parser.error("--master-manifest requires --from-stage master")
+        if args.from_stage == "master":
+            if not args.master_manifest:
+                parser.error("--from-stage master requires --master-manifest")
+            if args.final_bam_manifest:
+                parser.error(
+                    "--from-stage master consumes the frozen master bundle, not BAMs"
+                )
 
     sample_sheet = args.sample_sheet.resolve()
-    accessions = sample_sheet_accessions(sample_sheet, schema_path=args.schema.resolve())
-    manifest = (args.manifest or args.output_dir / "download_manifest.tsv").resolve()
-    if args.skip_download:
-        if not manifest.is_file():
-            raise FileNotFoundError(f"Manifest does not exist: {manifest}")
-        print(f"Reusing download manifest: {manifest}")
-    else:
-        manifest = execute_download(accessions, args)
-        if args.dry_run:
-            print("Download dry-run complete; processing was not started")
+    manifest: Path | None = None
+    if args.from_stage == "accessions":
+        accessions = sample_sheet_accessions(
+            sample_sheet, schema_path=args.schema.resolve()
+        )
+        manifest = (args.manifest or args.output_dir / "download_manifest.tsv").resolve()
+        if args.skip_download:
+            if not manifest.is_file():
+                raise FileNotFoundError(f"Manifest does not exist: {manifest}")
+            print(f"Reusing download manifest: {manifest}")
+        else:
+            manifest = execute_download(accessions, args)
+            if args.dry_run:
+                print("Download dry-run complete; processing was not started")
+                return 0
+        if args.download_only:
             return 0
-    if args.download_only:
-        return 0
+    else:
+        artifact = (
+            args.final_bam_manifest
+            if args.from_stage == "final-bam"
+            else args.master_manifest
+        )
+        print(
+            f"Strict reuse-only mode: starting from {args.from_stage}; "
+            f"manifest={artifact.resolve()}"
+        )
+        print("FASTQ download, trimming, and alignment fallback are disabled")
 
     configs = generate_configs(
         manifest_path=manifest,
@@ -110,6 +173,13 @@ def main() -> int:
         genome=args.genome,
         atac_minimum_replicates=args.atac_minimum_replicates,
         atac_overlap_fraction=args.atac_overlap_fraction,
+        input_stage=args.from_stage,
+        final_bam_manifest_path=(
+            args.final_bam_manifest.resolve() if args.final_bam_manifest else None
+        ),
+        master_manifest_path=(
+            args.master_manifest.resolve() if args.master_manifest else None
+        ),
     )
     for config_path in configs:
         print(f"Resolved workflow config: {config_path}")

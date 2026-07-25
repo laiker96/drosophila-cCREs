@@ -18,7 +18,7 @@ rule align_lane:
     conda:
         "../envs/alignment.yaml"
     wildcard_constraints:
-        sample=SAMPLE_RE,
+        sample=BUILD_SAMPLE_RE,
         lane=LANE_RE
     shell:
         r"""
@@ -53,7 +53,7 @@ rule merge_and_mark_duplicates:
     conda:
         "../envs/alignment.yaml"
     wildcard_constraints:
-        sample=SAMPLE_RE
+        sample=BUILD_SAMPLE_RE
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
@@ -88,6 +88,8 @@ rule filter_bam:
         "../envs/alignment.yaml"
     log:
         f"{RESULT_ROOT}/logs/alignment/{{sample}}.filter.log"
+    wildcard_constraints:
+        sample=BUILD_SAMPLE_RE
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
@@ -103,12 +105,16 @@ rule filter_bam:
 
 rule alignment_stats:
     input:
-        bam=f"{RESULT_ROOT}/bam/{{sample}}.final.bam"
+        bam=lambda wc: FINAL_BAMS[wc.sample],
+        bai=lambda wc: FINAL_BAIS[wc.sample],
+        validated=final_bam_validation_input
     output:
         flagstat=f"{RESULT_ROOT}/qc/alignment/{{sample}}.flagstat.txt",
         stats=f"{RESULT_ROOT}/qc/alignment/{{sample}}.stats.txt",
         idxstats=f"{RESULT_ROOT}/qc/alignment/{{sample}}.idxstats.txt"
     threads: 2
+    wildcard_constraints:
+        sample=SAMPLE_RE
     conda:
         "../envs/alignment.yaml"
     log:

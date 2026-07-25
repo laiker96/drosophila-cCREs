@@ -1,0 +1,5 @@
+accession	library_id	assay	context	control_library	role
+SRR26349810	d17_atac_rep1	atac	d17		treatment
+SRR26349809	d17_atac_rep2	atac	d17		treatment
+SRR26350407	d17_h3k27ac_rep1	h3k27ac	d17		treatment
+SRR26350406	d17_h3k27ac_rep2	h3k27ac	d17		treatment

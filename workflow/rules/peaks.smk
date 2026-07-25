@@ -1,7 +1,9 @@
 rule callpeak_narrow:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
-        control=peak_control_input
+        control=peak_control_input,
+        validated=final_bam_validation_input,
+        control_validated=peak_control_validation_input
     output:
         peaks=f"{RESULT_ROOT}/peaks/{{sample}}/{{sample}}_peaks.narrowPeak",
         summits=f"{RESULT_ROOT}/peaks/{{sample}}/{{sample}}_summits.bed",
@@ -26,7 +28,9 @@ rule callpeak_narrow:
 rule callpeak_broad:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
-        control=peak_control_input
+        control=peak_control_input,
+        validated=final_bam_validation_input,
+        control_validated=peak_control_validation_input
     output:
         peaks=f"{RESULT_ROOT}/peaks/{{sample}}/{{sample}}_peaks.broadPeak",
         gapped=f"{RESULT_ROOT}/peaks/{{sample}}/{{sample}}_peaks.gappedPeak",

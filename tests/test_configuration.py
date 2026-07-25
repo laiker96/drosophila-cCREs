@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
+from short_read_processing.artifacts import FINAL_BAM_FILTERING_CONTRACT, sha256_file
 from short_read_processing.configuration import generate_configs
 from short_read_processing.manifest import write_manifest
 
@@ -246,3 +247,113 @@ def test_explicit_hmmratac_rejects_single_end_atac(tmp_path):
     )
     with pytest.raises(AcquisitionError, match="requires paired-end"):
         _generate(tmp_path, [plan], sheet)
+
+
+def _write_final_bam_manifest(tmp_path: Path, libraries: list[tuple[str, str]]) -> Path:
+    manifest = tmp_path / "final-bams.tsv"
+    rows = [
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status"
+    ]
+    for library_id, context in libraries:
+        bam = tmp_path / "external" / f"{library_id}.bam"
+        bai = tmp_path / "external" / f"{library_id}.bam.bai"
+        bam.parent.mkdir(exist_ok=True)
+        bam.write_bytes(f"bam-{library_id}".encode())
+        bai.write_bytes(f"bai-{library_id}".encode())
+        rows.append(
+            f"{library_id}\tatac\t{context}\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
+            f"{FINAL_BAM_FILTERING_CONTRACT}\t{sha256_file(bam)}\t"
+            f"{sha256_file(bai)}\taccepted"
+        )
+    manifest.write_text("\n".join(rows) + "\n")
+    return manifest
+
+
+def test_final_bam_mode_generates_reuse_only_samples(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path, [("atac_rep1", "eye"), ("atac_rep2", "eye")]
+    )
+
+    output = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "configs",
+        project="test-project",
+        run_id="reuse-bams",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        final_bam_manifest_path=manifest,
+    )[0]
+    config = yaml.safe_load(output.read_text())
+
+    assert config["input_stage"] == "final-bam"
+    assert all("final_bam" in sample for sample in config["samples"])
+    assert all("r1" not in sample and "r2" not in sample for sample in config["samples"])
+    assert config["provenance"]["final_bam_manifest_sha256"] == sha256_file(manifest)
+    assert len(config["provenance"]["semantic_sha256"]) == 64
+
+
+def test_final_bam_mode_rejects_partial_selected_assay(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(tmp_path, [("atac_rep1", "eye")])
+
+    with pytest.raises(AcquisitionError, match="incomplete"):
+        generate_configs(
+            manifest_path=None,
+            sample_sheet_path=sheet,
+            output_dir=tmp_path / "configs",
+            project="test-project",
+            run_id="reuse-bams",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_fastq_files=True,
+            input_stage="final-bam",
+            final_bam_manifest_path=manifest,
+        )
+
+
+def test_identical_final_bam_config_keeps_content_and_mtime(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path, [("atac_rep1", "eye"), ("atac_rep2", "eye")]
+    )
+    arguments = {
+        "manifest_path": None,
+        "sample_sheet_path": sheet,
+        "output_dir": tmp_path / "configs",
+        "project": "test-project",
+        "run_id": "reuse-bams",
+        "reference_root": tmp_path / "references",
+        "path_base": tmp_path,
+        "require_fastq_files": True,
+        "input_stage": "final-bam",
+        "final_bam_manifest_path": manifest,
+    }
+    output = generate_configs(**arguments)[0]
+    original = output.read_bytes()
+    output.touch()
+    timestamp = output.stat().st_mtime_ns
+
+    regenerated = generate_configs(**arguments)[0]
+
+    assert regenerated.read_bytes() == original
+    assert regenerated.stat().st_mtime_ns == timestamp

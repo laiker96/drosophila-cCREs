@@ -4,7 +4,8 @@
 rule filter_atac_short_fragments:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
-        bai=lambda wc: FINAL_BAIS[wc.sample]
+        bai=lambda wc: FINAL_BAIS[wc.sample],
+        validated=final_bam_validation_input
     output:
         bam=temp(f"{ATAC_WORK}/replicates/{{sample}}.fragments-lt{ATAC_FRAGMENT_MAXIMUM}.bam"),
         bai=temp(f"{ATAC_WORK}/replicates/{{sample}}.fragments-lt{ATAC_FRAGMENT_MAXIMUM}.bam.bai")
@@ -35,7 +36,8 @@ rule filter_atac_short_fragments:
 rule prepare_atac_tn5_insertions:
     input:
         bam=atac_insertion_bam,
-        bai=atac_insertion_bai
+        bai=atac_insertion_bai,
+        validated=final_bam_validation_input
     output:
         bed=f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.bed.gz",
         insertion_count=f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.count.txt"
@@ -145,7 +147,8 @@ rule hmmratac_replicate:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
         bai=lambda wc: FINAL_BAIS[wc.sample],
-        blacklist=str(REFERENCE["blacklist_bed"])
+        blacklist=str(REFERENCE["blacklist_bed"]),
+        validated=final_bam_validation_input
     output:
         peaks=f"{ATAC_WORK}/replicates/{{sample}}/peaks/{{sample}}.hmmratac.narrowPeak"
     params:

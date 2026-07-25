@@ -118,3 +118,21 @@ def test_curated_controlled_table_links_three_matched_inputs():
         "e5_h3k27ac_rep1": "e5_input_rep1",
         "e5_h3k27ac_rep2": "e5_input_rep2",
     }
+
+
+def test_hq_cell_line_table_is_ip_only_and_replicated():
+    resources = Path(__file__).parents[1] / "resources"
+    rows = read_sample_sheet(resources / "hq_cell_line_samples.tsv")
+
+    assert len(rows) == 4
+    assert {row["context"] for row in rows} == {"d17"}
+    assert {
+        row["library_id"] for row in rows if row["assay"] == "atac"
+    } == {"d17_atac_rep1", "d17_atac_rep2"}
+    assert {
+        row["library_id"]
+        for row in rows
+        if row["assay"] == "chip_histone" and row["role"] == "treatment"
+    } == {"d17_h3k27ac_rep1", "d17_h3k27ac_rep2"}
+    assert all(row["role"] == "treatment" for row in rows)
+    assert all(row["control_library"] is None for row in rows)

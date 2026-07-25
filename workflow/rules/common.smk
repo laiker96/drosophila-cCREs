@@ -58,6 +58,11 @@ def sample_lane_bams(wildcards):
     ]
 
 
+def final_bam_validation_input(wildcards):
+    validation = EXTERNAL_BAM_VALIDATIONS.get(wildcards.sample)
+    return [validation] if validation else []
+
+
 def worker_threads(wildcards, threads):
     return max(1, threads - 1)
 
@@ -91,6 +96,15 @@ def excluded_flags(wildcards):
 def peak_control_input(wildcards):
     control = SAMPLES[wildcards.sample].get("control")
     return [FINAL_BAMS[control]] if control else []
+
+
+def peak_control_validation_input(wildcards):
+    control = SAMPLES[wildcards.sample].get("control")
+    return (
+        [EXTERNAL_BAM_VALIDATIONS[control]]
+        if control in EXTERNAL_BAM_VALIDATIONS
+        else []
+    )
 
 
 def callpeak_argv(wildcards):
@@ -166,6 +180,14 @@ def atac_condition_bam_inputs(wildcards):
     return [
         FINAL_BAMS[sample]
         for sample in ATAC_CONDITIONS[wildcards.condition].samples
+    ]
+
+
+def atac_condition_validation_inputs(wildcards):
+    return [
+        EXTERNAL_BAM_VALIDATIONS[sample]
+        for sample in ATAC_CONDITIONS[wildcards.condition].samples
+        if sample in EXTERNAL_BAM_VALIDATIONS
     ]
 
 

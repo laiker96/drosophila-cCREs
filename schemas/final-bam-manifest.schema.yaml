@@ -1,0 +1,67 @@
+schema_version: 1
+name: immutable final-BAM manifest
+formats: [tsv]
+path_resolution: Relative bam and bai paths are resolved against the manifest directory.
+row_model: One row is one biological library after technical-run merging and final filtering.
+required_columns:
+  - library_id
+  - assay
+  - context
+  - role
+  - layout
+  - bam
+  - bai
+  - genome
+  - filtering_contract
+  - bam_sha256
+  - bai_sha256
+  - qc_status
+fields:
+  library_id:
+    type: string
+    pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+  assay:
+    type: enum
+    values: [atac, h3k27ac, chip_tf, chip_histone]
+  context:
+    type: string
+    pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+  role:
+    type: enum
+    values: [treatment, control]
+  layout:
+    type: enum
+    values: [single, paired]
+  bam:
+    type: path
+  bai:
+    type: path
+  genome:
+    type: enum
+    values: [dm6, hg38]
+  filtering_contract:
+    type: enum
+    values: [short-read-processing-final-v1]
+  bam_sha256:
+    type: sha256
+  bai_sha256:
+    type: sha256
+  qc_status:
+    type: enum
+    values: [accepted]
+  source_project:
+    type: string
+    allow_blank: true
+  source_run_id:
+    type: string
+    allow_blank: true
+  notes:
+    type: string
+    allow_blank: true
+rules:
+  - Every required library for each represented assay occurs exactly once.
+  - Library metadata must agree with the accession sample sheet.
+  - BAM and BAI paths must exist, be distinct, and not be reused by another row.
+  - Full SHA-256 values are mandatory.
+  - Workflow validation checks BAM integrity, explicit-index readability, coordinate sorting, and exact reference sequence names and lengths.
+  - A missing or rejected library is an error; the workflow never falls back to FASTQ acquisition.

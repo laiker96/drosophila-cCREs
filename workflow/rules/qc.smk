@@ -16,9 +16,10 @@ rule resolved_config_provenance:
 
 rule bigwig_cpm:
     input:
-        bam=f"{RESULT_ROOT}/bam/{{sample}}.final.bam",
-        bai=f"{RESULT_ROOT}/bam/{{sample}}.final.bam.bai",
-        chrom_sizes=str(REFERENCE["chrom_sizes"])
+        bam=lambda wc: FINAL_BAMS[wc.sample],
+        bai=lambda wc: FINAL_BAIS[wc.sample],
+        chrom_sizes=str(REFERENCE["chrom_sizes"]),
+        validated=final_bam_validation_input
     output:
         bw=f"{RESULT_ROOT}/tracks/{{sample}}.CPM.bw"
     wildcard_constraints:
@@ -38,7 +39,9 @@ rule bigwig_cpm:
 
 rule atac_shift_bam:
     input:
-        bam=f"{RESULT_ROOT}/bam/{{sample}}.final.bam"
+        bam=lambda wc: FINAL_BAMS[wc.sample],
+        bai=lambda wc: FINAL_BAIS[wc.sample],
+        validated=final_bam_validation_input
     output:
         bam=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam",
         bai=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam.bai"
@@ -120,7 +123,8 @@ rule atac_tss_profile:
 
 rule atac_fragment_histogram:
     input:
-        bam=f"{RESULT_ROOT}/bam/{{sample}}.final.bam"
+        bam=lambda wc: FINAL_BAMS[wc.sample],
+        validated=final_bam_validation_input
     output:
         histogram=f"{RESULT_ROOT}/qc/fragments/{{sample}}.histogram.tsv"
     wildcard_constraints:
@@ -144,7 +148,8 @@ rule atac_fragment_histogram:
 rule frip:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
-        peaks=lambda wc: PEAKS[wc.sample]
+        peaks=lambda wc: PEAKS[wc.sample],
+        validated=final_bam_validation_input
     output:
         tsv=f"{RESULT_ROOT}/qc/frip/{{sample}}.tsv",
         json=f"{RESULT_ROOT}/qc/frip/{{sample}}.json"
@@ -164,7 +169,9 @@ rule frip:
 rule chip_fingerprint:
     input:
         treatment=lambda wc: FINAL_BAMS[wc.sample],
-        control=lambda wc: FINAL_BAMS[SAMPLES[wc.sample]["control"]]
+        control=lambda wc: FINAL_BAMS[SAMPLES[wc.sample]["control"]],
+        validated=final_bam_validation_input,
+        control_validated=peak_control_validation_input
     output:
         plot=f"{RESULT_ROOT}/qc/chip/{{sample}}.fingerprint.png",
         counts=f"{RESULT_ROOT}/qc/chip/{{sample}}.fingerprint_counts.tsv"
@@ -189,7 +196,8 @@ rule chip_fingerprint:
 
 rule chip_cross_correlation:
     input:
-        bam=lambda wc: FINAL_BAMS[wc.sample]
+        bam=lambda wc: FINAL_BAMS[wc.sample],
+        validated=final_bam_validation_input
     output:
         metrics=f"{RESULT_ROOT}/qc/chip/{{sample}}.cross_correlation.txt",
         plot=f"{RESULT_ROOT}/qc/chip/{{sample}}.cross_correlation.pdf"

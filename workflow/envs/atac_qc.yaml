@@ -9,4 +9,3 @@ dependencies:
   - samtools=1.23.1
   - bedtools=2.31.1
   - pigz=2.8
-  - pybigwig=0.3.22
