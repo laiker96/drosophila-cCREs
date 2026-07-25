@@ -53,6 +53,30 @@ EXTERNAL_MASTER_FIELDS = {
     "stats_json",
     "stats_json_sha256",
 }
+ACTIVITY_FIELDS = {
+    "schema_version",
+    "master",
+    "atlas_contexts",
+    "reference_context",
+    "libraries",
+    "atac_fragment_maximum",
+    "normalization",
+    "activity_formula",
+}
+ACTIVITY_LIBRARY_FIELDS = {
+    "id",
+    "assay",
+    "context",
+    "cohort",
+    "layout",
+    "genome",
+    "bam",
+    "bai",
+    "bam_sha256",
+    "bai_sha256",
+    "filtering_contract",
+    "qc_status",
+}
 REFERENCE_FIELDS = {
     "name",
     "fasta",
@@ -136,13 +160,13 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     for field in ("project", "run_id"):
         if not SAFE_ID_RE.fullmatch(str(config[field])):
             raise AcquisitionError(f"Invalid {field}: {config[field]!r}")
-    if config["assay"] not in {"atac", "chip_tf", "chip_histone"}:
+    if config["assay"] not in {"atac", "chip_tf", "chip_histone", "activity"}:
         raise AcquisitionError(f"Unsupported assay: {config['assay']!r}")
     if not isinstance(config["reference"], dict):
         raise AcquisitionError("reference must be a mapping")
     _required(config["reference"], REFERENCE_FIELDS, "Reference")
     input_stage = str(config.get("input_stage", "accessions"))
-    if input_stage not in {"accessions", "final-bam", "master"}:
+    if input_stage not in {"accessions", "final-bam", "master", "activity"}:
         raise AcquisitionError(f"Unsupported input_stage: {input_stage!r}")
     provenance = config.get("provenance")
     if provenance is not None:
@@ -175,6 +199,139 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(f"External master {field} is not a SHA-256 digest")
     elif external_master is not None:
         raise AcquisitionError("external_master requires input_stage=master")
+    activity = config.get("activity")
+    if input_stage == "activity":
+        if config["assay"] != "activity" or not isinstance(activity, dict):
+            raise AcquisitionError(
+                "Activity input stage requires assay=activity and an activity mapping"
+            )
+        _required(activity, ACTIVITY_FIELDS, "Activity")
+        master = activity["master"]
+        if not isinstance(master, dict):
+            raise AcquisitionError("Activity master must be a mapping")
+        _required(master, EXTERNAL_MASTER_FIELDS, "Activity master")
+        if master["genome"] != config["reference"]["name"]:
+            raise AcquisitionError("Activity master and reference genomes differ")
+        for field in EXTERNAL_MASTER_FIELDS:
+            if field.endswith("_sha256") and not re.fullmatch(
+                r"[0-9a-f]{64}", str(master[field])
+            ):
+                raise AcquisitionError(
+                    f"Activity master {field} is not a SHA-256 digest"
+                )
+        if activity["schema_version"] != 1:
+            raise AcquisitionError("Unsupported activity schema version")
+        if int(activity["atac_fragment_maximum"]) < 2:
+            raise AcquisitionError("Activity ATAC fragment maximum is invalid")
+        if (
+            activity["normalization"]
+            != "cpm_per_kb_then_tie_aware_reference_qnorm_v1"
+            or activity["activity_formula"] != "sqrt_atac_times_h3k27ac_v1"
+        ):
+            raise AcquisitionError("Unsupported activity normalization method")
+        atlas_contexts = activity["atlas_contexts"]
+        reference_context = str(activity["reference_context"])
+        if (
+            not isinstance(atlas_contexts, list)
+            or not atlas_contexts
+            or len(atlas_contexts) != len(set(atlas_contexts))
+            or any(not SAFE_ID_RE.fullmatch(str(item)) for item in atlas_contexts)
+            or not SAFE_ID_RE.fullmatch(reference_context)
+        ):
+            raise AcquisitionError("Activity contexts are invalid")
+        libraries = activity["libraries"]
+        if not isinstance(libraries, list) or not libraries:
+            raise AcquisitionError("Activity libraries must be a non-empty list")
+        library_ids = [str(library.get("id", "")) for library in libraries]
+        if (
+            any(not SAFE_ID_RE.fullmatch(item) for item in library_ids)
+            or len(library_ids) != len(set(library_ids))
+        ):
+            raise AcquisitionError("Activity library IDs must be safe and unique")
+        artifact_paths = [
+            str(library.get(field, ""))
+            for library in libraries
+            for field in ("bam", "bai")
+        ]
+        if (
+            any(not item for item in artifact_paths)
+            or len(artifact_paths) != len(set(artifact_paths))
+        ):
+            raise AcquisitionError(
+                "Activity libraries must use distinct BAM and BAI artifact paths"
+            )
+        for library in libraries:
+            _required(
+                library,
+                ACTIVITY_LIBRARY_FIELDS,
+                f"Activity library {library.get('id', '')}",
+            )
+            library_id = str(library["id"])
+            if library["assay"] not in {"atac", "h3k27ac"}:
+                raise AcquisitionError(
+                    f"Activity library {library_id}: invalid assay"
+                )
+            if library["cohort"] not in {"atlas", "reference"}:
+                raise AcquisitionError(
+                    f"Activity library {library_id}: invalid cohort"
+                )
+            if library["layout"] != "paired":
+                raise AcquisitionError(
+                    f"Activity library {library_id}: paired-end data are required"
+                )
+            if library["genome"] != config["reference"]["name"]:
+                raise AcquisitionError(
+                    f"Activity library {library_id}: genome differs from reference"
+                )
+            if library["filtering_contract"] != "short-read-processing-final-v1":
+                raise AcquisitionError(
+                    f"Activity library {library_id}: invalid filtering contract"
+                )
+            if library["qc_status"] != "accepted":
+                raise AcquisitionError(
+                    f"Activity library {library_id}: accepted QC is required"
+                )
+            for field in ("bam_sha256", "bai_sha256"):
+                if not re.fullmatch(r"[0-9a-f]{64}", str(library[field])):
+                    raise AcquisitionError(
+                        f"Activity library {library_id}: invalid {field}"
+                    )
+            context = str(library["context"])
+            if not SAFE_ID_RE.fullmatch(context):
+                raise AcquisitionError(
+                    f"Activity library {library_id}: invalid context"
+                )
+            if library["cohort"] == "atlas" and context not in atlas_contexts:
+                raise AcquisitionError(
+                    f"Activity library {library_id}: unknown atlas context"
+                )
+            if library["cohort"] == "reference" and context != reference_context:
+                raise AcquisitionError(
+                    f"Activity library {library_id}: reference context differs"
+                )
+        for context in atlas_contexts:
+            assays = {
+                library["assay"]
+                for library in libraries
+                if library["cohort"] == "atlas"
+                and library["context"] == context
+            }
+            if assays != {"atac", "h3k27ac"}:
+                raise AcquisitionError(
+                    f"Activity atlas context {context!r} lacks an assay"
+                )
+        for assay in ("atac", "h3k27ac"):
+            count = sum(
+                library["cohort"] == "reference"
+                and library["assay"] == assay
+                for library in libraries
+            )
+            if count < 2:
+                raise AcquisitionError(
+                    f"Activity reference requires two accepted {assay} libraries"
+                )
+    elif activity is not None:
+        raise AcquisitionError("activity mapping requires input_stage=activity")
 
     qpois = config.get("atac_qpois")
     if (
@@ -251,10 +408,14 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Reference autosomes must be a non-empty list")
 
     samples = config["samples"]
-    if not isinstance(samples, list) or (not samples and input_stage != "master"):
+    if not isinstance(samples, list) or (
+        not samples and input_stage not in {"master", "activity"}
+    ):
         raise AcquisitionError("samples must be a non-empty list")
-    if input_stage == "master" and samples:
-        raise AcquisitionError("Master reuse configuration must not schedule sample processing")
+    if input_stage in {"master", "activity"} and samples:
+        raise AcquisitionError(
+            f"{input_stage.capitalize()} configuration must not schedule sample processing"
+        )
     sample_ids = [str(sample.get("id", "")) for sample in samples]
     if any(not SAFE_ID_RE.fullmatch(sample_id) for sample_id in sample_ids):
         raise AcquisitionError("Every sample must have a safe non-empty id")
@@ -308,9 +469,9 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Sample {sample_id}: final BAM and reference genomes differ"
                 )
-            if final_bam["qc_status"] != "accepted":
+            if final_bam["qc_status"] not in {"pending_review", "accepted"}:
                 raise AcquisitionError(
-                    f"Sample {sample_id}: final BAM QC is not accepted"
+                    f"Sample {sample_id}: final BAM QC status is invalid or rejected"
                 )
             if final_bam["filtering_contract"] != "short-read-processing-final-v1":
                 raise AcquisitionError(
@@ -431,5 +592,24 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
         ):
             path = Path(external_master[key])
             external_master[key] = str(
+                path if path.is_absolute() else (base / path).resolve()
+            )
+    activity = config.get("activity")
+    if activity:
+        for library in activity["libraries"]:
+            for key in ("bam", "bai"):
+                path = Path(library[key])
+                library[key] = str(
+                    path if path.is_absolute() else (base / path).resolve()
+                )
+        for key in (
+            "master_bed",
+            "summits_bed",
+            "membership_tsv",
+            "context_matrix_tsv",
+            "stats_json",
+        ):
+            path = Path(activity["master"][key])
+            activity["master"][key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )

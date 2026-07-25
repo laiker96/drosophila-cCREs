@@ -142,6 +142,7 @@ def test_workflow_branches_dry_run(tmp_path, branch):
             config["samples"].append(control)
 
     output = _dry_run(tmp_path, config, branch)
+    assert "export_final_bam_manifest" in output
     if branch in {"atac_qpois", "atac_se"}:
         assert "prepare_atac_tn5_insertions" in output
         assert "call_atac_replicate_qpois" in output
@@ -327,6 +328,8 @@ def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
     output = _dry_run(tmp_path, config, "external-final-bams")
 
     assert "validate_external_final_bam" in output
+    assert "export_final_bam_manifest" in output
+    assert "export_master_manifest" in output
     assert "prepare_atac_tn5_insertions" in output
     assert "build_atac_master_dhs" in output
     for forbidden in (
@@ -370,6 +373,7 @@ def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
     output = _dry_run(tmp_path, config, "external-master")
 
     assert "validate_external_master" in output
+    assert "export_master_manifest" in output
     assert "resolved_config_provenance" in output
     for forbidden in (
         "validate_external_final_bam",
@@ -377,5 +381,96 @@ def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
         "build_atac_master_dhs",
         "align_lane",
         "filter_bam",
+    ):
+        assert forbidden not in output
+
+
+def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["assay"] = "activity"
+    config["input_stage"] = "activity"
+    config["samples"] = []
+    config.pop("atac_qpois")
+    master = {}
+    for field in (
+        "master_bed",
+        "summits_bed",
+        "membership_tsv",
+        "context_matrix_tsv",
+        "stats_json",
+    ):
+        path = tmp_path / "master" / field
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(field)
+        master[field] = str(path)
+        master[f"{field}_sha256"] = "a" * 64
+    master.update(
+        {
+            "genome": "dm6",
+            "method": "reciprocal_summit_complete_linkage_v2",
+            "source_project": "atlas",
+            "source_run_id": "master-v1",
+        }
+    )
+    libraries = []
+    for library_id, assay, cohort, context in (
+        ("atlas_atac", "atac", "atlas", "ctx"),
+        ("atlas_h3", "h3k27ac", "atlas", "ctx"),
+        ("ref_atac_1", "atac", "reference", "ref"),
+        ("ref_atac_2", "atac", "reference", "ref"),
+        ("ref_h3_1", "h3k27ac", "reference", "ref"),
+        ("ref_h3_2", "h3k27ac", "reference", "ref"),
+    ):
+        bam = tmp_path / "bams" / f"{library_id}.bam"
+        bai = tmp_path / "bams" / f"{library_id}.bam.bai"
+        bam.parent.mkdir(exist_ok=True)
+        bam.write_bytes(b"bam")
+        bai.write_bytes(b"bai")
+        libraries.append(
+            {
+                "id": library_id,
+                "assay": assay,
+                "cohort": cohort,
+                "context": context,
+                "layout": "paired",
+                "genome": "dm6",
+                "bam": str(bam),
+                "bai": str(bai),
+                "bam_sha256": "b" * 64,
+                "bai_sha256": "c" * 64,
+                "filtering_contract": "short-read-processing-final-v1",
+                "qc_status": "accepted",
+            }
+        )
+    config["activity"] = {
+        "schema_version": 1,
+        "master": master,
+        "atlas_contexts": ["ctx"],
+        "reference_context": "ref",
+        "libraries": libraries,
+        "atac_fragment_maximum": 150,
+        "normalization": "cpm_per_kb_then_tie_aware_reference_qnorm_v1",
+        "activity_formula": "sqrt_atac_times_h3k27ac_v1",
+    }
+
+    output = _dry_run(tmp_path, config, "activity")
+
+    for expected in (
+        "validate_activity_bam",
+        "validate_activity_master",
+        "prepare_activity_atac_insertions",
+        "prepare_activity_h3k27ac_fragments",
+        "count_activity_library",
+        "build_master_dhs_activity_table",
+        "master_dhs_activity.tsv.gz",
+    ):
+        assert expected in output
+    for forbidden in (
+        "fastqc_raw",
+        "trim_pe",
+        "align_lane",
+        "filter_bam",
+        "build_atac_master_dhs",
+        "call_atac_replicate_qpois",
     ):
         assert forbidden not in output

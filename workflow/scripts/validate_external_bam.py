@@ -101,7 +101,13 @@ if header_sequences != reference_sequences:
 
 receipt = {
     "status": "ok",
-    "library_id": str(snakemake.wildcards.sample),
+    "library_id": str(
+        getattr(
+            snakemake.wildcards,
+            "sample",
+            getattr(snakemake.wildcards, "library", ""),
+        )
+    ),
     "bam": str(bam.resolve()),
     "bai": str(bai.resolve()),
     "bam_sha256": observed_bam_sha256,

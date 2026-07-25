@@ -15,6 +15,7 @@ from .sample_sheet import ASSAY_ALIASES, read_delimited_rows
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 FINAL_BAM_FILTERING_CONTRACT = "short-read-processing-final-v1"
+FINAL_BAM_QC_STATUSES = {"pending_review", "accepted", "rejected"}
 FINAL_BAM_REQUIRED_COLUMNS = {
     "library_id",
     "assay",
@@ -123,9 +124,13 @@ def read_final_bam_manifest(
         layout = raw["layout"]
         if layout not in {"single", "paired"}:
             raise AcquisitionError(f"layout on line {line} is invalid: {layout!r}")
-        if raw["qc_status"] != "accepted":
+        if raw["qc_status"] not in FINAL_BAM_QC_STATUSES:
             raise AcquisitionError(
-                f"qc_status for {library_id!r} must be 'accepted', got {raw['qc_status']!r}"
+                f"qc_status for {library_id!r} is invalid: {raw['qc_status']!r}"
+            )
+        if raw["qc_status"] == "rejected":
+            raise AcquisitionError(
+                f"Final BAM {library_id!r} has qc_status='rejected'"
             )
         if raw["filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
             raise AcquisitionError(

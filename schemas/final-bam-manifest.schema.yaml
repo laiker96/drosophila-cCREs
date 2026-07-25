@@ -48,7 +48,7 @@ fields:
     type: sha256
   qc_status:
     type: enum
-    values: [accepted]
+    values: [pending_review, accepted, rejected]
   source_project:
     type: string
     allow_blank: true
@@ -64,4 +64,6 @@ rules:
   - BAM and BAI paths must exist, be distinct, and not be reused by another row.
   - Full SHA-256 values are mandatory.
   - Workflow validation checks BAM integrity, explicit-index readability, coordinate sorting, and exact reference sequence names and lengths.
+  - pending_review and accepted BAMs may enter downstream peak calling and QC.
+  - Activity-reference selection must separately require accepted status.
   - A missing or rejected library is an error; the workflow never falls back to FASTQ acquisition.

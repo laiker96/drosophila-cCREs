@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 
 from short_read_processing.cli import add_download_arguments, cli_main, execute_download
-from short_read_processing.configuration import generate_configs
+from short_read_processing.configuration import (
+    generate_activity_config,
+    generate_configs,
+)
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA, sample_sheet_accessions
 
 
@@ -65,11 +68,11 @@ def main() -> int:
     parser.add_argument("--snakemake-dry-run", action="store_true")
     parser.add_argument(
         "--from-stage",
-        choices=("accessions", "final-bam", "master"),
+        choices=("accessions", "final-bam", "master", "activity"),
         default="accessions",
         help=(
-            "Explicit workflow starting artifact. final-bam and master are "
-            "strict reuse-only modes with no upstream fallback."
+            "Explicit workflow starting artifact. Reuse modes are strict and "
+            "have no upstream fallback."
         ),
     )
     parser.add_argument(
@@ -80,7 +83,30 @@ def main() -> int:
     parser.add_argument(
         "--master-manifest",
         type=Path,
-        help="Immutable master-DHS bundle manifest for --from-stage master",
+        help="Immutable master-DHS bundle manifest for master or activity mode",
+    )
+    parser.add_argument(
+        "--activity-atlas-bam-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="Accepted atlas final-BAM manifest; repeat for assay-specific manifests",
+    )
+    parser.add_argument(
+        "--activity-reference-sheet",
+        type=Path,
+        help="Accession metadata for the selected normalization-reference cohort",
+    )
+    parser.add_argument(
+        "--activity-reference-bam-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="Accepted reference final-BAM manifest; repeat as needed",
+    )
+    parser.add_argument(
+        "--activity-reference-context",
+        help="Reference context ID; inferred only when the reference sheet has one",
     )
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
@@ -101,9 +127,16 @@ def main() -> int:
     if args.download_only and args.config_only:
         parser.error("--download-only and --config-only are mutually exclusive")
     if args.from_stage == "accessions":
-        if args.final_bam_manifest or args.master_manifest:
+        if (
+            args.final_bam_manifest
+            or args.master_manifest
+            or args.activity_atlas_bam_manifest
+            or args.activity_reference_sheet
+            or args.activity_reference_bam_manifest
+            or args.activity_reference_context
+        ):
             parser.error(
-                "artifact manifests require the matching --from-stage final-bam or master"
+                "artifact manifests require the matching reuse --from-stage"
             )
     else:
         incompatible = (
@@ -122,12 +155,46 @@ def main() -> int:
                 parser.error("--from-stage final-bam requires --final-bam-manifest")
             if args.master_manifest:
                 parser.error("--master-manifest requires --from-stage master")
+            if (
+                args.activity_atlas_bam_manifest
+                or args.activity_reference_sheet
+                or args.activity_reference_bam_manifest
+                or args.activity_reference_context
+            ):
+                parser.error("activity options require --from-stage activity")
         if args.from_stage == "master":
             if not args.master_manifest:
                 parser.error("--from-stage master requires --master-manifest")
             if args.final_bam_manifest:
                 parser.error(
                     "--from-stage master consumes the frozen master bundle, not BAMs"
+                )
+            if (
+                args.activity_atlas_bam_manifest
+                or args.activity_reference_sheet
+                or args.activity_reference_bam_manifest
+                or args.activity_reference_context
+            ):
+                parser.error("activity options require --from-stage activity")
+        if args.from_stage == "activity":
+            if not args.master_manifest:
+                parser.error("--from-stage activity requires --master-manifest")
+            if not args.activity_atlas_bam_manifest:
+                parser.error(
+                    "--from-stage activity requires --activity-atlas-bam-manifest"
+                )
+            if not args.activity_reference_sheet:
+                parser.error(
+                    "--from-stage activity requires --activity-reference-sheet"
+                )
+            if not args.activity_reference_bam_manifest:
+                parser.error(
+                    "--from-stage activity requires --activity-reference-bam-manifest"
+                )
+            if args.final_bam_manifest:
+                parser.error(
+                    "activity mode uses --activity-atlas-bam-manifest and "
+                    "--activity-reference-bam-manifest"
                 )
 
     sample_sheet = args.sample_sheet.resolve()
@@ -149,38 +216,69 @@ def main() -> int:
         if args.download_only:
             return 0
     else:
-        artifact = (
-            args.final_bam_manifest
-            if args.from_stage == "final-bam"
-            else args.master_manifest
-        )
-        print(
-            f"Strict reuse-only mode: starting from {args.from_stage}; "
-            f"manifest={artifact.resolve()}"
-        )
+        if args.from_stage == "final-bam":
+            manifests = [args.final_bam_manifest]
+        elif args.from_stage == "master":
+            manifests = [args.master_manifest]
+        else:
+            manifests = [
+                args.master_manifest,
+                *args.activity_atlas_bam_manifest,
+                *args.activity_reference_bam_manifest,
+            ]
+        print(f"Strict reuse-only mode: starting from {args.from_stage}")
+        for artifact in manifests:
+            print(f"  manifest={artifact.resolve()}")
         print("FASTQ download, trimming, and alignment fallback are disabled")
 
-    configs = generate_configs(
-        manifest_path=manifest,
-        sample_sheet_path=sample_sheet,
-        output_dir=args.config_dir.resolve(),
-        project=args.project,
-        run_id=args.run_id,
-        reference_root=args.reference_root,
-        path_base=REPO_ROOT,
-        require_fastq_files=True,
-        schema_path=args.schema.resolve(),
-        genome=args.genome,
-        atac_minimum_replicates=args.atac_minimum_replicates,
-        atac_overlap_fraction=args.atac_overlap_fraction,
-        input_stage=args.from_stage,
-        final_bam_manifest_path=(
-            args.final_bam_manifest.resolve() if args.final_bam_manifest else None
-        ),
-        master_manifest_path=(
-            args.master_manifest.resolve() if args.master_manifest else None
-        ),
-    )
+    if args.from_stage == "activity":
+        configs = [
+            generate_activity_config(
+                atlas_sample_sheet_path=sample_sheet,
+                reference_sample_sheet_path=args.activity_reference_sheet.resolve(),
+                atlas_final_bam_manifests=[
+                    path.resolve() for path in args.activity_atlas_bam_manifest
+                ],
+                reference_final_bam_manifests=[
+                    path.resolve()
+                    for path in args.activity_reference_bam_manifest
+                ],
+                master_manifest_path=args.master_manifest.resolve(),
+                output_dir=args.config_dir.resolve(),
+                project=args.project,
+                run_id=args.run_id,
+                reference_root=args.reference_root,
+                path_base=REPO_ROOT,
+                require_files=True,
+                schema_path=args.schema.resolve(),
+                genome=args.genome,
+                reference_context=args.activity_reference_context,
+            )
+        ]
+    else:
+        configs = generate_configs(
+            manifest_path=manifest,
+            sample_sheet_path=sample_sheet,
+            output_dir=args.config_dir.resolve(),
+            project=args.project,
+            run_id=args.run_id,
+            reference_root=args.reference_root,
+            path_base=REPO_ROOT,
+            require_fastq_files=True,
+            schema_path=args.schema.resolve(),
+            genome=args.genome,
+            atac_minimum_replicates=args.atac_minimum_replicates,
+            atac_overlap_fraction=args.atac_overlap_fraction,
+            input_stage=args.from_stage,
+            final_bam_manifest_path=(
+                args.final_bam_manifest.resolve()
+                if args.final_bam_manifest
+                else None
+            ),
+            master_manifest_path=(
+                args.master_manifest.resolve() if args.master_manifest else None
+            ),
+        )
     for config_path in configs:
         print(f"Resolved workflow config: {config_path}")
     if args.config_only:

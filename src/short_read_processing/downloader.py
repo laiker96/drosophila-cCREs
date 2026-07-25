@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ class DownloadOptions:
     sra_jobs: int
     threads: int
     keep_sra_cache: bool = False
+    checksum_retries: int = 3
 
 
 def _require_executable(name: str) -> str:
@@ -88,6 +90,68 @@ def _discard_untracked_partial_files(files: Iterable[FilePlan]) -> list[Path]:
     return discarded
 
 
+def _pending_ena_files(files: Iterable[FilePlan]) -> list[FilePlan]:
+    """Return files that aria2 still marks incomplete after a failed pass."""
+
+    pending = []
+    seen = set()
+    for item in files:
+        if item.path in seen:
+            continue
+        seen.add(item.path)
+        control = item.path.with_name(item.path.name + ".aria2")
+        if (
+            control.exists()
+            or not item.path.is_file()
+            or item.path.stat().st_size == 0
+            or (
+                item.size_bytes is not None
+                and item.path.stat().st_size != item.size_bytes
+            )
+        ):
+            pending.append(item)
+            continue
+        if item.md5:
+            digest = hashlib.md5()
+            with item.path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest().lower() != item.md5.lower():
+                item.path.unlink()
+                pending.append(item)
+                print(
+                    f"Restarting checksum-mismatched FASTQ {item.path}",
+                    flush=True,
+                )
+    return pending
+
+
+def _run_aria2_with_checksum_retries(
+    command: list[str],
+    *,
+    input_path: Path,
+    files: list[FilePlan],
+    checksum_retries: int,
+) -> None:
+    for attempt in range(checksum_retries + 1):
+        completed = subprocess.run(command)
+        if completed.returncode == 0:
+            return
+        if completed.returncode != 32 or attempt == checksum_retries:
+            raise AcquisitionError(
+                f"aria2c FASTQ download failed with exit code "
+                f"{completed.returncode} after {attempt + 1} attempt(s)"
+            )
+        pending = _pending_ena_files(files)
+        retry_files = pending or files
+        input_path.write_text(_aria2_input(retry_files), encoding="utf-8")
+        print(
+            f"aria2 checksum failure; retrying {len(retry_files)} file(s) "
+            f"({attempt + 1}/{checksum_retries})",
+            flush=True,
+        )
+
+
 def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
     if not plans:
         return
@@ -133,7 +197,12 @@ def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
             "--summary-interval=10",
             "--console-log-level=notice",
         ]
-        _run(command, label="aria2c FASTQ download")
+        _run_aria2_with_checksum_retries(
+            command,
+            input_path=input_path,
+            files=files,
+            checksum_retries=max(0, options.checksum_retries),
+        )
     finally:
         if input_path:
             input_path.unlink(missing_ok=True)

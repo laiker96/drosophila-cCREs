@@ -1,9 +1,14 @@
 from pathlib import Path
+import hashlib
+import subprocess
 
-from short_read_processing.accessions import FilePlan, RunPlan
+import pytest
+
+from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
 from short_read_processing.downloader import (
     _discard_untracked_partial_files,
     _download_one_sra,
+    _run_aria2_with_checksum_retries,
 )
 
 
@@ -30,6 +35,97 @@ def test_keeps_aria2_managed_partial_file(tmp_path):
 
     assert discarded == []
     assert partial.exists()
+
+
+def test_checksum_failure_retries_only_incomplete_files(tmp_path, monkeypatch):
+    complete = _file_plan(tmp_path / "complete.fastq.gz", 8)
+    failed = _file_plan(tmp_path / "failed.fastq.gz", 7)
+    complete.path.write_bytes(b"complete")
+    failed.path.write_bytes(b"corrupt")
+    control = failed.path.with_name(failed.path.name + ".aria2")
+    control.touch()
+    input_path = tmp_path / "aria2-input.txt"
+    input_path.write_text("initial\n")
+    attempts = []
+
+    def fake_run(command):
+        attempts.append(command)
+        if len(attempts) == 1:
+            return subprocess.CompletedProcess(command, 32)
+        failed.path.write_bytes(b"correct")
+        control.unlink()
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
+
+    _run_aria2_with_checksum_retries(
+        ["aria2c", f"--input-file={input_path}"],
+        input_path=input_path,
+        files=[complete, failed],
+        checksum_retries=3,
+    )
+
+    assert len(attempts) == 2
+    assert failed.path.name in input_path.read_text()
+    assert complete.path.name not in input_path.read_text()
+
+
+def test_checksum_failure_stops_after_configured_retries(tmp_path, monkeypatch):
+    failed = _file_plan(tmp_path / "failed.fastq.gz", 7)
+    failed.path.write_bytes(b"corrupt")
+    failed.path.with_name(failed.path.name + ".aria2").touch()
+    input_path = tmp_path / "aria2-input.txt"
+    input_path.write_text("initial\n")
+    attempts = []
+
+    def fake_run(command):
+        attempts.append(command)
+        return subprocess.CompletedProcess(command, 32)
+
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
+
+    with pytest.raises(AcquisitionError, match="after 3 attempt"):
+        _run_aria2_with_checksum_retries(
+            ["aria2c", f"--input-file={input_path}"],
+            input_path=input_path,
+            files=[failed],
+            checksum_retries=2,
+        )
+
+    assert len(attempts) == 3
+
+
+def test_checksum_retry_restarts_complete_size_corrupt_file(tmp_path, monkeypatch):
+    failed = FilePlan(
+        url="https://example.org/failed.fastq.gz",
+        md5=hashlib.md5(b"correct").hexdigest(),
+        size_bytes=7,
+        path=tmp_path / "failed.fastq.gz",
+    )
+    failed.path.write_bytes(b"corrupt")
+    input_path = tmp_path / "aria2-input.txt"
+    input_path.write_text("initial\n")
+    attempts = []
+
+    def fake_run(command):
+        attempts.append(command)
+        if len(attempts) == 1:
+            return subprocess.CompletedProcess(command, 32)
+        assert not failed.path.exists()
+        failed.path.write_bytes(b"correct")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
+
+    _run_aria2_with_checksum_retries(
+        ["aria2c", f"--input-file={input_path}"],
+        input_path=input_path,
+        files=[failed],
+        checksum_retries=1,
+    )
+
+    assert len(attempts) == 2
+    assert failed.path.read_bytes() == b"correct"
 
 
 def test_sra_download_stages_fastqs_before_completion(tmp_path, monkeypatch):

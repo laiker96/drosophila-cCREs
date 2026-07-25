@@ -14,6 +14,7 @@ import yaml
 
 from .accessions import AcquisitionError
 from .artifacts import (
+    MASTER_FILE_FIELDS,
     read_final_bam_manifest,
     read_master_manifest,
     sha256_file,
@@ -601,3 +602,285 @@ def generate_configs(
         _write_config_if_changed(output_path, config)
         output_paths.append(output_path.resolve())
     return output_paths
+
+
+def _merge_final_bam_manifests(
+    paths: list[Path],
+    *,
+    require_files: bool,
+) -> dict[str, dict[str, str]]:
+    if not paths:
+        raise AcquisitionError("At least one final-BAM manifest is required")
+    merged: dict[str, dict[str, str]] = {}
+    for path in paths:
+        rows = read_final_bam_manifest(path, require_files=require_files)
+        duplicate = sorted(set(merged) & set(rows))
+        if duplicate:
+            raise AcquisitionError(
+                "Final-BAM library occurs in more than one manifest: "
+                + ", ".join(duplicate)
+            )
+        merged.update(rows)
+    return merged
+
+
+def _activity_libraries(
+    *,
+    sheet_rows: list[dict[str, Any]],
+    manifests: dict[str, dict[str, str]],
+    genome: str,
+    cohort: str,
+    selected_context: str | None,
+    path_base: Path,
+) -> tuple[list[dict[str, str]], list[str]]:
+    sheet_by_library: dict[str, dict[str, Any]] = {}
+    for row in sheet_rows:
+        sheet_by_library.setdefault(str(row["library_id"]), row)
+    unknown = sorted(set(manifests) - set(sheet_by_library))
+    if unknown:
+        raise AcquisitionError(
+            f"{cohort} BAM manifest contains libraries absent from its sample sheet: "
+            + ", ".join(unknown)
+        )
+
+    selected = {
+        library_id: row
+        for library_id, row in sheet_by_library.items()
+        if row["role"] == "treatment"
+        and row["assay"] in {"atac", "chip_histone"}
+        and (selected_context is None or str(row["context"]) == selected_context)
+    }
+    missing = sorted(set(selected) - set(manifests))
+    if missing:
+        raise AcquisitionError(
+            f"{cohort} final-BAM manifests are missing treatment libraries: "
+            + ", ".join(missing)
+        )
+    libraries = []
+    for library_id, row in sorted(selected.items()):
+        artifact = manifests[library_id]
+        for field in ("context", "role"):
+            if str(artifact[field]) != str(row[field]):
+                raise AcquisitionError(
+                    f"{cohort} BAM {library_id!r} {field} differs from its sample sheet"
+                )
+        if artifact["assay"] != row["assay"]:
+            raise AcquisitionError(
+                f"{cohort} BAM {library_id!r} assay differs from its sample sheet"
+            )
+        if artifact["genome"] != genome:
+            raise AcquisitionError(
+                f"{cohort} BAM {library_id!r} uses {artifact['genome']!r}, "
+                f"expected {genome!r}"
+            )
+        if artifact["qc_status"] != "accepted":
+            raise AcquisitionError(
+                f"{cohort} activity BAM {library_id!r} requires qc_status='accepted'"
+            )
+        if artifact["layout"] != "paired":
+            raise AcquisitionError(
+                f"{cohort} activity BAM {library_id!r} must be paired-end"
+            )
+        libraries.append(
+            {
+                "id": library_id,
+                "assay": (
+                    "h3k27ac" if artifact["assay"] == "chip_histone" else "atac"
+                ),
+                "context": str(row["context"]),
+                "cohort": cohort,
+                "layout": artifact["layout"],
+                "genome": artifact["genome"],
+                "bam": _display_path(artifact["bam"], path_base),
+                "bai": _display_path(artifact["bai"], path_base),
+                "bam_sha256": artifact["bam_sha256"],
+                "bai_sha256": artifact["bai_sha256"],
+                "filtering_contract": artifact["filtering_contract"],
+                "qc_status": artifact["qc_status"],
+                "source_project": artifact.get("source_project", ""),
+                "source_run_id": artifact.get("source_run_id", ""),
+            }
+        )
+    contexts = sorted({library["context"] for library in libraries})
+    return libraries, contexts
+
+
+def generate_activity_config(
+    *,
+    atlas_sample_sheet_path: Path,
+    reference_sample_sheet_path: Path,
+    atlas_final_bam_manifests: list[Path],
+    reference_final_bam_manifests: list[Path],
+    master_manifest_path: Path,
+    output_dir: Path,
+    project: str,
+    run_id: str,
+    reference_root: Path,
+    path_base: Path,
+    require_files: bool,
+    schema_path: Path = DEFAULT_SCHEMA,
+    genome: str = "dm6",
+    reference_context: str | None = None,
+) -> Path:
+    """Generate one resolved master-DHS activity configuration."""
+
+    project = _safe_id(project, "project ID")
+    run_id = _safe_id(run_id, "run ID")
+    if genome not in GENOME_DEFAULTS:
+        raise AcquisitionError(f"Unsupported genome: {genome!r}")
+    atlas_rows = read_sample_sheet(
+        atlas_sample_sheet_path,
+        schema_path=schema_path,
+    )
+    reference_rows = read_sample_sheet(
+        reference_sample_sheet_path,
+        schema_path=schema_path,
+    )
+    reference_contexts = sorted(
+        {
+            str(row["context"])
+            for row in reference_rows
+            if row["role"] == "treatment"
+            and row["assay"] in {"atac", "chip_histone"}
+        }
+    )
+    if reference_context is None:
+        if len(reference_contexts) != 1:
+            raise AcquisitionError(
+                "Reference sheet contains multiple contexts; select one explicitly"
+            )
+        reference_context = reference_contexts[0]
+    reference_context = _safe_id(reference_context, "reference context")
+    if reference_context not in reference_contexts:
+        raise AcquisitionError(
+            f"Reference context {reference_context!r} is absent from the reference sheet"
+        )
+
+    atlas_manifests = _merge_final_bam_manifests(
+        atlas_final_bam_manifests,
+        require_files=require_files,
+    )
+    reference_manifests = _merge_final_bam_manifests(
+        reference_final_bam_manifests,
+        require_files=require_files,
+    )
+    atlas_libraries, atlas_contexts = _activity_libraries(
+        sheet_rows=atlas_rows,
+        manifests=atlas_manifests,
+        genome=genome,
+        cohort="atlas",
+        selected_context=None,
+        path_base=path_base,
+    )
+    reference_libraries, _reference_contexts = _activity_libraries(
+        sheet_rows=reference_rows,
+        manifests=reference_manifests,
+        genome=genome,
+        cohort="reference",
+        selected_context=reference_context,
+        path_base=path_base,
+    )
+    artifact_paths = [
+        library[field]
+        for library in atlas_libraries + reference_libraries
+        for field in ("bam", "bai")
+    ]
+    if len(artifact_paths) != len(set(artifact_paths)):
+        raise AcquisitionError(
+            "Activity libraries must use distinct BAM and BAI artifact paths"
+        )
+    for context in atlas_contexts:
+        assays = {
+            library["assay"]
+            for library in atlas_libraries
+            if library["context"] == context
+        }
+        if assays != {"atac", "h3k27ac"}:
+            raise AcquisitionError(
+                f"Atlas context {context!r} does not have both ATAC and H3K27ac"
+            )
+    for assay in ("atac", "h3k27ac"):
+        reference_count = sum(
+            library["assay"] == assay for library in reference_libraries
+        )
+        if reference_count < 2:
+            raise AcquisitionError(
+                f"Reference context {reference_context!r} requires at least two "
+                f"accepted {assay} libraries"
+            )
+
+    master = read_master_manifest(
+        master_manifest_path,
+        require_files=require_files,
+    )
+    if master["genome"] != genome:
+        raise AcquisitionError(
+            f"Master manifest genome {master['genome']!r} does not match {genome!r}"
+        )
+    activity_master = {
+        key: (
+            _display_path(value, path_base)
+            if key in MASTER_FILE_FIELDS
+            else value
+        )
+        for key, value in master.items()
+    }
+    provenance: dict[str, Any] = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "input_mode": "activity_artifact_manifests",
+        "atlas_sample_sheet": _display_path(
+            atlas_sample_sheet_path,
+            path_base,
+        ),
+        "atlas_sample_sheet_sha256": sha256_file(atlas_sample_sheet_path),
+        "reference_sample_sheet": _display_path(
+            reference_sample_sheet_path,
+            path_base,
+        ),
+        "reference_sample_sheet_sha256": sha256_file(
+            reference_sample_sheet_path
+        ),
+        "sample_sheet_schema": _display_path(schema_path, path_base),
+        "sample_sheet_schema_sha256": sha256_file(schema_path),
+        "master_manifest": _display_path(master_manifest_path, path_base),
+        "master_manifest_sha256": sha256_file(master_manifest_path),
+        "atlas_final_bam_manifests": [
+            _display_path(path, path_base)
+            for path in atlas_final_bam_manifests
+        ],
+        "atlas_final_bam_manifest_sha256": [
+            sha256_file(path) for path in atlas_final_bam_manifests
+        ],
+        "reference_final_bam_manifests": [
+            _display_path(path, path_base)
+            for path in reference_final_bam_manifests
+        ],
+        "reference_final_bam_manifest_sha256": [
+            sha256_file(path) for path in reference_final_bam_manifests
+        ],
+    }
+    config: dict[str, Any] = {
+        "project": project,
+        "run_id": run_id,
+        "output_dir": "results",
+        "assay": "activity",
+        "input_stage": "activity",
+        "reference": _reference_config(genome, reference_root, path_base),
+        "samples": [],
+        "activity": {
+            "schema_version": 1,
+            "master": activity_master,
+            "atlas_contexts": atlas_contexts,
+            "reference_context": reference_context,
+            "libraries": atlas_libraries + reference_libraries,
+            "atac_fragment_maximum": 150,
+            "normalization": "cpm_per_kb_then_tie_aware_reference_qnorm_v1",
+            "activity_formula": "sqrt_atac_times_h3k27ac_v1",
+        },
+        "provenance": provenance,
+    }
+    config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{project}.activity.yaml"
+    _write_config_if_changed(output_path, config)
+    return output_path.resolve()

@@ -59,6 +59,12 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
         help="Segmented aria2c connections per FASTQ (maximum 16)",
     )
     parser.add_argument(
+        "--checksum-retries",
+        type=positive_int,
+        default=3,
+        help="Automatic retries after an aria2 checksum failure (default: 3)",
+    )
+    parser.add_argument(
         "--sra-jobs",
         type=positive_int,
         default=min(4, cpu_count),
@@ -133,6 +139,7 @@ def execute_download(accessions: Sequence[str], args: argparse.Namespace) -> Pat
     options = DownloadOptions(
         file_jobs=args.file_jobs,
         connections=args.connections,
+        checksum_retries=args.checksum_retries,
         sra_jobs=args.sra_jobs,
         threads=args.threads,
         keep_sra_cache=args.keep_sra_cache,

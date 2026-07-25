@@ -108,3 +108,38 @@ def test_master_manifest_requires_one_complete_row(tmp_path):
 
 def test_semantic_sha256_is_order_independent():
     assert semantic_sha256({"a": 1, "b": 2}) == semantic_sha256({"b": 2, "a": 1})
+
+
+def test_final_bam_manifest_allows_pending_review_for_downstream_qc(tmp_path):
+    bam = tmp_path / "rep1.bam"
+    bai = tmp_path / "rep1.bam.bai"
+    bam.write_bytes(b"bam")
+    bai.write_bytes(b"bai")
+    manifest = tmp_path / "final-bams.tsv"
+    manifest.write_text(
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\n"
+        f"rep1\tatac\teye\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
+        f"{FINAL_BAM_FILTERING_CONTRACT}\t{_digest('a')}\t{_digest('b')}\t"
+        "pending_review\n"
+    )
+
+    assert read_final_bam_manifest(manifest)["rep1"]["qc_status"] == "pending_review"
+
+
+def test_final_bam_manifest_rejects_rejected_qc(tmp_path):
+    bam = tmp_path / "rep1.bam"
+    bai = tmp_path / "rep1.bam.bai"
+    bam.write_bytes(b"bam")
+    bai.write_bytes(b"bai")
+    manifest = tmp_path / "final-bams.tsv"
+    manifest.write_text(
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\n"
+        f"rep1\tatac\teye\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
+        f"{FINAL_BAM_FILTERING_CONTRACT}\t{_digest('a')}\t{_digest('b')}\t"
+        "rejected\n"
+    )
+
+    with pytest.raises(AcquisitionError, match="rejected"):
+        read_final_bam_manifest(manifest)

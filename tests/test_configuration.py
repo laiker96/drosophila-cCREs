@@ -5,7 +5,7 @@ import yaml
 
 from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
 from short_read_processing.artifacts import FINAL_BAM_FILTERING_CONTRACT, sha256_file
-from short_read_processing.configuration import generate_configs
+from short_read_processing.configuration import generate_activity_config, generate_configs
 from short_read_processing.manifest import write_manifest
 
 
@@ -270,6 +270,57 @@ def _write_final_bam_manifest(tmp_path: Path, libraries: list[tuple[str, str]]) 
     return manifest
 
 
+def _write_activity_bam_manifest(
+    tmp_path: Path,
+    name: str,
+    libraries: list[tuple[str, str, str]],
+    *,
+    qc_status: str = "accepted",
+) -> Path:
+    manifest = tmp_path / f"{name}.final-bams.tsv"
+    rows = [
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status"
+    ]
+    for library_id, assay, context in libraries:
+        bam = tmp_path / "external" / f"{library_id}.bam"
+        bai = tmp_path / "external" / f"{library_id}.bam.bai"
+        bam.parent.mkdir(exist_ok=True)
+        bam.write_bytes(f"bam-{library_id}".encode())
+        bai.write_bytes(f"bai-{library_id}".encode())
+        rows.append(
+            f"{library_id}\t{assay}\t{context}\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
+            f"{FINAL_BAM_FILTERING_CONTRACT}\t{sha256_file(bam)}\t"
+            f"{sha256_file(bai)}\t{qc_status}"
+        )
+    manifest.write_text("\n".join(rows) + "\n")
+    return manifest
+
+
+def _write_master_manifest(tmp_path: Path) -> Path:
+    fields = (
+        "master_bed",
+        "summits_bed",
+        "membership_tsv",
+        "context_matrix_tsv",
+        "stats_json",
+    )
+    artifacts = {}
+    for field in fields:
+        path = tmp_path / "master" / field
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f"{field}\n")
+        artifacts[field] = path
+    manifest = tmp_path / "master.tsv"
+    columns = ["genome", "method", "source_project", "source_run_id"]
+    columns.extend(item for field in fields for item in (field, f"{field}_sha256"))
+    values = ["dm6", "reciprocal_summit_complete_linkage_v2", "atlas", "master-v1"]
+    for field in fields:
+        values.extend((str(artifacts[field]), sha256_file(artifacts[field])))
+    manifest.write_text("\t".join(columns) + "\n" + "\t".join(values) + "\n")
+    return manifest
+
+
 def test_final_bam_mode_generates_reuse_only_samples(tmp_path):
     sheet = tmp_path / "samples.tsv"
     sheet.write_text(
@@ -357,3 +408,125 @@ def test_identical_final_bam_config_keeps_content_and_mtime(tmp_path):
 
     assert regenerated.read_bytes() == original
     assert regenerated.stat().st_mtime_ns == timestamp
+
+
+def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
+    atlas_sheet = tmp_path / "atlas.tsv"
+    atlas_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatlas_atac\tatac\teye\n"
+        "SRR100002\tatlas_h3\th3k27ac\teye\n"
+    )
+    reference_sheet = tmp_path / "reference.tsv"
+    reference_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
+        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
+        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
+        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
+    )
+    atlas_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "atlas",
+        [
+            ("atlas_atac", "atac", "eye"),
+            ("atlas_h3", "chip_histone", "eye"),
+        ],
+    )
+    reference_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "reference",
+        [
+            ("ref_atac_1", "atac", "s2_t0"),
+            ("ref_atac_2", "atac", "s2_t0"),
+            ("ref_h3_1", "chip_histone", "s2_t0"),
+            ("ref_h3_2", "chip_histone", "s2_t0"),
+        ],
+    )
+    master_manifest = _write_master_manifest(tmp_path)
+
+    output = generate_activity_config(
+        atlas_sample_sheet_path=atlas_sheet,
+        reference_sample_sheet_path=reference_sheet,
+        atlas_final_bam_manifests=[atlas_manifest],
+        reference_final_bam_manifests=[reference_manifest],
+        master_manifest_path=master_manifest,
+        output_dir=tmp_path / "configs",
+        project="activity-test",
+        run_id="activity-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_files=True,
+    )
+    config = yaml.safe_load(output.read_text())
+
+    assert config["assay"] == "activity"
+    assert config["input_stage"] == "activity"
+    assert config["samples"] == []
+    assert config["activity"]["atlas_contexts"] == ["eye"]
+    assert config["activity"]["reference_context"] == "s2_t0"
+    assert {
+        (library["cohort"], library["assay"])
+        for library in config["activity"]["libraries"]
+    } == {
+        ("atlas", "atac"),
+        ("atlas", "h3k27ac"),
+        ("reference", "atac"),
+        ("reference", "h3k27ac"),
+    }
+    assert all(
+        library["qc_status"] == "accepted"
+        for library in config["activity"]["libraries"]
+    )
+    assert len(config["provenance"]["semantic_sha256"]) == 64
+
+
+def test_activity_config_rejects_pending_review_reference(tmp_path):
+    atlas_sheet = tmp_path / "atlas.tsv"
+    atlas_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatlas_atac\tatac\teye\n"
+        "SRR100002\tatlas_h3\th3k27ac\teye\n"
+    )
+    reference_sheet = tmp_path / "reference.tsv"
+    reference_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
+        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
+        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
+        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
+    )
+    atlas_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "atlas",
+        [
+            ("atlas_atac", "atac", "eye"),
+            ("atlas_h3", "chip_histone", "eye"),
+        ],
+    )
+    reference_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "reference",
+        [
+            ("ref_atac_1", "atac", "s2_t0"),
+            ("ref_atac_2", "atac", "s2_t0"),
+            ("ref_h3_1", "chip_histone", "s2_t0"),
+            ("ref_h3_2", "chip_histone", "s2_t0"),
+        ],
+        qc_status="pending_review",
+    )
+
+    with pytest.raises(AcquisitionError, match="requires qc_status='accepted'"):
+        generate_activity_config(
+            atlas_sample_sheet_path=atlas_sheet,
+            reference_sample_sheet_path=reference_sheet,
+            atlas_final_bam_manifests=[atlas_manifest],
+            reference_final_bam_manifests=[reference_manifest],
+            master_manifest_path=_write_master_manifest(tmp_path),
+            output_dir=tmp_path / "configs",
+            project="activity-test",
+            run_id="activity-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_files=True,
+        )

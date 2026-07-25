@@ -146,7 +146,8 @@ The workflow starting stage is explicit:
 |---|---|---|
 | `accessions` | accession sample sheet | FASTQ acquisition |
 | `final-bam` | complete final-BAM manifest | ATAC/ChIP downstream processing |
-| `master` | complete master-DHS bundle manifest | bundle validation only at the current endpoint |
+| `master` | complete master-DHS bundle manifest | bundle validation and registration |
+| `activity` | master plus accepted atlas/reference BAM manifests | assay-unit counting and activity normalization |
 
 `accessions` is the default and preserves the original behavior. Reuse modes
 are strict: a missing, mismatched, rejected, or corrupt artifact is an error.
@@ -162,7 +163,20 @@ library in each represented assay must occur exactly once. A manifest may
 select only ATAC from a mixed accession sheet, but it may not contain only some
 ATAC libraries.
 
-Create a manifest from exact `<library_id>.final.bam` filenames:
+Every successful sample-processing run automatically exports:
+
+```text
+results/<project>/<run-id>/provenance/manifests/final-bams.tsv
+```
+
+Pipeline-produced BAMs are recorded as `qc_status=pending_review`; completing
+the workflow is not itself scientific QC acceptance. Both `pending_review` and
+`accepted` BAMs can be reused for downstream peak calling and QC, while
+`rejected` BAMs fail immediately. Activity quantification requires explicit
+`accepted` status for both atlas and normalization-reference libraries.
+
+For BAMs imported from outside this workflow, create the initial manifest from
+exact `<library_id>.final.bam` filenames:
 
 ```bash
 micromamba run --prefix "$PWD/.venv" \
@@ -209,6 +223,15 @@ indexes remain immutable and are never copied, indexed, touched, or rewritten.
 The complete bundle, rather than only `master_dhs.bed`, is frozen with
 [`schemas/master-manifest.schema.yaml`](schemas/master-manifest.schema.yaml):
 
+An ATAC run that builds or validates a master registry automatically exports:
+
+```text
+results/<project>/<run-id>/provenance/manifests/master-dhs.tsv
+```
+
+Use `src/create_master_manifest.py` only to import a complete master bundle
+that was created outside the current workflow namespace:
+
 ```bash
 micromamba run --prefix "$PWD/.venv" \
   python src/create_master_manifest.py \
@@ -231,10 +254,71 @@ micromamba run --prefix "$PWD/.venv" \
   --cores 2
 ```
 
-Because the master registry is currently the final processing endpoint, master
-mode performs bundle validation and provenance registration only. The planned
-activity-table branch will consume the same validated external paths directly.
+Master mode performs bundle validation and provenance registration only.
 `build_atac_master_dhs` is deliberately absent from this DAG.
+
+### Build the ABC activity input
+
+The activity stage consumes the frozen master set, accepted paired-end atlas
+BAMs, and accepted paired-end normalization-reference BAMs. All artifacts are
+explicit and checksummed; this stage has no download, trimming, alignment,
+peak-calling, or master-reconstruction fallback.
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage activity \
+  --master-manifest \
+    results/drosophila-atlas/qpois-master-v1/provenance/manifests/master-dhs.tsv \
+  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-atac.accepted.tsv \
+  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-h3k27ac.accepted.tsv \
+  --activity-reference-sheet \
+    data/raw/drosophila-s2-t0-reference/s2_t0_gse95689.tsv \
+  --activity-reference-bam-manifest \
+    data/raw/drosophila-s2-t0-reference/s2-t0-atac.accepted.tsv \
+  --activity-reference-bam-manifest \
+    data/raw/drosophila-s2-t0-reference/s2-t0-h3k27ac.accepted.tsv \
+  --activity-reference-context s2_t0 \
+  --project drosophila-atlas --run-id activity-s2-t0-v1 --genome dm6 \
+  --config-dir data/raw/drosophila-atlas/configs/activity-s2-t0-v1 \
+  --cores 24
+```
+
+Repeat either BAM-manifest option when ATAC and H3K27ac are stored in separate
+manifests. The atlas accession sheet remains the positional input and supplies
+library-to-context metadata; ChIP controls are ignored for activity
+quantification.
+
+For each accepted ATAC BAM, the workflow retains proper pairs with
+`0 < abs(TLEN) < 150`, applies the standard two-ended Tn5 shift, and counts both
+one-base insertion records. For each accepted H3K27ac BAM, it counts one
+positive-TLEN fragment per proper pair. Raw counts are converted to
+`CPM_per_kb = count * 10^9 / (total assay units * element width_bp)`, preserving
+the variable-width master elements. Biological libraries are averaged with
+equal weight within context and assay. ATAC and H3K27ac distributions are then
+tie-aware quantile-normalized separately to the corresponding mean reference
+profile. The combined value is `sqrt(atac_qnorm * h3k27ac_qnorm)`.
+
+The canonical endpoint is:
+
+```text
+results/<project>/<run-id>/activity/master_dhs_activity.tsv.gz
+```
+
+It contains one row per master DHS and atlas context, including coordinates,
+the original element width, contributing libraries, raw count sums and means,
+library-depth/length-normalized values, replicate standard deviations,
+assay-specific quantile-normalized values, and the combined activity value.
+Supporting outputs are:
+
+```text
+activity/library_signal.tsv.gz             per-library raw and CPM_per_kb values
+activity/context_signal.pre_qnorm.tsv.gz   context/assay aggregates before qnorm
+activity/qnorm_reference.tsv.gz            frozen assay-specific reference profiles
+activity/contexts/<context>.activity.tsv.gz
+activity/activity_metrics.json
+activity/activity_provenance.json
+```
 
 Every resolved configuration records sample-sheet, schema, and artifact
 manifest hashes plus a timestamp-independent semantic SHA-256. Changing an
@@ -404,11 +488,15 @@ logs/
 Re-run the identical command to resume:
 
 - aria2 resumes partial ENA downloads and validates reported checksums;
+- aria2 retries only checksum-failed/incomplete FASTQs three times by default;
+  use `--checksum-retries` to change the bounded retry count;
 - SRA conversion promotes FASTQs only after successful completion;
 - reference preparation and every processing stage are Snakemake outputs;
 - temporary scientific outputs are written in staging paths before promotion;
 - completed alignments are reused when peak parameters change;
 - validated external BAMs and master bundles are immutable workflow inputs;
+- successful stages automatically export reusable final-BAM and master-bundle
+  manifests under `provenance/manifests/`;
 - identical manifests/configurations retain stable semantic hashes and do not
   replace unchanged resolved YAML;
 - a changed scientific parameter set should use a new `run-id`.

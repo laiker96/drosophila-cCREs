@@ -358,8 +358,10 @@ namespace.
 ### 3.3 No-realignment contract
 
 The implemented `--from-stage final-bam --final-bam-manifest PATH` mode is the
-no-realignment entry point. The future activity endpoint must reuse this mode
-rather than introduce another way to discover BAMs.
+no-realignment entry point for downstream peak calling and master construction.
+The activity endpoint is the stricter
+`--from-stage activity` mode: it consumes accepted atlas/reference final-BAM
+manifests plus a frozen master manifest and uses the same artifact validators.
 
 When a final-BAM manifest is supplied:
 
@@ -377,6 +379,9 @@ External reuse is deliberately strict and assay-complete: one run never mixes
 manifest BAMs with newly aligned libraries from the same represented assay.
 The CLI prints the selected reuse stage and manifest, and per-library
 validation receipts identify every BAM actually consumed.
+Completed sample-processing runs automatically export
+`provenance/manifests/final-bams.tsv`. Pipeline-produced BAMs begin at
+`qc_status=pending_review`; QC acceptance is an explicit later decision.
 
 ### 3.4 Frozen master-DHS bundle
 
@@ -385,8 +390,11 @@ five-file master bundle: BED6 elements, one-base summits, membership table,
 context matrix, and statistics JSON. All files carry full SHA-256 values and
 must agree structurally. This mode never schedules BAM processing or
 `build_atac_master_dhs`; at the current processing endpoint it performs
-validation and provenance registration only. The future activity branch will
-consume these validated paths directly.
+validation and provenance registration only. The activity branch consumes
+these validated paths directly.
+Every successful build or validation also exports
+`provenance/manifests/master-dhs.tsv`, so the next run can start from the
+complete bundle without a manual manifest-construction step.
 
 ## 4. Configuration and orchestration
 
@@ -395,27 +403,25 @@ consume these validated paths directly.
 Keep `src/run_pipeline.py` as the canonical accession-to-results entry point
 and `workflow/Snakefile` as the only production Snakefile.
 
-Add activity options rather than a second production workflow. Artifact-stage
-selection is already implemented:
+Activity is implemented in the canonical CLI rather than a second production
+workflow:
 
 ```text
---from-stage {accessions,final-bam,master}
+--from-stage {accessions,final-bam,master,activity}
 --final-bam-manifest PATH
 --master-manifest PATH
---activity
+--activity-atlas-bam-manifest PATH
 --activity-reference-sheet PATH
---activity-run-id ID
+--activity-reference-bam-manifest PATH
+--activity-reference-context ID
 ```
 
-Exact CLI names may be adjusted during implementation, but the behavior must
-remain explicit:
-
-- `--activity` runs processing followed by activity integration;
-- `--activity --from-stage final-bam` consumes a complete final-BAM manifest
-  and never enters accession processing;
-- `--activity --from-stage master` consumes a validated complete master bundle;
-- activity requires the selected master, atlas metadata, and reference
-  metadata;
+- `--from-stage activity` consumes only complete artifact manifests and never
+  enters accession processing;
+- the positional sample sheet supplies atlas library/context metadata;
+- activity requires the selected master, accepted atlas BAMs, accepted
+  reference BAMs, and reference metadata;
+- either BAM-manifest option is repeatable for assay-specific manifests;
 - incompatible or incomplete combinations fail during argument validation.
 
 ### 4.2 Combined activity configuration
@@ -482,7 +488,19 @@ per-library CPM_per_kb          per-library CPM_per_kb
             validation and provenance
 ```
 
-Suggested rules:
+Implemented rules:
+
+1. `validate_activity_bam`
+2. `validate_activity_master`
+3. `prepare_activity_atac_insertions`
+4. `prepare_activity_h3k27ac_fragments`
+5. `count_activity_library`
+6. `build_master_dhs_activity_table`
+
+The final aggregation rule performs deterministic context aggregation,
+reference construction, tie-aware quantile normalization, table assembly,
+metrics, and provenance as one atomic multi-output operation. The originally
+proposed finer-grained names were:
 
 1. `validate_activity_inputs`
 2. `prepare_activity_atac_insertions`
@@ -696,7 +714,7 @@ values, activity values, row order, and output hashes.
 
 ### 8.3 No-realignment regression
 
-For activity dry runs starting with `--from-stage final-bam`:
+For activity dry runs starting with `--from-stage activity`:
 
 - assert that no download, trim, align, merge, mark-duplicate, or `filter_bam`
   rule appears in the DAG;
@@ -730,7 +748,7 @@ git diff --check
 ```
 
 The dry run must terminate at the activity table and provenance artifacts
-without scheduling upstream read processing when final-BAM reuse is used.
+without scheduling upstream read processing.
 
 ## 9. Implementation phases
 
@@ -739,19 +757,23 @@ without scheduling upstream read processing when final-BAM reuse is used.
 1. Define the final-BAM and master-bundle manifest schemas. **Implemented.**
 2. Add typed parsing and cross-field validation. **Implemented.**
 3. Add BAM/index/reference and master-bundle validation. **Implemented.**
-4. Add the resolved activity configuration model.
-5. Add positive and negative tests.
+4. Add the resolved activity configuration model. **Implemented.**
+5. Add positive and negative tests. **Implemented for configuration and QC
+   acceptance; production-artifact validation remains part of the first run.**
 
 Acceptance criterion: the current atlas and selected-reference BAMs can be
 represented and validated without changing, copying, or aligning any BAM.
 
 ### Phase 2: per-library counting
 
-1. Reuse/extract the existing ATAC insertion logic.
-2. Implement paired H3K27ac fragment generation.
-3. Count assay units over the master BED.
+1. Reuse/extract the existing ATAC insertion logic. **Implemented with the
+   same samtools/alignmentSieve/bedtools definition.**
+2. Implement paired H3K27ac fragment generation. **Implemented.**
+3. Count assay units over the master BED. **Implemented.**
 4. Emit deterministic per-library tables and denominator summaries.
-5. Add exact synthetic-count tests.
+   **Implemented.**
+5. Add exact synthetic-count tests. **Implemented for interval counting;
+   paired-BAM execution remains to be covered by the integration fixture.**
 
 Acceptance criterion: every library-level normalized value can be reproduced
 from its raw count, denominator, and master width.
@@ -759,33 +781,38 @@ from its raw count, denominator, and master width.
 ### Phase 3: context aggregation and selected reference
 
 1. Aggregate biological-library values with equal weight by context.
+   **Implemented.**
 2. Build separate selected-reference vectors for ATAC and H3K27ac.
-3. Emit replicate correlation and zero-fraction metrics.
+   **Implemented.**
+3. Emit replicate correlation and zero-fraction metrics. **Implemented.**
 4. Enforce reference QC acceptance and complete assay coverage.
+   **Implemented.**
 
 Acceptance criterion: aggregation is invariant to input row order and is not
 weighted by library depth.
 
 ### Phase 4: quantile normalization and final table
 
-1. Implement deterministic tie-aware quantile normalization.
-2. Normalize assays independently.
-3. Calculate geometric-mean activity.
-4. Assemble the canonical long table and per-context views.
+1. Implement deterministic tie-aware quantile normalization. **Implemented.**
+2. Normalize assays independently. **Implemented.**
+3. Calculate geometric-mean activity. **Implemented.**
+4. Assemble the canonical long table and per-context views. **Implemented.**
 5. Validate distributions, completeness, row order, and finite values.
+   **Implemented; broader production distribution review remains required.**
 
 Acceptance criterion: normalized vectors match their assay-specific selected
 reference distributions under the documented tie semantics.
 
 ### Phase 5: canonical workflow and CLI integration
 
-1. Add `workflow/rules/activity.smk`.
-2. Add the activity branch to `workflow/Snakefile`.
-3. Extend the existing `--from-stage final-bam` and `--from-stage master`
-   entries in `src/run_pipeline.py` with activity targets.
-4. Generate stable activity configs and provenance.
+1. Add `workflow/rules/activity.smk`. **Implemented.**
+2. Add the activity branch to `workflow/Snakefile`. **Implemented.**
+3. Add the strict `--from-stage activity` entry in `src/run_pipeline.py`.
+   **Implemented.**
+4. Generate stable activity configs and provenance. **Implemented.**
 5. Add activity targets to the appropriate top-level endpoint.
-6. Add the no-realignment dry-run regression.
+   **Implemented.**
+6. Add the no-realignment dry-run regression. **Implemented.**
 
 Acceptance criterion: an activity run from complete final-BAM inputs never
 schedules alignment and an identical rerun performs no work.
@@ -807,6 +834,45 @@ schedules alignment and an identical rerun performs no work.
 Acceptance criterion: a user can reproduce the table from documented inputs
 and commands without relying on an undocumented BAM location or manual
 post-processing step.
+
+### Phase 7 (deferred): numbered workflow navigation
+
+Organize the workflow rule modules by stable conceptual phase so that a new
+maintainer can follow the code from inputs to the activity endpoint. This is a
+navigation-only change: Snakemake's DAG remains the authority for execution
+order, and reuse modes may skip earlier phases.
+
+Use numeric gaps so later phases can be inserted without renumbering the whole
+workflow:
+
+| Prefix | Conceptual phase |
+|---|---|
+| `00` | shared workflow definitions |
+| `10` | reference preparation and external-artifact validation |
+| `20` | read processing and read-level QC |
+| `30` | alignment, duplicate marking, filtering, and final BAMs |
+| `40` | assay signal and replicate peak calling |
+| `50` | ATAC context support and master-DHS construction |
+| `60` | QC aggregation, reporting, and artifact export |
+| `70` | activity counting, CPM-per-kb normalization, and quantile normalization |
+
+Implementation constraints:
+
+1. Prefix only the rule-module filenames under `workflow/rules/` and update the
+   canonical `workflow/Snakefile` includes.
+2. Keep individual Snakemake rule names, Python module and command names,
+   schemas, public result paths, manifest formats, and scientific parameters
+   unchanged.
+3. Document in `README.md` that the numbers aid navigation and do not impose a
+   linear execution order.
+4. Make this a separate mechanical change after the current functional work is
+   verified; do not mix it with scientific or behavioral modifications.
+5. Regenerate the documented DAG and verify that the dry-run rule graph and
+   targets are unchanged apart from rule-module paths.
+6. Run the full practical verification suite and `git diff --check`.
+
+Acceptance criterion: the numbered module layout makes the logical phases
+obvious while producing the same DAG, targets, outputs, and restart behavior.
 
 ## 10. Final acceptance criteria
 

@@ -12,6 +12,7 @@ import tempfile
 
 from short_read_processing.artifacts import (
     FINAL_BAM_FILTERING_CONTRACT,
+    FINAL_BAM_QC_STATUSES,
     sha256_file,
 )
 from short_read_processing.cli import cli_main
@@ -55,8 +56,10 @@ def main() -> int:
     parser.add_argument(
         "--qc-status",
         required=True,
-        choices=("accepted",),
-        help="Explicit scientific QC acceptance recorded for every selected library",
+        choices=tuple(sorted(FINAL_BAM_QC_STATUSES)),
+        help=(
+            "QC decision for every selected library; rejected manifests cannot be reused"
+        ),
     )
     parser.add_argument("--source-project", required=True)
     parser.add_argument("--source-run-id", required=True)

@@ -17,6 +17,11 @@ digraph workflow {
   master [label="Summit-aware cross-context\nmaster DHS registry", fillcolor="#ccebd6"];
   mastermanifest [label="Checksummed master-bundle manifest", fillcolor="#e7f5eb"];
   mastervalidate [label="Validate complete master bundle", fillcolor="#e7f5eb"];
+  acceptedbams [label="Accepted atlas + reference\nBAM manifests", fillcolor="#eef6ff"];
+  activityvalidate [label="Validate activity BAMs,\nBAIs, and master bundle", fillcolor="#eef6ff"];
+  activityunits [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
+  normalize [label="Raw counts + CPM_per_kb +\nreference quantile normalization", fillcolor="#fff0c7"];
+  activitytable [label="Master-DHS activity table\nfor downstream ABC", fillcolor="#ffe5a8"];
   chip [label="MACS3 ChIP peaks\noptional matched input", fillcolor="#fff2df"];
   chipout [label="Per-biosample ChIP\npeaks + CPM BigWig", fillcolor="#fff2df"];
   qc [label="FRiP + assay QC + MultiQC", fillcolor="#f1e9fa"];
@@ -29,4 +34,6 @@ digraph workflow {
   consensus -> qc;
   chipout -> qc;
   mastermanifest -> mastervalidate -> master;
+  acceptedbams -> activityvalidate -> activityunits;
+  master -> activityunits -> normalize -> activitytable;
 }

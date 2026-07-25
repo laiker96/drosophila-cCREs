@@ -26,8 +26,10 @@ PROJECT = str(config["project"])
 RUN_ID = str(config["run_id"])
 ASSAY = str(config["assay"])
 INPUT_STAGE = str(config.get("input_stage", "accessions"))
+ACTIVITY = config.get("activity")
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
+RESOLVED_CONFIG = f"{RESULT_ROOT}/provenance/resolved_config.json"
 guard_result_namespace(
     config,
     Path(RESULT_ROOT) / "provenance" / "resolved_config.json",
@@ -392,6 +394,85 @@ EXTERNAL_MASTER_VALIDATION = (
     if EXTERNAL_MASTER
     else None
 )
+FINAL_BAM_EXPORT_MANIFEST = (
+    f"{RESULT_ROOT}/provenance/manifests/final-bams.tsv"
+    if SAMPLE_IDS
+    else None
+)
+MASTER_EXPORT_MANIFEST = (
+    f"{RESULT_ROOT}/provenance/manifests/master-dhs.tsv"
+    if ATAC_MASTER_ENABLED
+    else None
+)
+FINAL_BAM_EXPORT_ROWS = []
+for sample in SAMPLE_IDS:
+    external = SAMPLES[sample].get("final_bam")
+    row = {
+        "library_id": sample,
+        "assay": ASSAY,
+        "context": str(SAMPLES[sample]["context"]),
+        "role": str(SAMPLES[sample]["role"]),
+        "layout": str(SAMPLES[sample]["layout"]),
+        "bam": FINAL_BAMS[sample],
+        "bai": FINAL_BAIS[sample],
+        "genome": str(REFERENCE["name"]),
+        "filtering_contract": "short-read-processing-final-v1",
+        "qc_status": (
+            str(external["qc_status"]) if external else "pending_review"
+        ),
+        "source_project": (
+            str(external.get("source_project", "")) if external else PROJECT
+        ),
+        "source_run_id": (
+            str(external.get("source_run_id", "")) if external else RUN_ID
+        ),
+        "notes": (
+            "validated external final BAM"
+            if external
+            else "automatically exported pipeline final BAM; scientific QC pending"
+        ),
+    }
+    if external:
+        row["bam_sha256"] = str(external["bam_sha256"])
+        row["bai_sha256"] = str(external["bai_sha256"])
+    FINAL_BAM_EXPORT_ROWS.append(row)
+
+MASTER_EXPORT_METADATA = (
+    {
+        "genome": str(REFERENCE["name"]),
+        "method": (
+            str(EXTERNAL_MASTER["method"])
+            if EXTERNAL_MASTER
+            else "reciprocal_summit_complete_linkage_v2"
+        ),
+        "source_project": (
+            str(EXTERNAL_MASTER["source_project"])
+            if EXTERNAL_MASTER
+            else PROJECT
+        ),
+        "source_run_id": (
+            str(EXTERNAL_MASTER["source_run_id"])
+            if EXTERNAL_MASTER
+            else RUN_ID
+        ),
+        **(
+            {
+                f"{field}_sha256": str(EXTERNAL_MASTER[f"{field}_sha256"])
+                for field in (
+                    "master_bed",
+                    "summits_bed",
+                    "membership_tsv",
+                    "context_matrix_tsv",
+                    "stats_json",
+                )
+            }
+            if EXTERNAL_MASTER
+            else {}
+        ),
+    }
+    if ATAC_MASTER_ENABLED
+    else None
+)
 ATAC_MASTER_TARGETS = (
     [
         ATAC_MASTER_BED,
@@ -403,6 +484,82 @@ ATAC_MASTER_TARGETS = (
     if ATAC_MASTER_BUILD_ENABLED
     else [EXTERNAL_MASTER_VALIDATION]
     if EXTERNAL_MASTER
+    else []
+)
+
+ACTIVITY_ROOT = f"{RESULT_ROOT}/activity"
+ACTIVITY_WORK = f"{WORK_ROOT}/activity"
+ACTIVITY_LIBRARIES = (
+    {str(library["id"]): library for library in ACTIVITY["libraries"]}
+    if ACTIVITY
+    else {}
+)
+ACTIVITY_LIBRARY_IDS = list(ACTIVITY_LIBRARIES)
+ACTIVITY_ATAC_LIBRARIES = [
+    library
+    for library in ACTIVITY_LIBRARY_IDS
+    if ACTIVITY_LIBRARIES[library]["assay"] == "atac"
+]
+ACTIVITY_H3K27AC_LIBRARIES = [
+    library
+    for library in ACTIVITY_LIBRARY_IDS
+    if ACTIVITY_LIBRARIES[library]["assay"] == "h3k27ac"
+]
+ACTIVITY_LIBRARY_RE = wildcard_regex(ACTIVITY_LIBRARY_IDS)
+ACTIVITY_ATAC_LIBRARY_RE = wildcard_regex(ACTIVITY_ATAC_LIBRARIES)
+ACTIVITY_H3K27AC_LIBRARY_RE = wildcard_regex(ACTIVITY_H3K27AC_LIBRARIES)
+ACTIVITY_BAM_VALIDATIONS = {
+    library: f"{RESULT_ROOT}/provenance/activity/bams/{library}.validated.json"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_MASTER_VALIDATION = (
+    f"{RESULT_ROOT}/provenance/activity/master.validated.json"
+    if ACTIVITY
+    else None
+)
+ACTIVITY_UNIT_BEDS = {
+    library: f"{ACTIVITY_WORK}/units/{library}.bed.gz"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_UNIT_COUNTS = {
+    library: f"{ACTIVITY_WORK}/units/{library}.count.txt"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_LIBRARY_SIGNALS = {
+    library: f"{ACTIVITY_ROOT}/libraries/{library}.signal.tsv.gz"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_LIBRARY_SUMMARIES = {
+    library: f"{ACTIVITY_ROOT}/libraries/{library}.summary.json"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_CONTEXTS = list(ACTIVITY["atlas_contexts"]) if ACTIVITY else []
+ACTIVITY_CONTEXT_VIEWS = {
+    context: f"{ACTIVITY_ROOT}/contexts/{context}.activity.tsv.gz"
+    for context in ACTIVITY_CONTEXTS
+}
+ACTIVITY_LIBRARY_SIGNAL = f"{ACTIVITY_ROOT}/library_signal.tsv.gz"
+ACTIVITY_CONTEXT_SIGNAL = f"{ACTIVITY_ROOT}/context_signal.pre_qnorm.tsv.gz"
+ACTIVITY_QNORM_REFERENCE = f"{ACTIVITY_ROOT}/qnorm_reference.tsv.gz"
+ACTIVITY_TABLE = f"{ACTIVITY_ROOT}/master_dhs_activity.tsv.gz"
+ACTIVITY_METRICS = f"{ACTIVITY_ROOT}/activity_metrics.json"
+ACTIVITY_PROVENANCE = f"{ACTIVITY_ROOT}/activity_provenance.json"
+ACTIVITY_TARGETS = (
+    list(ACTIVITY_BAM_VALIDATIONS.values())
+    + [ACTIVITY_MASTER_VALIDATION]
+    + list(ACTIVITY_LIBRARY_SIGNALS.values())
+    + list(ACTIVITY_LIBRARY_SUMMARIES.values())
+    + list(ACTIVITY_CONTEXT_VIEWS.values())
+    + [
+        ACTIVITY_LIBRARY_SIGNAL,
+        ACTIVITY_CONTEXT_SIGNAL,
+        ACTIVITY_QNORM_REFERENCE,
+        ACTIVITY_TABLE,
+        ACTIVITY_METRICS,
+        ACTIVITY_PROVENANCE,
+        RESOLVED_CONFIG,
+    ]
+    if ACTIVITY
     else []
 )
 
@@ -471,7 +628,6 @@ CROSSCORRELATION = {
 METRICS_TSV = f"{RESULT_ROOT}/qc/metrics.tsv"
 METRICS_JSON = f"{RESULT_ROOT}/qc/metrics.json"
 MULTIQC_REPORT = f"{RESULT_ROOT}/qc/multiqc/multiqc_report.html"
-RESOLVED_CONFIG = f"{RESULT_ROOT}/provenance/resolved_config.json"
 REFERENCE_TARGETS = (
     (BT2_INDEX + [FASTA_INDEX] if BUILD_SAMPLE_IDS else [])
     + [
@@ -508,13 +664,29 @@ STANDARD_FINAL_TARGETS = (
     + list(FINGERPRINTS.values())
     + list(CROSSCORRELATION.values())
     + list(EXTERNAL_BAM_VALIDATIONS.values())
-    + [METRICS_TSV, METRICS_JSON, MULTIQC_REPORT, RESOLVED_CONFIG]
+    + (
+        [MASTER_EXPORT_MANIFEST]
+        if MASTER_EXPORT_MANIFEST
+        else []
+    )
+    + [
+        METRICS_TSV,
+        METRICS_JSON,
+        MULTIQC_REPORT,
+        RESOLVED_CONFIG,
+        FINAL_BAM_EXPORT_MANIFEST,
+    ]
 )
-FINAL_TARGETS = (
-    [EXTERNAL_MASTER_VALIDATION, RESOLVED_CONFIG]
-    if INPUT_STAGE == "master"
-    else STANDARD_FINAL_TARGETS
-)
+if INPUT_STAGE == "activity":
+    FINAL_TARGETS = ACTIVITY_TARGETS
+elif INPUT_STAGE == "master":
+    FINAL_TARGETS = [
+        EXTERNAL_MASTER_VALIDATION,
+        MASTER_EXPORT_MANIFEST,
+        RESOLVED_CONFIG,
+    ]
+else:
+    FINAL_TARGETS = STANDARD_FINAL_TARGETS
 
 
 include: "rules/common.smk"
@@ -527,9 +699,11 @@ rule all:
 
 include: "rules/reference.smk"
 include: "rules/artifact_validation.smk"
+include: "rules/artifact_exports.smk"
 include: "rules/read_processing.smk"
 include: "rules/alignment.smk"
 include: "rules/peaks.smk"
 include: "rules/atac_peaks.smk"
 include: "rules/atac_consensus.smk"
+include: "rules/activity.smk"
 include: "rules/qc.smk"

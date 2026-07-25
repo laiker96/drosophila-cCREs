@@ -82,3 +82,80 @@ def test_reuse_stage_rejects_download_fallback_flags(monkeypatch, tmp_path):
         run_pipeline_main()
 
     assert error.value.code == 2
+
+
+def test_activity_stage_requires_all_explicit_artifact_inputs(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "activity",
+            "--master-manifest",
+            str(tmp_path / "master.tsv"),
+            "--activity-atlas-bam-manifest",
+            str(tmp_path / "atlas.tsv"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
+
+
+def test_accession_stage_rejects_activity_artifacts(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--activity-reference-sheet",
+            str(tmp_path / "reference.tsv"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
+
+
+def test_nonactivity_reuse_stage_rejects_activity_options(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "master",
+            "--master-manifest",
+            str(tmp_path / "master.tsv"),
+            "--activity-reference-context",
+            "s2_t0",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
