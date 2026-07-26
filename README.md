@@ -513,7 +513,8 @@ logs/
 
 Re-run the identical command to resume:
 
-- aria2 resumes partial ENA downloads and validates reported checksums;
+- aria2 resumes partial ENA downloads, and the downloader independently
+  revalidates reported checksums before declaring acquisition complete;
 - aria2 retries only checksum-failed/incomplete FASTQs three times by default;
   use `--checksum-retries` to change the bounded retry count;
 - SRA conversion promotes FASTQs only after successful completion;

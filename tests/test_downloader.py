@@ -128,6 +128,39 @@ def test_checksum_retry_restarts_complete_size_corrupt_file(tmp_path, monkeypatc
     assert failed.path.read_bytes() == b"correct"
 
 
+def test_success_exit_still_rechecks_and_retries_corrupt_file(tmp_path, monkeypatch):
+    failed = FilePlan(
+        url="https://example.org/failed.fastq.gz",
+        md5=hashlib.md5(b"correct").hexdigest(),
+        size_bytes=7,
+        path=tmp_path / "failed.fastq.gz",
+    )
+    failed.path.write_bytes(b"corrupt")
+    input_path = tmp_path / "aria2-input.txt"
+    input_path.write_text("initial\n")
+    attempts = []
+
+    def fake_run(command):
+        attempts.append(command)
+        if len(attempts) == 1:
+            return subprocess.CompletedProcess(command, 0)
+        assert not failed.path.exists()
+        failed.path.write_bytes(b"correct")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
+
+    _run_aria2_with_checksum_retries(
+        ["aria2c", f"--input-file={input_path}"],
+        input_path=input_path,
+        files=[failed],
+        checksum_retries=1,
+    )
+
+    assert len(attempts) == 2
+    assert failed.path.read_bytes() == b"correct"
+
+
 def test_sra_download_stages_fastqs_before_completion(tmp_path, monkeypatch):
     run_dir = tmp_path / "raw" / "SRR123456"
     run_dir.mkdir(parents=True)

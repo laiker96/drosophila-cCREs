@@ -135,18 +135,18 @@ def _run_aria2_with_checksum_retries(
 ) -> None:
     for attempt in range(checksum_retries + 1):
         completed = subprocess.run(command)
-        if completed.returncode == 0:
+        pending = _pending_ena_files(files)
+        if completed.returncode == 0 and not pending:
             return
-        if completed.returncode != 32 or attempt == checksum_retries:
+        if completed.returncode not in {0, 32} or attempt == checksum_retries:
             raise AcquisitionError(
-                f"aria2c FASTQ download failed with exit code "
+                f"aria2c FASTQ download or post-download validation failed with exit code "
                 f"{completed.returncode} after {attempt + 1} attempt(s)"
             )
-        pending = _pending_ena_files(files)
         retry_files = pending or files
         input_path.write_text(_aria2_input(retry_files), encoding="utf-8")
         print(
-            f"aria2 checksum failure; retrying {len(retry_files)} file(s) "
+            f"FASTQ checksum/integrity failure; retrying {len(retry_files)} file(s) "
             f"({attempt + 1}/{checksum_retries})",
             flush=True,
         )
