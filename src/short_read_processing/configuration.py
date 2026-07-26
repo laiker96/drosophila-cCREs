@@ -21,7 +21,7 @@ from .artifacts import (
 )
 from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
-from .workflow_config import workflow_semantic_sha256
+from .workflow_config import validate_stage_selection, workflow_semantic_sha256
 
 
 GENOME_DEFAULTS = {
@@ -307,6 +307,7 @@ def generate_configs(
     atac_minimum_replicates: int = 2,
     atac_overlap_fraction: float = 0.5,
     input_stage: str = "accessions",
+    output_stage: str | None = None,
     final_bam_manifest_path: Path | None = None,
     master_manifest_path: Path | None = None,
 ) -> list[Path]:
@@ -316,6 +317,7 @@ def generate_configs(
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
     if input_stage not in {"accessions", "final-bam", "master"}:
         raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
+    output_stage = validate_stage_selection(input_stage, output_stage)
     if input_stage == "accessions" and manifest_path is None:
         raise AcquisitionError("Accession mode requires a download manifest")
     if input_stage == "final-bam" and final_bam_manifest_path is None:
@@ -361,6 +363,7 @@ def generate_configs(
             "output_dir": "results",
             "assay": "atac",
             "input_stage": "master",
+            "output_stage": output_stage,
             "reference": _reference_config(genome, reference_root, path_base),
             "samples": [],
             "external_master": external_master,
@@ -526,6 +529,7 @@ def generate_configs(
             "output_dir": "results",
             "assay": assay,
             "input_stage": input_stage,
+            "output_stage": output_stage,
             "reference": _reference_config(genome, reference_root, path_base),
             "samples": samples,
             "provenance": {
@@ -865,6 +869,7 @@ def generate_activity_config(
         "output_dir": "results",
         "assay": "activity",
         "input_stage": "activity",
+        "output_stage": "activity",
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {

@@ -159,3 +159,30 @@ def test_nonactivity_reuse_stage_rejects_activity_options(monkeypatch, tmp_path)
         run_pipeline_main()
 
     assert error.value.code == 2
+
+
+def test_final_bam_input_rejects_trimming_output_stage(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "final-bam",
+            "--until-stage",
+            "trimming",
+            "--final-bam-manifest",
+            str(tmp_path / "final-bams.tsv"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2

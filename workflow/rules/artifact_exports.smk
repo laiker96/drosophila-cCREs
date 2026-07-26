@@ -7,7 +7,11 @@ if SAMPLE_IDS:
             bams=list(FINAL_BAMS.values()),
             bais=list(FINAL_BAIS.values()),
             validations=list(EXTERNAL_BAM_VALIDATIONS.values()),
-            metrics=METRICS_JSON
+            completion=(
+                METRICS_JSON
+                if OUTPUT_STAGE in {"qc", "master"}
+                else ALIGNMENT_QC_FILES
+            )
         output:
             manifest=FINAL_BAM_EXPORT_MANIFEST
         params:

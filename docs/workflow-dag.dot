@@ -6,25 +6,25 @@ digraph workflow {
 
   accessions [label="Accession + library + assay + context"];
   download [label="Parallel FASTQ download"];
-  preprocess [label="FastQC + Cutadapt"];
+  preprocess [label="FastQC + Cutadapt\n--until-stage trimming"];
   align [label="Bowtie2 + BAM processing"];
   bammanifest [label="Checksummed final-BAM manifest", fillcolor="#eef6ff"];
   bamvalidate [label="Validate immutable BAM + BAI", fillcolor="#eef6ff"];
-  finalbam [label="Final filtered BAM + BAI", fillcolor="#e5f1ff"];
-  atac [label="ATAC replicate peaks\nTn5/MACS3-qpois (default)\nor HMMRATAC", fillcolor="#e8f4ff"];
+  finalbam [label="Final filtered BAM + BAI\n--until-stage alignment", fillcolor="#e5f1ff"];
+  atac [label="ATAC replicate peaks\nreference-bounded Tn5/MACS3-qpois\n(default) or HMMRATAC", fillcolor="#e8f4ff"];
   pool [label="Pool biological libraries\nwithin each context", fillcolor="#e8f4ff"];
   consensus [label="Replicate-supported\ncontext ATAC peaks", fillcolor="#dff3e5"];
-  master [label="Summit-aware cross-context\nmaster DHS registry", fillcolor="#ccebd6"];
+  master [label="Summit-aware cross-context\nmaster DHS registry\n--until-stage master", fillcolor="#ccebd6"];
   mastermanifest [label="Checksummed master-bundle manifest", fillcolor="#e7f5eb"];
   mastervalidate [label="Validate complete master bundle", fillcolor="#e7f5eb"];
   acceptedbams [label="Accepted atlas + reference\nBAM manifests", fillcolor="#eef6ff"];
   activityvalidate [label="Validate activity BAMs,\nBAIs, and master bundle", fillcolor="#eef6ff"];
   activityunits [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
   normalize [label="Raw counts + CPM_per_kb +\nreference quantile normalization", fillcolor="#fff0c7"];
-  activitytable [label="Master-DHS activity table\nfor downstream ABC", fillcolor="#ffe5a8"];
+  activitytable [label="Master-DHS activity table\nfor downstream ABC\n--until-stage activity", fillcolor="#ffe5a8"];
   chip [label="MACS3 ChIP peaks\noptional matched input", fillcolor="#fff2df"];
   chipout [label="Per-biosample ChIP\npeaks + CPM BigWig", fillcolor="#fff2df"];
-  qc [label="FRiP + assay QC + MultiQC", fillcolor="#f1e9fa"];
+  qc [label="FRiP + assay QC + MultiQC\n--until-stage qc", fillcolor="#f1e9fa"];
 
   accessions -> download -> preprocess -> align -> finalbam;
   bammanifest -> bamvalidate -> finalbam;

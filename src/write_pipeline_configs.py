@@ -9,6 +9,7 @@ from pathlib import Path
 from short_read_processing.cli import cli_main
 from short_read_processing.configuration import generate_configs
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA
+from short_read_processing.workflow_config import OUTPUT_STAGES
 
 
 def main() -> int:
@@ -23,6 +24,12 @@ def main() -> int:
     parser.add_argument("--reference-root", type=Path, default=Path("references"))
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
+    parser.add_argument(
+        "--until-stage",
+        choices=OUTPUT_STAGES[:-1],
+        default="master",
+        help="Logical workflow stopping point recorded in each resolved config",
+    )
     parser.add_argument(
         "--path-base",
         type=Path,
@@ -49,6 +56,7 @@ def main() -> int:
         genome=args.genome,
         atac_minimum_replicates=args.atac_minimum_replicates,
         atac_overlap_fraction=args.atac_overlap_fraction,
+        output_stage=args.until_stage,
     )
     for output in outputs:
         print(output)

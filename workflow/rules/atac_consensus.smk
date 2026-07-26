@@ -30,7 +30,9 @@ rule pool_atac_condition_insertions:
 
 rule call_atac_condition_qpois:
     input:
-        insertions=lambda wc: ATAC_CONDITION_INSERTIONS[wc.condition]
+        insertions=lambda wc: ATAC_CONDITION_INSERTIONS[wc.condition],
+        chrom_sizes=str(REFERENCE["chrom_sizes"]),
+        clip_script=str(REPO_ROOT / "src" / "clip_bedgraph.py")
     output:
         peaks=f"{ATAC_ROOT}/conditions/{{condition}}/peaks/{{condition}}.candidates.narrowPeak",
         pileup=temp(f"{ATAC_WORK}/conditions/{{condition}}.pileup.bdg"),
@@ -52,9 +54,22 @@ rule call_atac_condition_qpois:
         temporary=$(mktemp -d $(dirname {output.qpois:q})/.{wildcards.condition}.macs3.XXXXXX)
         trap 'rm -rf "$temporary"' EXIT
         (cd "$temporary" && {params.command}) > {log:q} 2>&1
+        for bedgraph in \
+          "$temporary/{wildcards.condition}_treat_pileup.bdg" \
+          "$temporary/{wildcards.condition}_control_lambda.bdg"; do
+            python {input.clip_script:q} --bedgraph "$bedgraph" \
+              --chrom-sizes {input.chrom_sizes:q} --output "$bedgraph.clipped" >> {log:q} 2>&1
+            mv "$bedgraph.clipped" "$bedgraph"
+        done
         macs3 bdgcmp -t "$temporary/{wildcards.condition}_treat_pileup.bdg" \
           -c "$temporary/{wildcards.condition}_control_lambda.bdg" -m qpois \
           -o "$temporary/{wildcards.condition}_qpois.bdg" >> {log:q} 2>&1
+        python {input.clip_script:q} \
+          --bedgraph "$temporary/{wildcards.condition}_qpois.bdg" \
+          --chrom-sizes {input.chrom_sizes:q} \
+          --output "$temporary/{wildcards.condition}_qpois.bdg.clipped" >> {log:q} 2>&1
+        mv "$temporary/{wildcards.condition}_qpois.bdg.clipped" \
+          "$temporary/{wildcards.condition}_qpois.bdg"
         mv "$temporary/{wildcards.condition}_peaks.narrowPeak" {output.peaks:q}
         mv "$temporary/{wildcards.condition}_treat_pileup.bdg" {output.pileup:q}
         mv "$temporary/{wildcards.condition}_control_lambda.bdg" {output.lambda_bdg:q}

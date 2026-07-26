@@ -89,6 +89,13 @@ REFERENCE_FIELDS = {
     "effective_genome_size",
     "macs3_genome_size",
 }
+OUTPUT_STAGES = ("trimming", "alignment", "qc", "master", "activity")
+OUTPUT_STAGES_BY_INPUT = {
+    "accessions": {"trimming", "alignment", "qc", "master"},
+    "final-bam": {"alignment", "qc", "master"},
+    "master": {"master"},
+    "activity": {"activity"},
+}
 
 
 def wildcard_regex(values: list[str]) -> str:
@@ -106,7 +113,9 @@ def workflow_semantic_sha256(config: dict[str, Any]) -> str:
     """Return the timestamp-independent digest used to identify a scientific run."""
 
     semantic_input = {
-        key: value for key, value in config.items() if key != "provenance"
+        key: value
+        for key, value in config.items()
+        if key not in {"provenance", "output_stage"}
     }
     provenance = config.get("provenance", {})
     semantic_input["provenance_inputs"] = {
@@ -115,6 +124,25 @@ def workflow_semantic_sha256(config: dict[str, Any]) -> str:
         if key not in {"generated_at_utc", "semantic_sha256"}
     }
     return semantic_sha256(semantic_input)
+
+
+def validate_stage_selection(input_stage: str, output_stage: str | None) -> str:
+    """Resolve and validate a non-scientific workflow stopping point."""
+
+    if input_stage not in OUTPUT_STAGES_BY_INPUT:
+        raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
+    resolved = output_stage or ("activity" if input_stage == "activity" else "master")
+    if resolved not in OUTPUT_STAGES:
+        raise AcquisitionError(f"Unsupported output stage: {resolved!r}")
+    if resolved not in OUTPUT_STAGES_BY_INPUT[input_stage]:
+        allowed = ", ".join(
+            stage for stage in OUTPUT_STAGES if stage in OUTPUT_STAGES_BY_INPUT[input_stage]
+        )
+        raise AcquisitionError(
+            f"Cannot stop at {resolved!r} when starting from {input_stage!r}; "
+            f"allowed output stages: {allowed}"
+        )
+    return resolved
 
 
 def guard_result_namespace(config: dict[str, Any], resolved_config: Path) -> None:
@@ -168,6 +196,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     input_stage = str(config.get("input_stage", "accessions"))
     if input_stage not in {"accessions", "final-bam", "master", "activity"}:
         raise AcquisitionError(f"Unsupported input_stage: {input_stage!r}")
+    validate_stage_selection(input_stage, config.get("output_stage"))
     provenance = config.get("provenance")
     if provenance is not None:
         if not isinstance(provenance, dict):

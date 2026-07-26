@@ -12,6 +12,7 @@ from short_read_processing.consensus import condition_specs
 from short_read_processing.workflow_config import (
     guard_result_namespace,
     resolve_input_paths,
+    validate_stage_selection,
     validate_workflow_config,
     wildcard_regex,
 )
@@ -26,6 +27,7 @@ PROJECT = str(config["project"])
 RUN_ID = str(config["run_id"])
 ASSAY = str(config["assay"])
 INPUT_STAGE = str(config.get("input_stage", "accessions"))
+OUTPUT_STAGE = validate_stage_selection(INPUT_STAGE, config.get("output_stage"))
 ACTIVITY = config.get("activity")
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
@@ -638,14 +640,43 @@ REFERENCE_TARGETS = (
     ]
 )
 
-STANDARD_FINAL_TARGETS = (
-    REFERENCE_TARGETS
+ALIGNMENT_QC_FILES = [
+    f"{RESULT_ROOT}/qc/alignment/{sample}.{suffix}.txt"
+    for sample in SAMPLE_IDS
+    for suffix in ("flagstat", "stats", "idxstats")
+]
+TRIMMED_FASTQS = list(TRIMMED_R1.values()) + list(TRIMMED_R2.values())
+TRIMMING_TARGETS = (
+    TRIMMED_FASTQS
+    + RAW_FASTQC
+    + TRIMMED_FASTQC
+    + CUTADAPT_JSON
+    + [RESOLVED_CONFIG]
+)
+ALIGNMENT_TARGETS = (
+    TRIMMING_TARGETS
+    + REFERENCE_TARGETS
     + list(FINAL_BAMS.values())
     + list(FINAL_BAIS.values())
+    + list(EXTERNAL_BAM_VALIDATIONS.values())
+    + ALIGNMENT_QC_FILES
+    + ([FINAL_BAM_EXPORT_MANIFEST] if FINAL_BAM_EXPORT_MANIFEST else [])
+)
+QC_TARGETS = (
+    ALIGNMENT_TARGETS
     + list(CHIP_BIGWIGS.values())
     + list(ATAC_SHIFTED_BIGWIGS.values())
     + list(PEAKS.values())
     + CALLPEAK_BEDGRAPHS
+    + list(FRIP_TSV.values())
+    + list(TSS_PLOTS.values())
+    + list(FRAGMENT_HISTOGRAMS.values())
+    + list(FINGERPRINTS.values())
+    + list(CROSSCORRELATION.values())
+    + [METRICS_TSV, METRICS_JSON, MULTIQC_REPORT]
+)
+MASTER_TARGETS = (
+    QC_TARGETS
     + list(ATAC_CONDITION_CANDIDATES.values())
     + list(ATAC_CONDITION_REFINED.values())
     + list(ATAC_CONDITION_EXCLUDED.values())
@@ -658,26 +689,11 @@ STANDARD_FINAL_TARGETS = (
     + list(ATAC_CONDITION_SUPPORT.values())
     + list(ATAC_CONDITION_STATS.values())
     + ATAC_MASTER_TARGETS
-    + list(FRIP_TSV.values())
-    + list(TSS_PLOTS.values())
-    + list(FRAGMENT_HISTOGRAMS.values())
-    + list(FINGERPRINTS.values())
-    + list(CROSSCORRELATION.values())
-    + list(EXTERNAL_BAM_VALIDATIONS.values())
-    + (
-        [MASTER_EXPORT_MANIFEST]
-        if MASTER_EXPORT_MANIFEST
-        else []
-    )
-    + [
-        METRICS_TSV,
-        METRICS_JSON,
-        MULTIQC_REPORT,
-        RESOLVED_CONFIG,
-        FINAL_BAM_EXPORT_MANIFEST,
-    ]
+    + ([MASTER_EXPORT_MANIFEST] if MASTER_EXPORT_MANIFEST else [])
 )
-if INPUT_STAGE == "activity":
+
+STANDARD_FINAL_TARGETS = MASTER_TARGETS
+if OUTPUT_STAGE == "activity":
     FINAL_TARGETS = ACTIVITY_TARGETS
 elif INPUT_STAGE == "master":
     FINAL_TARGETS = [
@@ -685,8 +701,14 @@ elif INPUT_STAGE == "master":
         MASTER_EXPORT_MANIFEST,
         RESOLVED_CONFIG,
     ]
+elif OUTPUT_STAGE == "trimming":
+    FINAL_TARGETS = TRIMMING_TARGETS
+elif OUTPUT_STAGE == "alignment":
+    FINAL_TARGETS = ALIGNMENT_TARGETS
+elif OUTPUT_STAGE == "qc":
+    FINAL_TARGETS = QC_TARGETS
 else:
-    FINAL_TARGETS = STANDARD_FINAL_TARGETS
+    FINAL_TARGETS = MASTER_TARGETS
 
 
 include: "rules/common.smk"

@@ -120,6 +120,24 @@ covering at least 50% of a pooled peak. Override these thresholds with
 For ATAC, the default `all` target automatically ends by building the master
 DHS registry; no separate master-building command is required.
 
+Use `--until-stage` to stop at a reproducible logical boundary:
+
+| `--until-stage` | Completed outputs |
+|---|---|
+| `trimming` | trimmed FASTQs, raw/trimmed FastQC, and cutadapt reports |
+| `alignment` | accepted final BAM/BAI files, alignment statistics, and the reusable final-BAM manifest |
+| `qc` | library-level signal tracks, replicate peaks, FRiP and assay-specific QC, metrics, and MultiQC; no ATAC context pooling |
+| `master` | QC plus ATAC context pooling, replicate support, and the master-DHS bundle; this is the default |
+| `activity` | raw and CPM-per-kb counts, reference quantiles, quantile-normalized values, and the activity table |
+
+The valid stopping point depends on `--from-stage`: accession input may stop
+at trimming through master, final-BAM input may stop at alignment through
+master, master input stops at master, and activity input stops at activity.
+For a mixed ATAC/ChIP table, `master` builds the ATAC master and completes the
+ChIP library-level QC endpoint. Advancing the same `project`/`run-id` to a
+later stopping point reuses completed outputs; the stopping point is execution
+state and is therefore excluded from the scientific semantic hash.
+
 Useful boundaries:
 
 ```bash
@@ -133,6 +151,10 @@ python src/run_pipeline.py samples.tsv --skip-download \
 # Build the DAG without executing jobs
 python src/run_pipeline.py samples.tsv --skip-download \
   --manifest data/raw/project/download_manifest.tsv --snakemake-dry-run
+
+# Produce reference-library BAMs and QC without pooling an ATAC context
+python src/run_pipeline.py reference_samples.tsv --until-stage qc \
+  --project reference --run-id processing-v1 --genome dm6
 ```
 
 Run these through `micromamba run --prefix "$PWD/.venv"` as in the main
@@ -362,8 +384,12 @@ For paired-end ATAC, each biological library is processed as follows:
 3. Convert both shifted mates to one-base insertion records.
 4. Run MACS3 `callpeak -f BED -q 0.10 --nomodel --shift -75 --extsize
    150 --keep-dup all -B`.
-5. Run `macs3 bdgcmp -m qpois` on the unscaled treatment pileup and local
-   lambda. `--SPMR` is intentionally not used in this branch.
+5. Clip the MACS3 treatment pileup and local lambda to the declared chromosome
+   sizes, then run `macs3 bdgcmp -m qpois`. Validate/clip the resulting qpois
+   bedGraph as a defensive boundary check. Intervals wholly outside the
+   reference are discarded; partially overlapping intervals retain their
+   original signal value on the valid reference span. `--SPMR` is intentionally
+   not used in this branch.
 6. Progress from qpois exponent 2 through 325 and retain components 50–400 bp;
    broader components split as the threshold rises.
 7. Concatenate replicate insertion records within each context and repeat
@@ -492,6 +518,8 @@ Re-run the identical command to resume:
   use `--checksum-retries` to change the bounded retry count;
 - SRA conversion promotes FASTQs only after successful completion;
 - reference preparation and every processing stage are Snakemake outputs;
+- `--until-stage` can be advanced in the same run namespace without changing
+  the scientific semantic hash;
 - temporary scientific outputs are written in staging paths before promotion;
 - completed alignments are reused when peak parameters change;
 - validated external BAMs and master bundles are immutable workflow inputs;

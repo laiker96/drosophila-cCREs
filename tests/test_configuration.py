@@ -68,6 +68,7 @@ def test_atac_defaults_and_contexts_group_biological_and_technical_runs(tmp_path
     sample = config["samples"][0]
 
     assert config["assay"] == "atac"
+    assert config["output_stage"] == "master"
     assert config["reference"]["name"] == "dm6"
     assert sample["accessions"] == ["SRR123456", "SRR123457"]
     assert sample["context"] == "embryo"
@@ -111,7 +112,10 @@ def test_atac_defaults_and_contexts_group_biological_and_technical_runs(tmp_path
 
 def test_identical_config_generation_does_not_replace_file(tmp_path):
     accessions = ("SRR123456", "SRR123457")
-    plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
+    plans = [
+        _run_plan(tmp_path / "raw", accession, accession)
+        for accession in accessions
+    ]
     sheet = (
         HEADER
         + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
@@ -135,6 +139,43 @@ def test_identical_config_generation_does_not_replace_file(tmp_path):
 
     assert regenerated.read_bytes() == original
     assert regenerated.stat().st_mtime_ns == timestamp
+
+
+def test_config_records_requested_output_stage(tmp_path):
+    accessions = ("SRR123456", "SRR123457")
+    plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
+    sheet = (
+        HEADER
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+    )
+
+    output = _generate(tmp_path, plans, sheet, output_stage="qc")[0]
+
+    assert yaml.safe_load(output.read_text())["output_stage"] == "qc"
+
+
+def test_final_bam_input_cannot_stop_at_trimming(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+
+    with pytest.raises(AcquisitionError, match="Cannot stop at 'trimming'"):
+        generate_configs(
+            manifest_path=None,
+            sample_sheet_path=sheet,
+            output_dir=tmp_path / "configs",
+            project="test-project",
+            run_id="reuse-bams",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_fastq_files=True,
+            input_stage="final-bam",
+            output_stage="trimming",
+            final_bam_manifest_path=tmp_path / "unused.tsv",
+        )
 
 
 def test_atac_callpeak_override_applies_to_every_context_replicate(tmp_path):
@@ -462,6 +503,7 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
 
     assert config["assay"] == "activity"
     assert config["input_stage"] == "activity"
+    assert config["output_stage"] == "activity"
     assert config["samples"] == []
     assert config["activity"]["atlas_contexts"] == ["eye"]
     assert config["activity"]["reference_context"] == "s2_t0"

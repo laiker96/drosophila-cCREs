@@ -9,12 +9,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-from short_read_processing.cli import add_download_arguments, cli_main, execute_download
+from short_read_processing.accessions import AcquisitionError
+from short_read_processing.cli import (
+    add_download_arguments,
+    cli_main,
+    execute_download,
+)
 from short_read_processing.configuration import (
     generate_activity_config,
     generate_configs,
 )
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA, sample_sheet_accessions
+from short_read_processing.workflow_config import (
+    OUTPUT_STAGES,
+    validate_stage_selection,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +85,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--until-stage",
+        choices=OUTPUT_STAGES,
+        help=(
+            "Stop after this logical stage. Omit to retain the existing master "
+            "endpoint, or the activity endpoint in activity mode."
+        ),
+    )
+    parser.add_argument(
         "--final-bam-manifest",
         type=Path,
         help="Complete immutable final-BAM manifest for --from-stage final-bam",
@@ -126,6 +143,10 @@ def main() -> int:
         parser.error("--max-threads must be positive")
     if args.download_only and args.config_only:
         parser.error("--download-only and --config-only are mutually exclusive")
+    try:
+        output_stage = validate_stage_selection(args.from_stage, args.until_stage)
+    except AcquisitionError as error:
+        parser.error(str(error))
     if args.from_stage == "accessions":
         if (
             args.final_bam_manifest
@@ -270,6 +291,7 @@ def main() -> int:
             atac_minimum_replicates=args.atac_minimum_replicates,
             atac_overlap_fraction=args.atac_overlap_fraction,
             input_stage=args.from_stage,
+            output_stage=output_stage,
             final_bam_manifest_path=(
                 args.final_bam_manifest.resolve()
                 if args.final_bam_manifest

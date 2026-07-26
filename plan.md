@@ -813,6 +813,11 @@ reference distributions under the documented tie semantics.
 5. Add activity targets to the appropriate top-level endpoint.
    **Implemented.**
 6. Add the no-realignment dry-run regression. **Implemented.**
+7. Add explicit `trimming`, `alignment`, `qc`, `master`, and `activity`
+   stopping points while keeping the stopping point outside the scientific
+   semantic hash. **Implemented.**
+8. Bound MACS3 ATAC treatment, lambda, and qpois bedGraphs to the reference
+   chromosome sizes before downstream use. **Implemented.**
 
 Acceptance criterion: an activity run from complete final-BAM inputs never
 schedules alignment and an identical rerun performs no work.

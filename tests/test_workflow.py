@@ -90,6 +90,15 @@ def test_result_namespace_accepts_same_semantic_configuration(tmp_path):
     guard_result_namespace(config, resolved)
 
 
+def test_output_stage_does_not_change_scientific_semantic_digest():
+    config = copy.deepcopy(BASE_CONFIG)
+    config["output_stage"] = "trimming"
+    trimming = workflow_semantic_sha256(config)
+    config["output_stage"] = "master"
+
+    assert workflow_semantic_sha256(config) == trimming
+
+
 def test_result_namespace_rejects_changed_semantic_configuration(tmp_path):
     config = copy.deepcopy(BASE_CONFIG)
     config["provenance"] = {}
@@ -229,8 +238,48 @@ def test_qpois_condition_consensus_builds_master_dhs_as_final_atac_step(tmp_path
         "build_atac_master_dhs",
     ):
         assert rule in output
+    assert "clip_bedgraph.py" in output
     assert "replicate-supported.bed" in output
     assert "master_dhs.bed" in output
+
+
+@pytest.mark.parametrize(
+    ("stage", "required", "forbidden"),
+    [
+        (
+            "trimming",
+            ("trim_pe", "fastqc_raw", "fastqc_trimmed"),
+            ("align_lane", "filter_bam", "call_atac_replicate_qpois"),
+        ),
+        (
+            "alignment",
+            (
+                "align_lane",
+                "filter_bam",
+                "alignment_stats",
+                "export_final_bam_manifest",
+            ),
+            ("call_atac_replicate_qpois", "frip", "build_atac_master_dhs"),
+        ),
+        (
+            "qc",
+            ("refine_atac_replicate_qpois", "frip", "multiqc"),
+            ("pool_atac_condition_insertions", "build_atac_master_dhs"),
+        ),
+    ],
+)
+def test_output_stage_prunes_downstream_rules(tmp_path, stage, required, forbidden):
+    config = copy.deepcopy(BASE_CONFIG)
+    _add_second_replicate(config)
+    _enable_consensus(config)
+    config["output_stage"] = stage
+
+    output = _dry_run(tmp_path, config, f"until-{stage}")
+
+    for rule in required:
+        assert rule in output
+    for rule in forbidden:
+        assert rule not in output
 
 
 def test_hmmratac_condition_consensus_dry_run(tmp_path):

@@ -247,13 +247,6 @@ rule metrics_summary:
         "../scripts/aggregate_metrics.py"
 
 
-ALIGNMENT_QC_FILES = [
-    f"{RESULT_ROOT}/qc/alignment/{sample}.{suffix}.txt"
-    for sample in SAMPLE_IDS
-    for suffix in ("flagstat", "stats", "idxstats")
-]
-
-
 rule multiqc:
     input:
         raw_fastqc=RAW_FASTQC,
