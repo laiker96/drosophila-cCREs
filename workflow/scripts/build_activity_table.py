@@ -34,19 +34,25 @@ provenance = {
     },
     "libraries": [
         {
-            key: library[key]
-            for key in (
-                "id",
-                "assay",
-                "cohort",
-                "context",
-                "bam_sha256",
-                "bai_sha256",
-                "filtering_contract",
-                "qc_status",
-                "source_project",
-                "source_run_id",
-            )
+            **{
+                key: library[key]
+                for key in (
+                    "id",
+                    "assay",
+                    "cohort",
+                    "context",
+                    "layout",
+                    "bam_sha256",
+                    "bai_sha256",
+                    "filtering_contract",
+                    "qc_status",
+                    "source_project",
+                    "source_run_id",
+                )
+            },
+            "estimated_fragment_length_bp": library.get(
+                "estimated_fragment_length_bp"
+            ),
         }
         for library in activity["libraries"]
     ],
@@ -55,6 +61,9 @@ provenance = {
         for library_id, path in sorted(signal_paths.items())
     },
     "atac_fragment_maximum": activity["atac_fragment_maximum"],
+    "excluded_libraries": dict(snakemake.params.workflow_provenance).get(
+        "excluded_activity_libraries", []
+    ),
 }
 metrics = build_activity_outputs(
     signal_paths=signal_paths,

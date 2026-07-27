@@ -21,6 +21,7 @@ FIELDS = [
     "bam_sha256",
     "bai_sha256",
     "qc_status",
+    "estimated_fragment_length_bp",
     "source_project",
     "source_run_id",
     "notes",

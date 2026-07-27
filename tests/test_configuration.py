@@ -317,22 +317,29 @@ def _write_activity_bam_manifest(
     libraries: list[tuple[str, str, str]],
     *,
     qc_status: str = "accepted",
+    row_overrides: dict[str, dict[str, str]] | None = None,
 ) -> Path:
     manifest = tmp_path / f"{name}.final-bams.tsv"
     rows = [
         "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
-        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\t"
+        "estimated_fragment_length_bp\tnotes"
     ]
+    row_overrides = row_overrides or {}
     for library_id, assay, context in libraries:
         bam = tmp_path / "external" / f"{library_id}.bam"
         bai = tmp_path / "external" / f"{library_id}.bam.bai"
         bam.parent.mkdir(exist_ok=True)
         bam.write_bytes(f"bam-{library_id}".encode())
         bai.write_bytes(f"bai-{library_id}".encode())
+        override = row_overrides.get(library_id, {})
         rows.append(
-            f"{library_id}\t{assay}\t{context}\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
+            f"{library_id}\t{assay}\t{context}\ttreatment\t"
+            f"{override.get('layout', 'paired')}\t{bam}\t{bai}\tdm6\t"
             f"{FINAL_BAM_FILTERING_CONTRACT}\t{sha256_file(bam)}\t"
-            f"{sha256_file(bai)}\t{qc_status}"
+            f"{sha256_file(bai)}\t{override.get('qc_status', qc_status)}\t"
+            f"{override.get('estimated_fragment_length_bp', '')}\t"
+            f"{override.get('notes', '')}"
         )
     manifest.write_text("\n".join(rows) + "\n")
     return manifest
@@ -473,6 +480,12 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
             ("atlas_atac", "atac", "eye"),
             ("atlas_h3", "chip_histone", "eye"),
         ],
+        row_overrides={
+            "atlas_h3": {
+                "layout": "single",
+                "estimated_fragment_length_bp": "165",
+            }
+        },
     )
     reference_manifest = _write_activity_bam_manifest(
         tmp_path,
@@ -503,7 +516,7 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
 
     assert config["assay"] == "activity"
     assert config["input_stage"] == "activity"
-    assert config["output_stage"] == "activity"
+    assert config["output_stage"] == "activity-qc"
     assert config["samples"] == []
     assert config["activity"]["atlas_contexts"] == ["eye"]
     assert config["activity"]["reference_context"] == "s2_t0"
@@ -520,7 +533,67 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
         library["qc_status"] == "accepted"
         for library in config["activity"]["libraries"]
     )
+    atlas_h3 = next(
+        library
+        for library in config["activity"]["libraries"]
+        if library["id"] == "atlas_h3"
+    )
+    assert atlas_h3["layout"] == "single"
+    assert atlas_h3["estimated_fragment_length_bp"] == 165
     assert len(config["provenance"]["semantic_sha256"]) == 64
+
+
+def test_activity_config_requires_fragment_length_for_single_end_h3k27ac(
+    tmp_path,
+):
+    atlas_sheet = tmp_path / "atlas.tsv"
+    atlas_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatlas_atac\tatac\teye\n"
+        "SRR100002\tatlas_h3\th3k27ac\teye\n"
+    )
+    reference_sheet = tmp_path / "reference.tsv"
+    reference_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
+        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
+        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
+        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
+    )
+    atlas_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "atlas-single",
+        [
+            ("atlas_atac", "atac", "eye"),
+            ("atlas_h3", "chip_histone", "eye"),
+        ],
+        row_overrides={"atlas_h3": {"layout": "single"}},
+    )
+    reference_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "reference-paired",
+        [
+            ("ref_atac_1", "atac", "s2_t0"),
+            ("ref_atac_2", "atac", "s2_t0"),
+            ("ref_h3_1", "chip_histone", "s2_t0"),
+            ("ref_h3_2", "chip_histone", "s2_t0"),
+        ],
+    )
+
+    with pytest.raises(AcquisitionError, match="estimated_fragment_length_bp"):
+        generate_activity_config(
+            atlas_sample_sheet_path=atlas_sheet,
+            reference_sample_sheet_path=reference_sheet,
+            atlas_final_bam_manifests=[atlas_manifest],
+            reference_final_bam_manifests=[reference_manifest],
+            master_manifest_path=_write_master_manifest(tmp_path),
+            output_dir=tmp_path / "configs",
+            project="activity-test",
+            run_id="activity-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_files=True,
+        )
 
 
 def test_activity_config_rejects_pending_review_reference(tmp_path):
@@ -572,3 +645,77 @@ def test_activity_config_rejects_pending_review_reference(tmp_path):
             path_base=tmp_path,
             require_files=True,
         )
+
+
+def test_activity_config_records_and_skips_documented_rejection(tmp_path):
+    atlas_sheet = tmp_path / "atlas.tsv"
+    atlas_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatlas_atac\tatac\teye\n"
+        "SRR100002\tatlas_h3_good\th3k27ac\teye\n"
+        "SRR100003\tatlas_h3_bad\th3k27ac\teye\n"
+    )
+    reference_sheet = tmp_path / "reference.tsv"
+    reference_sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
+        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
+        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
+        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
+    )
+    atlas_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "atlas-reviewed",
+        [
+            ("atlas_atac", "atac", "eye"),
+            ("atlas_h3_good", "chip_histone", "eye"),
+            ("atlas_h3_bad", "chip_histone", "eye"),
+        ],
+        row_overrides={
+            "atlas_h3_bad": {
+                "qc_status": "rejected",
+                "notes": "insufficient depth",
+            }
+        },
+    )
+    reference_manifest = _write_activity_bam_manifest(
+        tmp_path,
+        "reference-reviewed",
+        [
+            ("ref_atac_1", "atac", "s2_t0"),
+            ("ref_atac_2", "atac", "s2_t0"),
+            ("ref_h3_1", "chip_histone", "s2_t0"),
+            ("ref_h3_2", "chip_histone", "s2_t0"),
+        ],
+    )
+
+    output = generate_activity_config(
+        atlas_sample_sheet_path=atlas_sheet,
+        reference_sample_sheet_path=reference_sheet,
+        atlas_final_bam_manifests=[atlas_manifest],
+        reference_final_bam_manifests=[reference_manifest],
+        master_manifest_path=_write_master_manifest(tmp_path),
+        output_dir=tmp_path / "configs",
+        project="activity-test",
+        run_id="activity-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_files=True,
+    )
+    config = yaml.safe_load(output.read_text())
+
+    assert "atlas_h3_bad" not in {
+        library["id"] for library in config["activity"]["libraries"]
+    }
+    assert config["provenance"]["excluded_activity_libraries"] == [
+        {
+            "id": "atlas_h3_bad",
+            "assay": "h3k27ac",
+            "context": "eye",
+            "cohort": "atlas",
+            "layout": "paired",
+            "qc_status": "rejected",
+            "estimated_fragment_length_bp": None,
+            "reason": "insufficient depth",
+        }
+    ]

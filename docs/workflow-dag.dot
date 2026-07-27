@@ -22,6 +22,7 @@ digraph workflow {
   activityunits [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
   normalize [label="Raw counts + CPM_per_kb +\nreference quantile normalization", fillcolor="#fff0c7"];
   activitytable [label="Master-DHS activity table\nfor downstream ABC\n--until-stage activity", fillcolor="#ffe5a8"];
+  activityqc [label="Replicate + distribution QC\nself-contained HTML report\n--until-stage activity-qc", fillcolor="#f7e4b2"];
   chip [label="MACS3 ChIP peaks\noptional matched input", fillcolor="#fff2df"];
   chipout [label="Per-biosample ChIP\npeaks + CPM BigWig", fillcolor="#fff2df"];
   qc [label="FRiP + assay QC + MultiQC\n--until-stage qc", fillcolor="#f1e9fa"];
@@ -35,5 +36,5 @@ digraph workflow {
   chipout -> qc;
   mastermanifest -> mastervalidate -> master;
   acceptedbams -> activityvalidate -> activityunits;
-  master -> activityunits -> normalize -> activitytable;
+  master -> activityunits -> normalize -> activitytable -> activityqc;
 }

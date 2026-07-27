@@ -115,6 +115,10 @@ receipt = {
     "genome": expected["genome"],
     "filtering_contract": expected["filtering_contract"],
     "qc_status": expected["qc_status"],
+    "layout": expected.get("layout", ""),
+    "estimated_fragment_length_bp": expected.get(
+        "estimated_fragment_length_bp"
+    ),
     "sort_order": sort_order,
     "sequence_count": len(header_sequences),
 }

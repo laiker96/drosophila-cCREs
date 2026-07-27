@@ -97,6 +97,7 @@ def read_final_bam_manifest(
     path: Path,
     *,
     require_files: bool = True,
+    allow_rejected: bool = False,
 ) -> dict[str, dict[str, str]]:
     """Return final-BAM rows keyed by biological library ID."""
 
@@ -128,10 +129,32 @@ def read_final_bam_manifest(
             raise AcquisitionError(
                 f"qc_status for {library_id!r} is invalid: {raw['qc_status']!r}"
             )
-        if raw["qc_status"] == "rejected":
+        notes = raw.get("notes", "").strip()
+        if raw["qc_status"] == "rejected" and not allow_rejected:
             raise AcquisitionError(
                 f"Final BAM {library_id!r} has qc_status='rejected'"
             )
+        if raw["qc_status"] == "rejected" and not notes:
+            raise AcquisitionError(
+                f"Final BAM {library_id!r} has qc_status='rejected' but no notes"
+            )
+        estimated_fragment_length = raw.get(
+            "estimated_fragment_length_bp", ""
+        ).strip()
+        if estimated_fragment_length:
+            try:
+                estimated_fragment_length_value = int(estimated_fragment_length)
+            except ValueError as error:
+                raise AcquisitionError(
+                    f"estimated_fragment_length_bp for {library_id!r} "
+                    "must be a positive integer"
+                ) from error
+            if estimated_fragment_length_value <= 0:
+                raise AcquisitionError(
+                    f"estimated_fragment_length_bp for {library_id!r} "
+                    "must be a positive integer"
+                )
+            estimated_fragment_length = str(estimated_fragment_length_value)
         if raw["filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
             raise AcquisitionError(
                 f"Final BAM {library_id!r} has unsupported filtering_contract "
@@ -163,9 +186,10 @@ def read_final_bam_manifest(
             "bam_sha256": _sha256(raw["bam_sha256"], field="bam_sha256", line=line),
             "bai_sha256": _sha256(raw["bai_sha256"], field="bai_sha256", line=line),
             "qc_status": raw["qc_status"],
+            "estimated_fragment_length_bp": estimated_fragment_length,
             "source_project": raw.get("source_project", ""),
             "source_run_id": raw.get("source_run_id", ""),
-            "notes": raw.get("notes", ""),
+            "notes": notes,
         }
     return by_library
 

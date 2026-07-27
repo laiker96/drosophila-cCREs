@@ -3,8 +3,8 @@ channels:
   - bioconda
   - nodefaults
 dependencies:
+  - python=3.11
   - bowtie2=2.5.5
   - samtools=1.23.1
   - bedtools=2.31.1
   - pigz=2.8
-

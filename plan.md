@@ -85,7 +85,7 @@ within one context.
 
 ### 2.3 H3K27ac counting unit
 
-Quantify one fragment per proper paired-end H3K27ac template:
+For paired-end H3K27ac, quantify one fragment per proper template:
 
 1. Start from the already filtered, indexed final IP BAM.
 2. Select one representative alignment per proper pair using positive TLEN.
@@ -112,9 +112,24 @@ and are not processed, subtracted, ratioed, or included in the default ABC
 activity signal. Any future input-adjusted activity must be a new, explicitly
 named method and `run_id`, not a silent change to this one.
 
-The first implementation is paired-end only for H3K27ac activity. It must fail
-clearly on a single-end library until a separately tested counting definition
-is added.
+For single-end H3K27ac, infer one fragment per retained alignment using the
+reviewed library-specific `estimated_fragment_length_bp`:
+
+1. Retain mapped primary alignments while excluding QC-failed, duplicate, and
+   supplementary records from the already filtered final BAM.
+2. Convert each alignment to its zero-based reference-aligned BED interval.
+3. Anchor the inferred fragment at the read's five-prime coordinate: extend
+   right from the aligned start for `+` reads and left from the aligned end for
+   `-` reads.
+4. Clip inferred fragments at chromosome boundaries and sort them in reference
+   chromosome order.
+5. Count every inferred fragment once in the genome-wide denominator and count
+   its non-empty overlaps with master DHS intervals.
+
+The estimate is the primary phantompeakqualtools cross-correlation estimate
+selected during QC review. Record the library layout and estimate in validation
+receipts and activity provenance. Never substitute another library's estimate
+or silently apply a cohort-wide default.
 
 ### 2.4 Depth and length normalization
 
@@ -328,6 +343,7 @@ source_run_id
 bam_sha256
 bai_sha256
 qc_status
+estimated_fragment_length_bp
 notes
 ```
 
@@ -340,10 +356,17 @@ Rules:
 - `genome` must be `dm6`.
 - `filtering_contract` must identify the expected final-BAM semantics, for
   example `short-read-processing-final-v1`.
-- Activity libraries require `qc_status=accepted`.
+- Activity review manifests must cover every selected treatment library with
+  `qc_status=accepted` or `qc_status=rejected`; `pending_review` is an error.
+- Rejected rows remain in the reviewed manifest, require a reason in `notes`,
+  and are skipped explicitly while their decision is retained in provenance.
+- Reviewed single-end histone libraries require the primary
+  phantompeakqualtools estimate in `estimated_fragment_length_bp`. Paired-end
+  rows leave this field blank.
 - Control libraries may be present for provenance but are excluded from
   activity.
-- Every required treatment library must occur exactly once.
+- Every required treatment library must occur exactly once, including
+  explicitly rejected rows.
 - Duplicate paths, missing libraries, unexpected treatment libraries, and
   inconsistent contexts are hard errors.
 - Full BAM and BAI SHA-256 values are recorded once when the manifest is
@@ -610,6 +633,10 @@ calculations.
 ```text
 activity_metrics.json
 activity_provenance.json
+qc/replicate_correlations.tsv
+qc/distribution_quantiles.tsv
+qc/activity_qc_metrics.json
+qc/activity_qc_report.html
 ```
 
 Metrics include element counts, width distribution, zero fractions, library
@@ -798,7 +825,11 @@ weighted by library depth.
 3. Calculate geometric-mean activity. **Implemented.**
 4. Assemble the canonical long table and per-context views. **Implemented.**
 5. Validate distributions, completeness, row order, and finite values.
-   **Implemented; broader production distribution review remains required.**
+   **Implemented.**
+6. Generate deterministic downstream replicate and normalization QC with raw,
+   log1p, and rank correlations; pre/post/reference quantile profiles; zero
+   fractions; and tie summaries. **Implemented; scientific acceptance remains
+   a manual review decision.**
 
 Acceptance criterion: normalized vectors match their assay-specific selected
 reference distributions under the documented tie semantics.
@@ -813,9 +844,9 @@ reference distributions under the documented tie semantics.
 5. Add activity targets to the appropriate top-level endpoint.
    **Implemented.**
 6. Add the no-realignment dry-run regression. **Implemented.**
-7. Add explicit `trimming`, `alignment`, `qc`, `master`, and `activity`
-   stopping points while keeping the stopping point outside the scientific
-   semantic hash. **Implemented.**
+7. Add explicit `trimming`, `alignment`, `qc`, `master`, `activity`, and
+   `activity-qc` stopping points while keeping the stopping point outside the
+   scientific semantic hash. **Implemented.**
 8. Bound MACS3 ATAC treatment, lambda, and qpois bedGraphs to the reference
    chromosome sizes before downstream use. **Implemented.**
 
@@ -860,6 +891,7 @@ workflow:
 | `50` | ATAC context support and master-DHS construction |
 | `60` | QC aggregation, reporting, and artifact export |
 | `70` | activity counting, CPM-per-kb normalization, and quantile normalization |
+| `80` | descriptive activity QC and normalization review report |
 
 Implementation constraints:
 
@@ -891,6 +923,9 @@ The implementation is complete only when:
 - ATAC and H3K27ac are quantile-normalized separately to the explicitly
   selected reference;
 - the canonical table contains raw, `CPM_per_kb`, qnorm, and activity values;
+- the downstream activity-QC report records replicate agreement, sparsity,
+  tie behavior, and assay-specific reference matching without silently
+  imposing an acceptance threshold;
 - every atlas context has both assays or fails explicitly;
 - ChIP input/control libraries are absent from the selected activity-reference
   table and activity DAG;

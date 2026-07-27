@@ -51,7 +51,8 @@ if ACTIVITY:
             bam=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bam"],
             bai=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bai"],
             validated=lambda wc: ACTIVITY_BAM_VALIDATIONS[wc.library],
-            chrom_sizes=str(REFERENCE["chrom_sizes"])
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh")
         output:
             bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
             unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
@@ -84,7 +85,8 @@ if ACTIVITY:
                   $6 == "+" {{print $1,$2,$2+1,$4,$5,$6; n++; next}}
                   $6 == "-" {{print $1,$3-1,$3,$4,$5,$6; n++; next}}
                   END {{print n+0 > countfile}}' \
-              | bedtools sort -g {input.chrom_sizes:q} -i - \
+              | bash {input.sorter:q} {input.chrom_sizes:q} \
+                  "$temporary/sort" 2>> {log:q} \
               | pigz -p 2 -c > "$temporary/units.bed.gz"
             test "$(samtools view -c "$temporary/shifted.bam")" \
               -eq "$(cat "$temporary/count")"
@@ -99,12 +101,13 @@ if ACTIVITY:
             bam=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bam"],
             bai=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bai"],
             validated=lambda wc: ACTIVITY_BAM_VALIDATIONS[wc.library],
-            chrom_sizes=str(REFERENCE["chrom_sizes"])
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh")
         output:
             bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
             unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
         wildcard_constraints:
-            library=ACTIVITY_H3K27AC_LIBRARY_RE
+            library=ACTIVITY_H3K27AC_PAIRED_LIBRARY_RE
         threads: 4
         resources:
             mem_mb=4000
@@ -122,9 +125,58 @@ if ACTIVITY:
               | awk -v countfile="$temporary/count" 'BEGIN {{OFS="\t"}}
                   {{start=$4-1; print $3,start,start+$9,$1,0,"."; n++}}
                   END {{print n+0 > countfile}}' \
-              | bedtools sort -g {input.chrom_sizes:q} -i - \
+              | bash {input.sorter:q} {input.chrom_sizes:q} \
+                  "$temporary/sort" 2>> {log:q} \
               | pigz -p 2 -c > "$temporary/units.bed.gz"
             pigz -t "$temporary/units.bed.gz"
+            mv "$temporary/units.bed.gz" {output.bed:q}
+            mv "$temporary/count" {output.unit_count:q}
+            """
+
+
+    rule prepare_activity_h3k27ac_single_fragments:
+        input:
+            bam=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bam"],
+            bai=lambda wc: ACTIVITY_LIBRARIES[wc.library]["bai"],
+            validated=lambda wc: ACTIVITY_BAM_VALIDATIONS[wc.library],
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh"),
+            implementation=str(
+                REPO_ROOT / "src" / "extend_single_end_fragments.py"
+            )
+        output:
+            bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
+            unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
+        params:
+            fragment_length=lambda wc: int(
+                ACTIVITY_LIBRARIES[wc.library]["estimated_fragment_length_bp"]
+            )
+        wildcard_constraints:
+            library=ACTIVITY_H3K27AC_SINGLE_LIBRARY_RE
+        threads: 4
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/alignment.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/units/{{library}}.h3k27ac-single.log"
+        shell:
+            r"""
+            mkdir -p $(dirname {output.bed:q}) $(dirname {log:q})
+            temporary=$(mktemp -d $(dirname {output.bed:q})/.{wildcards.library}.XXXXXX)
+            trap 'rm -rf "$temporary"' EXIT
+            samtools view -@ {threads} -b -F 3844 {input.bam:q} 2> {log:q} \
+              | bedtools bamtobed -i - 2>> {log:q} \
+              | python {input.implementation:q} \
+                  --chrom-sizes {input.chrom_sizes:q} \
+                  --fragment-length {params.fragment_length} \
+                  --count-output "$temporary/count" 2>> {log:q} \
+              | bash {input.sorter:q} {input.chrom_sizes:q} \
+                  "$temporary/sort" 2>> {log:q} \
+              | pigz -p 2 -c > "$temporary/units.bed.gz"
+            pigz -t "$temporary/units.bed.gz"
+            test "$(pigz -dc "$temporary/units.bed.gz" | wc -l)" \
+              -eq "$(cat "$temporary/count")"
             mv "$temporary/units.bed.gz" {output.bed:q}
             mv "$temporary/count" {output.unit_count:q}
             """
@@ -202,3 +254,31 @@ if ACTIVITY:
             f"{RESULT_ROOT}/logs/activity/build-table.log"
         script:
             "../scripts/build_activity_table.py"
+
+
+    rule build_activity_qc_report:
+        input:
+            library_signal=ACTIVITY_LIBRARY_SIGNAL,
+            context_signal=ACTIVITY_CONTEXT_SIGNAL,
+            reference=ACTIVITY_QNORM_REFERENCE,
+            activity=ACTIVITY_TABLE,
+            provenance=ACTIVITY_PROVENANCE,
+            implementation=str(
+                REPO_ROOT / "src" / "short_read_processing" / "activity_qc.py"
+            )
+        output:
+            correlations=ACTIVITY_QC_CORRELATIONS,
+            distributions=ACTIVITY_QC_DISTRIBUTIONS,
+            metrics=ACTIVITY_QC_METRICS,
+            report=ACTIVITY_QC_REPORT
+        params:
+            atlas_contexts=ACTIVITY_CONTEXTS,
+            reference_context=str(ACTIVITY["reference_context"])
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/activity_qc.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/qc-report.log"
+        script:
+            "../scripts/build_activity_qc_report.py"

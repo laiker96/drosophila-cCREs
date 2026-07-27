@@ -89,7 +89,7 @@ def main() -> int:
         choices=OUTPUT_STAGES,
         help=(
             "Stop after this logical stage. Omit to retain the existing master "
-            "endpoint, or the activity endpoint in activity mode."
+            "endpoint, or the activity-QC endpoint in activity mode."
         ),
     )
     parser.add_argument(

@@ -26,7 +26,7 @@ def main() -> int:
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
     parser.add_argument(
         "--until-stage",
-        choices=OUTPUT_STAGES[:-1],
+        choices=("trimming", "alignment", "qc", "master"),
         default="master",
         help="Logical workflow stopping point recorded in each resolved config",
     )

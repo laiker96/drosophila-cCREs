@@ -89,12 +89,19 @@ REFERENCE_FIELDS = {
     "effective_genome_size",
     "macs3_genome_size",
 }
-OUTPUT_STAGES = ("trimming", "alignment", "qc", "master", "activity")
+OUTPUT_STAGES = (
+    "trimming",
+    "alignment",
+    "qc",
+    "master",
+    "activity",
+    "activity-qc",
+)
 OUTPUT_STAGES_BY_INPUT = {
     "accessions": {"trimming", "alignment", "qc", "master"},
     "final-bam": {"alignment", "qc", "master"},
     "master": {"master"},
-    "activity": {"activity"},
+    "activity": {"activity", "activity-qc"},
 }
 
 
@@ -131,7 +138,9 @@ def validate_stage_selection(input_stage: str, output_stage: str | None) -> str:
 
     if input_stage not in OUTPUT_STAGES_BY_INPUT:
         raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
-    resolved = output_stage or ("activity" if input_stage == "activity" else "master")
+    resolved = output_stage or (
+        "activity-qc" if input_stage == "activity" else "master"
+    )
     if resolved not in OUTPUT_STAGES:
         raise AcquisitionError(f"Unsupported output stage: {resolved!r}")
     if resolved not in OUTPUT_STAGES_BY_INPUT[input_stage]:
@@ -304,9 +313,35 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity library {library_id}: invalid cohort"
                 )
-            if library["layout"] != "paired":
+            layout = library["layout"]
+            if layout not in {"single", "paired"}:
                 raise AcquisitionError(
-                    f"Activity library {library_id}: paired-end data are required"
+                    f"Activity library {library_id}: invalid layout"
+                )
+            estimated_fragment_length = library.get(
+                "estimated_fragment_length_bp"
+            )
+            if library["assay"] == "atac" and layout != "paired":
+                raise AcquisitionError(
+                    f"Activity library {library_id}: ATAC must be paired-end"
+                )
+            if library["assay"] == "h3k27ac" and layout == "single":
+                if (
+                    not isinstance(estimated_fragment_length, int)
+                    or isinstance(estimated_fragment_length, bool)
+                    or estimated_fragment_length < 1
+                ):
+                    raise AcquisitionError(
+                        f"Activity library {library_id}: single-end H3K27ac "
+                        "requires a positive estimated_fragment_length_bp"
+                    )
+            elif (
+                estimated_fragment_length is not None
+                and estimated_fragment_length != ""
+            ):
+                raise AcquisitionError(
+                    f"Activity library {library_id}: unexpected "
+                    "estimated_fragment_length_bp"
                 )
             if library["genome"] != config["reference"]["name"]:
                 raise AcquisitionError(

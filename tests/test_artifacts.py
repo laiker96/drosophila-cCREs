@@ -143,3 +143,49 @@ def test_final_bam_manifest_rejects_rejected_qc(tmp_path):
 
     with pytest.raises(AcquisitionError, match="rejected"):
         read_final_bam_manifest(manifest)
+
+
+def test_final_bam_manifest_allows_documented_rejection_for_activity_review(
+    tmp_path,
+):
+    bam = tmp_path / "rep1.bam"
+    bai = tmp_path / "rep1.bam.bai"
+    bam.write_bytes(b"bam")
+    bai.write_bytes(b"bai")
+    manifest = tmp_path / "reviewed.tsv"
+    manifest.write_text(
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\t"
+        "estimated_fragment_length_bp\tnotes\n"
+        f"rep1\th3k27ac\teye\ttreatment\tsingle\t{bam}\t{bai}\tdm6\t"
+        f"{FINAL_BAM_FILTERING_CONTRACT}\t{_digest('a')}\t{_digest('b')}\t"
+        "rejected\t380\tinsufficient depth\n"
+    )
+
+    rows = read_final_bam_manifest(manifest, allow_rejected=True)
+
+    assert rows["rep1"]["qc_status"] == "rejected"
+    assert rows["rep1"]["estimated_fragment_length_bp"] == "380"
+    assert rows["rep1"]["notes"] == "insufficient depth"
+
+
+@pytest.mark.parametrize("value", ["0", "not-an-integer"])
+def test_final_bam_manifest_rejects_invalid_estimated_fragment_length(
+    tmp_path, value
+):
+    bam = tmp_path / "rep1.bam"
+    bai = tmp_path / "rep1.bam.bai"
+    bam.write_bytes(b"bam")
+    bai.write_bytes(b"bai")
+    manifest = tmp_path / "reviewed.tsv"
+    manifest.write_text(
+        "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\t"
+        "estimated_fragment_length_bp\n"
+        f"rep1\th3k27ac\teye\ttreatment\tsingle\t{bam}\t{bai}\tdm6\t"
+        f"{FINAL_BAM_FILTERING_CONTRACT}\t{_digest('a')}\t{_digest('b')}\t"
+        f"accepted\t{value}\n"
+    )
+
+    with pytest.raises(AcquisitionError, match="positive integer"):
+        read_final_bam_manifest(manifest)

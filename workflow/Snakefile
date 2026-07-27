@@ -422,6 +422,11 @@ for sample in SAMPLE_IDS:
         "qc_status": (
             str(external["qc_status"]) if external else "pending_review"
         ),
+        "estimated_fragment_length_bp": (
+            str(external.get("estimated_fragment_length_bp", ""))
+            if external
+            else ""
+        ),
         "source_project": (
             str(external.get("source_project", "")) if external else PROJECT
         ),
@@ -507,9 +512,24 @@ ACTIVITY_H3K27AC_LIBRARIES = [
     for library in ACTIVITY_LIBRARY_IDS
     if ACTIVITY_LIBRARIES[library]["assay"] == "h3k27ac"
 ]
+ACTIVITY_H3K27AC_PAIRED_LIBRARIES = [
+    library
+    for library in ACTIVITY_H3K27AC_LIBRARIES
+    if ACTIVITY_LIBRARIES[library]["layout"] == "paired"
+]
+ACTIVITY_H3K27AC_SINGLE_LIBRARIES = [
+    library
+    for library in ACTIVITY_H3K27AC_LIBRARIES
+    if ACTIVITY_LIBRARIES[library]["layout"] == "single"
+]
 ACTIVITY_LIBRARY_RE = wildcard_regex(ACTIVITY_LIBRARY_IDS)
 ACTIVITY_ATAC_LIBRARY_RE = wildcard_regex(ACTIVITY_ATAC_LIBRARIES)
-ACTIVITY_H3K27AC_LIBRARY_RE = wildcard_regex(ACTIVITY_H3K27AC_LIBRARIES)
+ACTIVITY_H3K27AC_PAIRED_LIBRARY_RE = wildcard_regex(
+    ACTIVITY_H3K27AC_PAIRED_LIBRARIES
+)
+ACTIVITY_H3K27AC_SINGLE_LIBRARY_RE = wildcard_regex(
+    ACTIVITY_H3K27AC_SINGLE_LIBRARIES
+)
 ACTIVITY_BAM_VALIDATIONS = {
     library: f"{RESULT_ROOT}/provenance/activity/bams/{library}.validated.json"
     for library in ACTIVITY_LIBRARY_IDS
@@ -546,6 +566,11 @@ ACTIVITY_QNORM_REFERENCE = f"{ACTIVITY_ROOT}/qnorm_reference.tsv.gz"
 ACTIVITY_TABLE = f"{ACTIVITY_ROOT}/master_dhs_activity.tsv.gz"
 ACTIVITY_METRICS = f"{ACTIVITY_ROOT}/activity_metrics.json"
 ACTIVITY_PROVENANCE = f"{ACTIVITY_ROOT}/activity_provenance.json"
+ACTIVITY_QC_ROOT = f"{ACTIVITY_ROOT}/qc"
+ACTIVITY_QC_CORRELATIONS = f"{ACTIVITY_QC_ROOT}/replicate_correlations.tsv"
+ACTIVITY_QC_DISTRIBUTIONS = f"{ACTIVITY_QC_ROOT}/distribution_quantiles.tsv"
+ACTIVITY_QC_METRICS = f"{ACTIVITY_QC_ROOT}/activity_qc_metrics.json"
+ACTIVITY_QC_REPORT = f"{ACTIVITY_QC_ROOT}/activity_qc_report.html"
 ACTIVITY_TARGETS = (
     list(ACTIVITY_BAM_VALIDATIONS.values())
     + [ACTIVITY_MASTER_VALIDATION]
@@ -560,6 +585,17 @@ ACTIVITY_TARGETS = (
         ACTIVITY_METRICS,
         ACTIVITY_PROVENANCE,
         RESOLVED_CONFIG,
+    ]
+    if ACTIVITY
+    else []
+)
+ACTIVITY_QC_TARGETS = (
+    ACTIVITY_TARGETS
+    + [
+        ACTIVITY_QC_CORRELATIONS,
+        ACTIVITY_QC_DISTRIBUTIONS,
+        ACTIVITY_QC_METRICS,
+        ACTIVITY_QC_REPORT,
     ]
     if ACTIVITY
     else []
@@ -693,7 +729,9 @@ MASTER_TARGETS = (
 )
 
 STANDARD_FINAL_TARGETS = MASTER_TARGETS
-if OUTPUT_STAGE == "activity":
+if OUTPUT_STAGE == "activity-qc":
+    FINAL_TARGETS = ACTIVITY_QC_TARGETS
+elif OUTPUT_STAGE == "activity":
     FINAL_TARGETS = ACTIVITY_TARGETS
 elif INPUT_STAGE == "master":
     FINAL_TARGETS = [

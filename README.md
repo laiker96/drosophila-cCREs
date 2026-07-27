@@ -129,10 +129,12 @@ Use `--until-stage` to stop at a reproducible logical boundary:
 | `qc` | library-level signal tracks, replicate peaks, FRiP and assay-specific QC, metrics, and MultiQC; no ATAC context pooling |
 | `master` | QC plus ATAC context pooling, replicate support, and the master-DHS bundle; this is the default |
 | `activity` | raw and CPM-per-kb counts, reference quantiles, quantile-normalized values, and the activity table |
+| `activity-qc` | activity plus replicate, sparsity, tie, and reference-distribution QC; this is the default activity endpoint |
 
 The valid stopping point depends on `--from-stage`: accession input may stop
 at trimming through master, final-BAM input may stop at alignment through
-master, master input stops at master, and activity input stops at activity.
+master, master input stops at master, and activity input may stop at activity or
+activity-QC. Omitting `--until-stage` in activity mode selects `activity-qc`.
 For a mixed ATAC/ChIP table, `master` builds the ATAC master and completes the
 ChIP library-level QC endpoint. Advancing the same `project`/`run-id` to a
 later stopping point reuses completed outputs; the stopping point is execution
@@ -194,8 +196,28 @@ results/<project>/<run-id>/provenance/manifests/final-bams.tsv
 Pipeline-produced BAMs are recorded as `qc_status=pending_review`; completing
 the workflow is not itself scientific QC acceptance. Both `pending_review` and
 `accepted` BAMs can be reused for downstream peak calling and QC, while
-`rejected` BAMs fail immediately. Activity quantification requires explicit
-`accepted` status for both atlas and normalization-reference libraries.
+`rejected` BAMs fail immediately in ordinary final-BAM reuse. A reviewed
+activity manifest instead retains every treatment row with either `accepted`
+or `rejected` status. Rejected rows require a reason in `notes`, are skipped
+explicitly, and are recorded in activity provenance; a missing or
+`pending_review` row remains an error.
+
+The optional `estimated_fragment_length_bp` column records the primary
+phantompeakqualtools estimate. It is required when reviewing a single-end
+histone ChIP library and must be blank for paired-end libraries. Apply a
+complete decision table atomically with:
+
+```bash
+micromamba run --prefix "$PWD/.venv" \
+  python src/review_final_bam_manifest.py \
+  results/<project>/<run-id>/provenance/manifests/final-bams.tsv \
+  --decisions data/raw/<project>/h3k27ac.qc-decisions.tsv \
+  --output data/raw/<project>/h3k27ac.reviewed.tsv
+```
+
+The decision table columns are `library_id`, `qc_status`,
+`estimated_fragment_length_bp`, and `notes`, and it must cover every manifest
+row exactly once.
 
 For BAMs imported from outside this workflow, create the initial manifest from
 exact `<library_id>.final.bam` filenames:
@@ -293,7 +315,7 @@ micromamba run --prefix "$PWD/.venv" \
   --master-manifest \
     results/drosophila-atlas/qpois-master-v1/provenance/manifests/master-dhs.tsv \
   --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-atac.accepted.tsv \
-  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-h3k27ac.accepted.tsv \
+  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-h3k27ac.reviewed.tsv \
   --activity-reference-sheet \
     data/raw/drosophila-s2-t0-reference/s2_t0_gse95689.tsv \
   --activity-reference-bam-manifest \
@@ -308,18 +330,30 @@ micromamba run --prefix "$PWD/.venv" \
 
 Repeat either BAM-manifest option when ATAC and H3K27ac are stored in separate
 manifests. The atlas accession sheet remains the positional input and supplies
-library-to-context metadata; ChIP controls are ignored for activity
-quantification.
+library-to-context metadata; ChIP controls and explicitly rejected treatment
+libraries are ignored for activity quantification. Rejection decisions and
+reasons remain in provenance.
 
 For each accepted ATAC BAM, the workflow retains proper pairs with
 `0 < abs(TLEN) < 150`, applies the standard two-ended Tn5 shift, and counts both
 one-base insertion records. For each accepted H3K27ac BAM, it counts one
-positive-TLEN fragment per proper pair. Raw counts are converted to
+positive-TLEN fragment per proper pair for paired-end data. For single-end
+H3K27ac, it extends each retained primary read strand-aware from its five-prime
+coordinate to that library's reviewed `estimated_fragment_length_bp`, clips at
+chromosome boundaries, and counts the inferred fragment. Raw counts are converted to
 `CPM_per_kb = count * 10^9 / (total assay units * element width_bp)`, preserving
 the variable-width master elements. Biological libraries are averaged with
 equal weight within context and assay. ATAC and H3K27ac distributions are then
 tie-aware quantile-normalized separately to the corresponding mean reference
 profile. The combined value is `sqrt(atac_qnorm * h3k27ac_qnorm)`.
+
+Prepared insertion/fragment BED records are ordered by reference chromosome and
+coordinate with a bounded-memory external sort. Sort runs spill under the
+rule's temporary output directory and are deleted after atomic output promotion,
+so large BAMs do not require the complete BED stream to fit in memory.
+
+Library layout and any single-end fragment estimate are retained in validation
+receipts and activity provenance. Single-end ATAC remains unsupported.
 
 The canonical endpoint is:
 
@@ -340,7 +374,24 @@ activity/qnorm_reference.tsv.gz            frozen assay-specific reference profi
 activity/contexts/<context>.activity.tsv.gz
 activity/activity_metrics.json
 activity/activity_provenance.json
+activity/qc/replicate_correlations.tsv
+activity/qc/distribution_quantiles.tsv
+activity/qc/activity_qc_metrics.json
+activity/qc/activity_qc_report.html
 ```
+
+The downstream `activity-qc` rule consumes only these completed activity
+tables; it never reads BAMs or schedules counting again when those outputs are
+current. The self-contained HTML report compares pre- and post-normalization
+quantile profiles with the assay-matched S2 reference, reports zero and tie
+behavior, and calculates raw, log1p, and Spearman replicate correlations from
+the per-library CPM-per-kb table. It also lists context/assay groups represented
+by only one biological library. The report is descriptive and deliberately
+does not apply an automatic correlation or sparsity acceptance threshold.
+
+Use `--until-stage activity` to stop after producing the ABC input table
+without the report. The default activity command above continues through
+`--until-stage activity-qc`.
 
 Every resolved configuration records sample-sheet, schema, and artifact
 manifest hashes plus a timestamp-independent semantic SHA-256. Changing an

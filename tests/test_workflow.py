@@ -481,7 +481,7 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
                 "assay": assay,
                 "cohort": cohort,
                 "context": context,
-                "layout": "paired",
+                "layout": "single" if library_id == "atlas_h3" else "paired",
                 "genome": "dm6",
                 "bam": str(bam),
                 "bai": str(bai),
@@ -489,6 +489,11 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
                 "bai_sha256": "c" * 64,
                 "filtering_contract": "short-read-processing-final-v1",
                 "qc_status": "accepted",
+                **(
+                    {"estimated_fragment_length_bp": 165}
+                    if library_id == "atlas_h3"
+                    else {}
+                ),
             }
         )
     config["activity"] = {
@@ -509,9 +514,12 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
         "validate_activity_master",
         "prepare_activity_atac_insertions",
         "prepare_activity_h3k27ac_fragments",
+        "prepare_activity_h3k27ac_single_fragments",
         "count_activity_library",
         "build_master_dhs_activity_table",
+        "build_activity_qc_report",
         "master_dhs_activity.tsv.gz",
+        "activity_qc_report.html",
     ):
         assert expected in output
     for forbidden in (
@@ -523,3 +531,9 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
         "call_atac_replicate_qpois",
     ):
         assert forbidden not in output
+
+    config["output_stage"] = "activity"
+    activity_only_output = _dry_run(tmp_path, config, "activity-only")
+    assert "build_master_dhs_activity_table" in activity_only_output
+    assert "master_dhs_activity.tsv.gz" in activity_only_output
+    assert "build_activity_qc_report" not in activity_only_output

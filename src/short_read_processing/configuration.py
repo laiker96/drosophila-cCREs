@@ -612,12 +612,17 @@ def _merge_final_bam_manifests(
     paths: list[Path],
     *,
     require_files: bool,
+    allow_rejected: bool = False,
 ) -> dict[str, dict[str, str]]:
     if not paths:
         raise AcquisitionError("At least one final-BAM manifest is required")
     merged: dict[str, dict[str, str]] = {}
     for path in paths:
-        rows = read_final_bam_manifest(path, require_files=require_files)
+        rows = read_final_bam_manifest(
+            path,
+            require_files=require_files,
+            allow_rejected=allow_rejected,
+        )
         duplicate = sorted(set(merged) & set(rows))
         if duplicate:
             raise AcquisitionError(
@@ -636,7 +641,7 @@ def _activity_libraries(
     cohort: str,
     selected_context: str | None,
     path_base: Path,
-) -> tuple[list[dict[str, str]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     sheet_by_library: dict[str, dict[str, Any]] = {}
     for row in sheet_rows:
         sheet_by_library.setdefault(str(row["library_id"]), row)
@@ -660,7 +665,8 @@ def _activity_libraries(
             f"{cohort} final-BAM manifests are missing treatment libraries: "
             + ", ".join(missing)
         )
-    libraries = []
+    libraries: list[dict[str, Any]] = []
+    exclusions: list[dict[str, Any]] = []
     for library_id, row in sorted(selected.items()):
         artifact = manifests[library_id]
         for field in ("context", "role"):
@@ -677,36 +683,71 @@ def _activity_libraries(
                 f"{cohort} BAM {library_id!r} uses {artifact['genome']!r}, "
                 f"expected {genome!r}"
             )
-        if artifact["qc_status"] != "accepted":
+        qc_status = artifact["qc_status"]
+        if qc_status == "pending_review":
             raise AcquisitionError(
                 f"{cohort} activity BAM {library_id!r} requires qc_status='accepted'"
             )
-        if artifact["layout"] != "paired":
-            raise AcquisitionError(
-                f"{cohort} activity BAM {library_id!r} must be paired-end"
-            )
-        libraries.append(
-            {
-                "id": library_id,
-                "assay": (
-                    "h3k27ac" if artifact["assay"] == "chip_histone" else "atac"
-                ),
-                "context": str(row["context"]),
-                "cohort": cohort,
-                "layout": artifact["layout"],
-                "genome": artifact["genome"],
-                "bam": _display_path(artifact["bam"], path_base),
-                "bai": _display_path(artifact["bai"], path_base),
-                "bam_sha256": artifact["bam_sha256"],
-                "bai_sha256": artifact["bai_sha256"],
-                "filtering_contract": artifact["filtering_contract"],
-                "qc_status": artifact["qc_status"],
-                "source_project": artifact.get("source_project", ""),
-                "source_run_id": artifact.get("source_run_id", ""),
-            }
+        assay = "h3k27ac" if artifact["assay"] == "chip_histone" else "atac"
+        estimated_fragment_length = artifact.get(
+            "estimated_fragment_length_bp", ""
         )
+        if artifact["layout"] == "single" and assay == "h3k27ac":
+            if not estimated_fragment_length:
+                raise AcquisitionError(
+                    f"{cohort} single-end H3K27ac BAM {library_id!r} requires "
+                    "estimated_fragment_length_bp"
+                )
+        elif estimated_fragment_length:
+            raise AcquisitionError(
+                f"{cohort} BAM {library_id!r} must leave "
+                "estimated_fragment_length_bp blank unless it is single-end H3K27ac"
+            )
+        if qc_status == "rejected":
+            exclusions.append(
+                {
+                    "id": library_id,
+                    "assay": assay,
+                    "context": str(row["context"]),
+                    "cohort": cohort,
+                    "layout": artifact["layout"],
+                    "qc_status": qc_status,
+                    "estimated_fragment_length_bp": (
+                        int(estimated_fragment_length)
+                        if estimated_fragment_length
+                        else None
+                    ),
+                    "reason": artifact["notes"],
+                }
+            )
+            continue
+        if assay == "atac" and artifact["layout"] != "paired":
+            raise AcquisitionError(
+                f"{cohort} activity ATAC BAM {library_id!r} must be paired-end"
+            )
+        library: dict[str, Any] = {
+            "id": library_id,
+            "assay": assay,
+            "context": str(row["context"]),
+            "cohort": cohort,
+            "layout": artifact["layout"],
+            "genome": artifact["genome"],
+            "bam": _display_path(artifact["bam"], path_base),
+            "bai": _display_path(artifact["bai"], path_base),
+            "bam_sha256": artifact["bam_sha256"],
+            "bai_sha256": artifact["bai_sha256"],
+            "filtering_contract": artifact["filtering_contract"],
+            "qc_status": artifact["qc_status"],
+            "source_project": artifact.get("source_project", ""),
+            "source_run_id": artifact.get("source_run_id", ""),
+        }
+        if estimated_fragment_length:
+            library["estimated_fragment_length_bp"] = int(
+                estimated_fragment_length
+            )
+        libraries.append(library)
     contexts = sorted({library["context"] for library in libraries})
-    return libraries, contexts
+    return libraries, contexts, exclusions
 
 
 def generate_activity_config(
@@ -763,12 +804,14 @@ def generate_activity_config(
     atlas_manifests = _merge_final_bam_manifests(
         atlas_final_bam_manifests,
         require_files=require_files,
+        allow_rejected=True,
     )
     reference_manifests = _merge_final_bam_manifests(
         reference_final_bam_manifests,
         require_files=require_files,
+        allow_rejected=True,
     )
-    atlas_libraries, atlas_contexts = _activity_libraries(
+    atlas_libraries, atlas_contexts, atlas_exclusions = _activity_libraries(
         sheet_rows=atlas_rows,
         manifests=atlas_manifests,
         genome=genome,
@@ -776,7 +819,11 @@ def generate_activity_config(
         selected_context=None,
         path_base=path_base,
     )
-    reference_libraries, _reference_contexts = _activity_libraries(
+    (
+        reference_libraries,
+        _reference_contexts,
+        reference_exclusions,
+    ) = _activity_libraries(
         sheet_rows=reference_rows,
         manifests=reference_manifests,
         genome=genome,
@@ -862,6 +909,7 @@ def generate_activity_config(
         "reference_final_bam_manifest_sha256": [
             sha256_file(path) for path in reference_final_bam_manifests
         ],
+        "excluded_activity_libraries": atlas_exclusions + reference_exclusions,
     }
     config: dict[str, Any] = {
         "project": project,
@@ -869,7 +917,7 @@ def generate_activity_config(
         "output_dir": "results",
         "assay": "activity",
         "input_stage": "activity",
-        "output_stage": "activity",
+        "output_stage": "activity-qc",
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {
