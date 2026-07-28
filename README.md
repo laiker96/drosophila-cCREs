@@ -1,4 +1,4 @@
-# Short-read processing
+# Drosophila cCREs
 
 Reproducible ATAC-seq and ChIP-seq processing from public accessions to a
 summit-aware master DHS registry and a context-resolved regulatory-element
