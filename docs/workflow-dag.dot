@@ -25,6 +25,7 @@ digraph workflow {
   windows [label="Three 500-bp H3K27ac windows\nmax after context averaging", fillcolor="#fff4d8"];
   mixture [label="Guarded two-Gaussian fit\nlow/high + explicit warnings", fillcolor="#f7e4b2"];
   catalog [label="Long + wide catalogs\nactive elements per context\n--until-stage catalog", fillcolor="#f7e4b2"];
+  browser [label="Context BEDs + mean TMM BigWigs\nportable IGV sessions", fillcolor="#e1f0f7"];
   report [label="Integrated HTML/PDF QC report\ninputs, outputs, statistics + plots\n--until-stage report", fillcolor="#e8e1f5"];
 
   accessions -> download -> trim -> align -> qc -> reviewtable -> reviewedbam -> context -> master -> mastermanifest;
@@ -36,7 +37,8 @@ digraph workflow {
   units -> windows -> mixture;
   master -> windows;
   quantify -> mixture -> catalog;
-  catalog -> report;
+  tmm -> browser;
+  catalog -> browser -> report;
   reviewedbam -> report [style=dashed];
   mastermanifest -> report [style=dashed];
 }

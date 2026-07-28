@@ -7,6 +7,7 @@ import argparse
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import tempfile
 
 
 def relative_path(path: Path, session_path: Path) -> str:
@@ -43,6 +44,28 @@ def _require(paths: list[Path]) -> None:
     missing = [path for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError("Missing IGV inputs:\n" + "\n".join(map(str, missing)))
+
+
+def _write_xml_if_changed(session: ET.Element, output: Path) -> None:
+    ET.indent(session, space="  ")
+    content = ET.tostring(session, encoding="utf-8", xml_declaration=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.is_file() and output.read_bytes() == content:
+        return
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{output.name}.",
+            dir=output.parent,
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            handle.write(content)
+        os.replace(temporary_name, output)
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
 
 
 def build_session(
@@ -176,9 +199,87 @@ def build_session(
                 track_count += 1
             chip_samples += 1
 
-    ET.indent(session, space="  ")
-    ET.ElementTree(session).write(output, encoding="utf-8", xml_declaration=True)
+    _write_xml_if_changed(session, output)
     return len(conditions), chip_samples, track_count
+
+
+def build_catalog_session(
+    *,
+    context: str,
+    genome: str,
+    atac_bigwig: Path,
+    h3k27ac_bigwig: Path,
+    context_dhs_bed: Path,
+    master_dhs_bed: Path,
+    active_elements_bed: Path,
+    output: Path,
+    locus: str = "All",
+) -> int:
+    """Build a portable five-track IGV session for one atlas context."""
+
+    paths = [
+        atac_bigwig,
+        h3k27ac_bigwig,
+        context_dhs_bed,
+        master_dhs_bed,
+        active_elements_bed,
+    ]
+    _require(paths)
+    session = ET.Element(
+        "Session",
+        genome=genome,
+        hasGeneTrack="true",
+        hasSequenceTrack="true",
+        locus=locus,
+        version="3",
+    )
+    resources = ET.SubElement(session, "Resources")
+    panel = ET.SubElement(session, "Panel", name=f"{context} regulatory atlas")
+    label = context.upper()
+    specifications = [
+        (
+            atac_bigwig,
+            f"{label} | mean ATAC Tn5 signal (background-TMM)",
+            "31,120,180",
+            True,
+        ),
+        (
+            h3k27ac_bigwig,
+            f"{label} | mean H3K27ac fragment coverage (background-TMM)",
+            "221,126,32",
+            True,
+        ),
+        (
+            context_dhs_bed,
+            f"{label} | context DHSs (master coordinates)",
+            "0,145,130",
+            False,
+        ),
+        (
+            active_elements_bed,
+            f"{label} | active regulatory elements",
+            "202,61,52",
+            False,
+        ),
+        (
+            master_dhs_bed,
+            "Master DHS registry",
+            "106,27,154",
+            False,
+        ),
+    ]
+    for path, name, color, signal in specifications:
+        add_track(
+            resources,
+            panel,
+            path=path,
+            output=output,
+            name=name,
+            color=color,
+            signal=signal,
+        )
+    _write_xml_if_changed(session, output)
+    return len(specifications)
 
 
 def main() -> int:

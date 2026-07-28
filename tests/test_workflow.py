@@ -585,6 +585,9 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "count_regulatory_h3k27ac_windows",
         "build_regulatory_element_catalog",
         "plot_regulatory_element_mixtures",
+        "build_catalog_bed_tracks",
+        "build_context_mean_bigwig",
+        "build_context_igv_session",
         "build_activity_background_bins",
         "count_activity_background_library",
         "build_activity_tmm_inputs",
@@ -596,6 +599,10 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "ctx.active_elements.tsv.gz",
         "mixture_models.tsv",
         "h3k27ac_mixture_distributions.svg",
+        "ctx.active_elements.bed",
+        "ctx.atac.mean.background_tmm.bw",
+        "ctx.h3k27ac.mean.background_tmm.bw",
+        "igv/ctx.xml",
     ):
         assert expected in output
     assert "build_integrated_qc_report" not in output

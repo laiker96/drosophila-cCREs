@@ -1,7 +1,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from build_igv_session import build_session
+from build_igv_session import build_catalog_session, build_session
 
 
 def touch_all(paths):
@@ -106,3 +106,35 @@ def test_session_auto_includes_master_dhs_track(tmp_path: Path):
     assert counts == (1, 0, 4)
     assert tracks[0].attrib["name"] == "Master DHS registry"
     assert tracks[0].attrib["color"] == "106,27,154"
+
+
+def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: Path):
+    inputs = {
+        "atac_bigwig": tmp_path / "catalog/tracks/ctx.atac.bw",
+        "h3k27ac_bigwig": tmp_path / "catalog/tracks/ctx.h3k27ac.bw",
+        "context_dhs_bed": tmp_path / "catalog/bed/ctx.dhs.bed",
+        "master_dhs_bed": tmp_path / "catalog/bed/master_dhs.bed",
+        "active_elements_bed": tmp_path / "catalog/bed/ctx.active_elements.bed",
+    }
+    touch_all(list(inputs.values()))
+    output = tmp_path / "catalog/igv/ctx.xml"
+
+    count = build_catalog_session(
+        context="ctx",
+        genome="dm6",
+        output=output,
+        **inputs,
+    )
+
+    root = ET.parse(output).getroot()
+    resources = root.findall("./Resources/Resource")
+    tracks = root.findall("./Panel/Track")
+    assert count == len(resources) == len(tracks) == 5
+    assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
+    assert [track.attrib["name"] for track in tracks] == [
+        "CTX | mean ATAC Tn5 signal (background-TMM)",
+        "CTX | mean H3K27ac fragment coverage (background-TMM)",
+        "CTX | context DHSs (master coordinates)",
+        "CTX | active regulatory elements",
+        "Master DHS registry",
+    ]

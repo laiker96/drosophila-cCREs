@@ -270,6 +270,7 @@ if ACTIVITY:
             counts=ACTIVITY_TMM_COUNTS,
             metadata=ACTIVITY_TMM_METADATA
         params:
+            method=TMM_BACKGROUND_METHOD,
             signal_arguments=" ".join(
                 "--signal {}".format(
                     shlex.quote(f"{library}={ACTIVITY_LIBRARY_SIGNALS[library]}")
@@ -290,7 +291,7 @@ if ACTIVITY:
             f"{RESULT_ROOT}/logs/activity/quantification/build-tmm-inputs.log"
         shell:
             "mkdir -p $(dirname {output.counts:q}) $(dirname {log:q}) && "
-            "python {input.script:q} --method {TMM_BACKGROUND_METHOD:q} "
+            "python {input.script:q} --method {params.method:q} "
             "{params.signal_arguments} {params.background_arguments} "
             "--output-counts {output.counts:q} "
             "--output-metadata {output.metadata:q} > {log:q} 2>&1"
@@ -304,6 +305,8 @@ if ACTIVITY:
         output:
             factors=ACTIVITY_TMM_FACTORS,
             receipt=ACTIVITY_TMM_RECEIPT
+        params:
+            method=TMM_BACKGROUND_METHOD
         resources:
             mem_mb=4000
         conda:
@@ -312,7 +315,7 @@ if ACTIVITY:
             f"{RESULT_ROOT}/logs/activity/quantification/calculate-tmm-factors.log"
         shell:
             "mkdir -p $(dirname {output.factors:q}) $(dirname {log:q}) && "
-            "Rscript {input.script:q} --method {TMM_BACKGROUND_METHOD:q} "
+            "Rscript {input.script:q} --method {params.method:q} "
             "--counts {input.counts:q} --metadata {input.metadata:q} "
             "--output-factors {output.factors:q} "
             "--output-receipt {output.receipt:q} > {log:q} 2>&1"
@@ -468,6 +471,113 @@ if ACTIVITY:
             "../scripts/plot_regulatory_element_mixtures.py"
 
 
+    rule build_catalog_bed_tracks:
+        input:
+            master=str(ACTIVITY["master"]["master_bed"]),
+            summits=str(ACTIVITY["master"]["summits_bed"]),
+            context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
+            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            catalog_metrics=ACTIVITY_REGULATORY_METRICS,
+            implementation=str(
+                REPO_ROOT
+                / "src"
+                / "short_read_processing"
+                / "catalog_visualization.py"
+            )
+        output:
+            master=ACTIVITY_CATALOG_MASTER_BED,
+            context_dhs=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
+            active_beds=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            manifest=ACTIVITY_CATALOG_BED_MANIFEST
+        params:
+            active_paths=ACTIVITY_REGULATORY_ACTIVE,
+            context_dhs_paths=ACTIVITY_CATALOG_CONTEXT_DHS,
+            active_bed_paths=ACTIVITY_CATALOG_ACTIVE_BEDS
+        resources:
+            mem_mb=3000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/bed-tracks.log"
+        script:
+            "../scripts/build_catalog_bed_tracks.py"
+
+
+    rule build_context_mean_bigwig:
+        input:
+            units=lambda wc: [
+                ACTIVITY_UNIT_BEDS[library]
+                for library in ACTIVITY_CONTEXT_ASSAY_LIBRARIES[
+                    (wc.context, wc.assay)
+                ]
+            ],
+            factors=ACTIVITY_TMM_FACTORS,
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            implementation=str(
+                REPO_ROOT
+                / "src"
+                / "short_read_processing"
+                / "catalog_visualization.py"
+            )
+        output:
+            bigwig=(
+                f"{ACTIVITY_CATALOG_TRACK_ROOT}/"
+                "{context}.{assay}.mean.background_tmm.bw"
+            ),
+            metrics=(
+                f"{ACTIVITY_CATALOG_TRACK_ROOT}/"
+                "{context}.{assay}.mean.background_tmm.json"
+            )
+        params:
+            context=lambda wc: wc.context,
+            assay=lambda wc: wc.assay,
+            unit_paths=lambda wc: {
+                library: ACTIVITY_UNIT_BEDS[library]
+                for library in ACTIVITY_CONTEXT_ASSAY_LIBRARIES[
+                    (wc.context, wc.assay)
+                ]
+            }
+        wildcard_constraints:
+            context=ACTIVITY_CONTEXT_RE,
+            assay="atac|h3k27ac"
+        threads: 2
+        resources:
+            mem_mb=5000
+        conda:
+            "../envs/catalog_tracks.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/tracks/{{context}}.{{assay}}.log"
+        script:
+            "../scripts/build_context_mean_bigwig.py"
+
+
+    rule build_context_igv_session:
+        input:
+            atac=lambda wc: ACTIVITY_CONTEXT_MEAN_BIGWIGS[(wc.context, "atac")],
+            h3k27ac=lambda wc: ACTIVITY_CONTEXT_MEAN_BIGWIGS[
+                (wc.context, "h3k27ac")
+            ],
+            context_dhs=lambda wc: ACTIVITY_CATALOG_CONTEXT_DHS[wc.context],
+            master_dhs=ACTIVITY_CATALOG_MASTER_BED,
+            active_elements=lambda wc: ACTIVITY_CATALOG_ACTIVE_BEDS[wc.context],
+            implementation=str(REPO_ROOT / "src" / "build_igv_session.py")
+        output:
+            session=f"{ACTIVITY_CATALOG_IGV_ROOT}/{{context}}.xml"
+        params:
+            context=lambda wc: wc.context,
+            genome=str(REFERENCE["name"])
+        wildcard_constraints:
+            context=ACTIVITY_CONTEXT_RE
+        resources:
+            mem_mb=1000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/igv/{{context}}.log"
+        script:
+            "../scripts/build_catalog_igv_session.py"
+
+
     rule build_integrated_qc_report:
         input:
             sources=ACTIVITY_REPORT_SOURCE_FILES,
@@ -488,6 +598,15 @@ if ACTIVITY:
             mixture_plot=ACTIVITY_REGULATORY_MIXTURE_PLOT,
             mixture_bins=ACTIVITY_REGULATORY_MIXTURE_BINS,
             mixture_plot_metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+            catalog_master_bed=ACTIVITY_CATALOG_MASTER_BED,
+            context_dhs_beds=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
+            active_element_beds=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            bed_track_manifest=ACTIVITY_CATALOG_BED_MANIFEST,
+            mean_bigwigs=list(ACTIVITY_CONTEXT_MEAN_BIGWIGS.values()),
+            mean_bigwig_metrics=list(
+                ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values()
+            ),
+            igv_sessions=list(ACTIVITY_CONTEXT_IGV_SESSIONS.values()),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
         output:
             html=ACTIVITY_REPORT_HTML,
@@ -512,9 +631,31 @@ if ACTIVITY:
                 "mixture_distributions": ACTIVITY_REGULATORY_MIXTURE_PLOT,
                 "mixture_distribution_bins": ACTIVITY_REGULATORY_MIXTURE_BINS,
                 "mixture_distribution_metrics": ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+                "catalog_master_dhs_bed": ACTIVITY_CATALOG_MASTER_BED,
+                "catalog_bed_manifest": ACTIVITY_CATALOG_BED_MANIFEST,
                 **{
                     f"active_elements_{context}": path
                     for context, path in ACTIVITY_REGULATORY_ACTIVE.items()
+                },
+                **{
+                    f"context_dhs_bed_{context}": path
+                    for context, path in ACTIVITY_CATALOG_CONTEXT_DHS.items()
+                },
+                **{
+                    f"active_elements_bed_{context}": path
+                    for context, path in ACTIVITY_CATALOG_ACTIVE_BEDS.items()
+                },
+                **{
+                    f"mean_bigwig_{context}_{assay}": path
+                    for (context, assay), path in ACTIVITY_CONTEXT_MEAN_BIGWIGS.items()
+                },
+                **{
+                    f"mean_bigwig_metrics_{context}_{assay}": path
+                    for (context, assay), path in ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.items()
+                },
+                **{
+                    f"igv_session_{context}": path
+                    for context, path in ACTIVITY_CONTEXT_IGV_SESSIONS.items()
                 },
             }
         resources:

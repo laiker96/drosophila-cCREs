@@ -27,7 +27,7 @@ not part of this design.
 | QC | final BAMs | peaks, FRiP, assay QC, MultiQC, and a `pending_review` BAM manifest |
 | master | fully reviewed ATAC BAM manifest | accepted-library replicate/context evidence, master DHS bundle, and manifest |
 | quantification | master manifest plus accepted ATAC/H3K27ac BAM manifests | raw, CPM/kb and background-TMM activity tables |
-| catalog | completed quantification | guarded mixtures, long/wide catalogs and active sets |
+| catalog | completed quantification | guarded mixtures, long/wide catalogs, active sets, BED/BigWig tracks and IGV sessions |
 | report | completed catalog plus frozen upstream QC artifacts | integrated HTML/PDF report and checksummed JSON sidecar |
 
 The output stopping point is not part of the scientific semantic hash. Within
@@ -162,7 +162,11 @@ The catalog stage writes:
    their promoter/proximal/distal class and guardrail status;
 4. `mixture_models.tsv`: fitted parameters and exact support reasons;
 5. mixture distribution SVG and machine-readable histogram bins;
-6. summary, metrics, and checksummed provenance files.
+6. per-context active-element and context-DHS BED9 tracks plus a copied master
+   BED;
+7. background-TMM-normalized mean ATAC and H3K27ac BigWigs and a portable
+   five-track IGV session per context;
+8. summary, metrics, and checksummed provenance files.
 
 The continuous normalized ATAC and maximum-window H3K27ac values are retained
 for ABC scoring; the binary catalog labels are annotations rather than a

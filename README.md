@@ -58,7 +58,7 @@ two biological ATAC libraries per context.
 | `qc` | peaks, FRiP and assay QC, MultiQC |
 | `master` | replicate-supported context peaks and master DHS bundle/manifest |
 | `quantification` | raw, CPM/kb, background-TMM factors and normalized master-element signals |
-| `catalog` | max-window H3K27ac mixtures, long/wide catalogs, and active sets |
+| `catalog` | max-window H3K27ac mixtures, long/wide catalogs, active sets, BED/BigWig tracks, and IGV sessions |
 | `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the catalog |
 
 Snakemake owns completeness. Re-running the same `project`/`run_id` resumes
@@ -279,6 +279,31 @@ binary annotation is intended for an encyclopedia-style catalog; continuous
 ATAC, H3K27ac, and combined activity values remain the appropriate inputs for
 ABC scoring.
 
+## Browser tracks and IGV sessions
+
+The catalog stage creates a self-contained visualization bundle for every
+context. The context DHS BED uses the master-DHS coordinates for rows with
+`context_matrix` membership equal to one; it is therefore directly aligned
+with the catalog rather than reproducing the wider upstream pooled-peak
+boundaries. The active-element BED is BED9: the thick one-base interval marks
+the representative summit, the score is the high-component posterior scaled
+to 0--1,000, and item RGB distinguishes promoter-associated, proximal,
+distal, and unclassified elements. Its name records any mixture-guardrail
+warning.
+
+For each assay and context, every accepted library is first scaled by
+`1e6 / effective_library_size` using the same assay-specific background-TMM
+factor as the activity table. The context BigWig is the arithmetic mean of
+those basewise tracks. ATAC values represent Tn5 insertion coverage;
+H3K27ac values represent inferred fragment coverage. Consequently the browser
+signals and quantitative catalog share the same library selection and
+normalization, while retaining their assay-specific unit semantics.
+
+Opening `activity/catalog/igv/<context>.xml` loads five relative, portable
+resources: mean ATAC, mean H3K27ac, context DHSs, active elements, and the
+global master-DHS registry. Keep the `bed/`, `tracks/`, and `igv/` directories
+together if the catalog is moved.
+
 ## Outputs
 
 Master bundle:
@@ -314,6 +339,14 @@ results/<project>/<run_id>/activity/catalog/regulatory_element_summary.tsv
 results/<project>/<run_id>/activity/catalog/h3k27ac_mixture_distributions.svg
 results/<project>/<run_id>/activity/catalog/regulatory_element_metrics.json
 results/<project>/<run_id>/activity/catalog/regulatory_element_provenance.json
+results/<project>/<run_id>/activity/catalog/bed/master_dhs.bed
+results/<project>/<run_id>/activity/catalog/bed/<context>.dhs.bed
+results/<project>/<run_id>/activity/catalog/bed/<context>.active_elements.bed
+results/<project>/<run_id>/activity/catalog/bed/bed_tracks.json
+results/<project>/<run_id>/activity/catalog/tracks/<context>.atac.mean.background_tmm.bw
+results/<project>/<run_id>/activity/catalog/tracks/<context>.h3k27ac.mean.background_tmm.bw
+results/<project>/<run_id>/activity/catalog/tracks/<context>.<assay>.mean.background_tmm.json
+results/<project>/<run_id>/activity/catalog/igv/<context>.xml
 ```
 
 Integrated report:
@@ -333,7 +366,9 @@ The long table contains one master-element/context row and reports both mixture
 components. The wide table contains one row per master element with
 context-prefixed membership, signal, mixture, warning, and activity columns.
 Each per-context active file contains the high-component rows, including
-unsupported-fit assignments with their explicit warning fields.
+unsupported-fit assignments with their explicit warning fields. The BED and
+mean-signal sidecars are also explicit report inputs, so their paths and
+checksums appear in the integrated audit trail.
 
 ## Verification
 
