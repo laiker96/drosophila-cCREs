@@ -9,7 +9,6 @@ from pathlib import Path
 from short_read_processing.cli import cli_main
 from short_read_processing.configuration import generate_configs
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA
-from short_read_processing.workflow_config import OUTPUT_STAGES
 
 
 def main() -> int:
@@ -26,9 +25,12 @@ def main() -> int:
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
     parser.add_argument(
         "--until-stage",
-        choices=("trimming", "alignment", "qc", "master"),
-        default="master",
-        help="Logical workflow stopping point recorded in each resolved config",
+        choices=("trimming", "alignment", "qc"),
+        default="qc",
+        help=(
+            "Logical workflow stopping point; master construction requires a "
+            "separate run from a manually reviewed final-BAM manifest"
+        ),
     )
     parser.add_argument(
         "--path-base",

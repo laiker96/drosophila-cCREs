@@ -1,4 +1,4 @@
-"""Master-DHS activity counting and quantile normalization."""
+"""Master-DHS background-TMM quantification and regulatory catalog."""
 
 
 if ACTIVITY:
@@ -141,9 +141,7 @@ if ACTIVITY:
             validated=lambda wc: ACTIVITY_BAM_VALIDATIONS[wc.library],
             chrom_sizes=str(REFERENCE["chrom_sizes"]),
             sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh"),
-            implementation=str(
-                REPO_ROOT / "src" / "extend_single_end_fragments.py"
-            )
+            implementation=str(REPO_ROOT / "src" / "extend_single_end_fragments.py")
         output:
             bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
             unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
@@ -191,15 +189,12 @@ if ACTIVITY:
             chrom_sizes=str(REFERENCE["chrom_sizes"]),
             master_validated=ACTIVITY_MASTER_VALIDATION,
             script=str(REPO_ROOT / "src" / "count_activity_units.py"),
-            implementation=str(
-                REPO_ROOT / "src" / "short_read_processing" / "activity.py"
-            )
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "activity.py")
         output:
-            signal=f"{ACTIVITY_ROOT}/libraries/{{library}}.signal.tsv.gz",
-            summary=f"{ACTIVITY_ROOT}/libraries/{{library}}.summary.json"
+            signal=f"{ACTIVITY_QUANTIFICATION_ROOT}/libraries/{{library}}.signal.tsv.gz",
+            summary=f"{ACTIVITY_QUANTIFICATION_ROOT}/libraries/{{library}}.summary.json"
         params:
             assay=lambda wc: ACTIVITY_LIBRARIES[wc.library]["assay"],
-            cohort=lambda wc: ACTIVITY_LIBRARIES[wc.library]["cohort"],
             context=lambda wc: ACTIVITY_LIBRARIES[wc.library]["context"]
         wildcard_constraints:
             library=ACTIVITY_LIBRARY_RE
@@ -215,35 +210,132 @@ if ACTIVITY:
             "--summit-bed {input.summits:q} --units-bed {input.units:q} "
             "--chrom-sizes {input.chrom_sizes:q} "
             "--total-units {input.total:q} --library-id {wildcards.library:q} "
-            "--assay {params.assay:q} --cohort {params.cohort:q} "
+            "--assay {params.assay:q} --cohort atlas "
             "--context {params.context:q} --output {output.signal:q} "
             "--summary {output.summary:q} > {log:q} 2>&1"
 
 
-    rule build_master_dhs_activity_table:
+    rule build_activity_background_bins:
+        input:
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            autosomes=str(REFERENCE["autosomes_file"]),
+            script=str(REPO_ROOT / "src" / "make_activity_background_bins.py"),
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "activity_tmm.py")
+        output:
+            bins=ACTIVITY_BACKGROUND_BINS
+        params:
+            bin_width=10000
+        resources:
+            mem_mb=1000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/quantification/background-bins.log"
+        shell:
+            "mkdir -p $(dirname {output.bins:q}) $(dirname {log:q}) && "
+            "python {input.script:q} --chrom-sizes {input.chrom_sizes:q} "
+            "--autosomes {input.autosomes:q} --bin-width {params.bin_width} "
+            "--output {output.bins:q} > {log:q} 2>&1"
+
+
+    rule count_activity_background_library:
+        input:
+            units=lambda wc: ACTIVITY_UNIT_BEDS[wc.library],
+            bins=ACTIVITY_BACKGROUND_BINS,
+            script=str(REPO_ROOT / "src" / "count_activity_background.sh")
+        output:
+            counts=f"{ACTIVITY_WORK}/background_10kb/{{library}}.counts.tsv.gz"
+        wildcard_constraints:
+            library=ACTIVITY_LIBRARY_RE
+        threads: 2
+        resources:
+            mem_mb=2000
+        conda:
+            "../envs/alignment.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/quantification/background/{{library}}.log"
+        shell:
+            "mkdir -p $(dirname {log:q}) && "
+            "bash {input.script:q} {input.units:q} {input.bins:q} "
+            "{output.counts:q} {threads} > {log:q} 2>&1"
+
+
+    rule build_activity_tmm_inputs:
         input:
             signals=list(ACTIVITY_LIBRARY_SIGNALS.values()),
-            summaries=list(ACTIVITY_LIBRARY_SUMMARIES.values()),
-            master=str(ACTIVITY["master"]["master_bed"]),
-            summits=str(ACTIVITY["master"]["summits_bed"]),
+            background=list(ACTIVITY_BACKGROUND_COUNTS.values()),
+            script=str(REPO_ROOT / "src" / "build_activity_tmm_inputs.py"),
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "activity_tmm.py")
+        output:
+            counts=ACTIVITY_TMM_COUNTS,
+            metadata=ACTIVITY_TMM_METADATA
+        params:
+            signal_arguments=" ".join(
+                "--signal {}".format(
+                    shlex.quote(f"{library}={ACTIVITY_LIBRARY_SIGNALS[library]}")
+                )
+                for library in ACTIVITY_LIBRARY_IDS
+            ),
+            background_arguments=" ".join(
+                "--background-count {}".format(
+                    shlex.quote(f"{library}={ACTIVITY_BACKGROUND_COUNTS[library]}")
+                )
+                for library in ACTIVITY_LIBRARY_IDS
+            )
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/quantification/build-tmm-inputs.log"
+        shell:
+            "mkdir -p $(dirname {output.counts:q}) $(dirname {log:q}) && "
+            "python {input.script:q} --method {TMM_BACKGROUND_METHOD:q} "
+            "{params.signal_arguments} {params.background_arguments} "
+            "--output-counts {output.counts:q} "
+            "--output-metadata {output.metadata:q} > {log:q} 2>&1"
+
+
+    rule calculate_activity_tmm_factors:
+        input:
+            counts=ACTIVITY_TMM_COUNTS,
+            metadata=ACTIVITY_TMM_METADATA,
+            script=str(REPO_ROOT / "src" / "calculate_activity_tmm.R")
+        output:
+            factors=ACTIVITY_TMM_FACTORS,
+            receipt=ACTIVITY_TMM_RECEIPT
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/activity_tmm.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/quantification/calculate-tmm-factors.log"
+        shell:
+            "mkdir -p $(dirname {output.factors:q}) $(dirname {log:q}) && "
+            "Rscript {input.script:q} --method {TMM_BACKGROUND_METHOD:q} "
+            "--counts {input.counts:q} --metadata {input.metadata:q} "
+            "--output-factors {output.factors:q} "
+            "--output-receipt {output.receipt:q} > {log:q} 2>&1"
+
+
+    rule build_activity_tmm_table:
+        input:
+            factors=ACTIVITY_TMM_FACTORS,
+            receipt=ACTIVITY_TMM_RECEIPT,
+            counts=ACTIVITY_TMM_COUNTS,
+            metadata=ACTIVITY_TMM_METADATA,
+            signals=list(ACTIVITY_LIBRARY_SIGNALS.values()),
             master_validated=ACTIVITY_MASTER_VALIDATION,
             bam_validations=list(ACTIVITY_BAM_VALIDATIONS.values()),
-            implementation=str(
-                REPO_ROOT / "src" / "short_read_processing" / "activity.py"
-            )
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "activity_tmm.py")
         output:
-            library_signal=ACTIVITY_LIBRARY_SIGNAL,
             context_signal=ACTIVITY_CONTEXT_SIGNAL,
-            reference=ACTIVITY_QNORM_REFERENCE,
             activity=ACTIVITY_TABLE,
-            context_views=list(ACTIVITY_CONTEXT_VIEWS.values()),
             metrics=ACTIVITY_METRICS,
             provenance=ACTIVITY_PROVENANCE
         params:
             signal_paths=ACTIVITY_LIBRARY_SIGNALS,
-            context_paths=ACTIVITY_CONTEXT_VIEWS,
-            atlas_contexts=ACTIVITY_CONTEXTS,
-            reference_context=str(ACTIVITY["reference_context"]),
+            contexts=ACTIVITY_CONTEXTS,
             activity_config=ACTIVITY,
             workflow_provenance=config.get("provenance", {})
         resources:
@@ -251,34 +343,185 @@ if ACTIVITY:
         conda:
             "../envs/reporting.yaml"
         log:
-            f"{RESULT_ROOT}/logs/activity/build-table.log"
+            f"{RESULT_ROOT}/logs/activity/quantification/build-table.log"
         script:
-            "../scripts/build_activity_table.py"
+            "../scripts/build_activity_tmm_table.py"
 
 
-    rule build_activity_qc_report:
+    rule build_regulatory_h3k27ac_windows:
         input:
-            library_signal=ACTIVITY_LIBRARY_SIGNAL,
-            context_signal=ACTIVITY_CONTEXT_SIGNAL,
-            reference=ACTIVITY_QNORM_REFERENCE,
-            activity=ACTIVITY_TABLE,
-            provenance=ACTIVITY_PROVENANCE,
-            implementation=str(
-                REPO_ROOT / "src" / "short_read_processing" / "activity_qc.py"
-            )
+            master=str(ACTIVITY["master"]["master_bed"]),
+            summits=str(ACTIVITY["master"]["summits_bed"]),
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            master_validated=ACTIVITY_MASTER_VALIDATION,
+            script=str(REPO_ROOT / "src" / "make_regulatory_windows.py"),
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
         output:
-            correlations=ACTIVITY_QC_CORRELATIONS,
-            distributions=ACTIVITY_QC_DISTRIBUTIONS,
-            metrics=ACTIVITY_QC_METRICS,
-            report=ACTIVITY_QC_REPORT
+            table=ACTIVITY_REGULATORY_WINDOWS,
+            bed=ACTIVITY_REGULATORY_WINDOWS_BED
+        resources:
+            mem_mb=2000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/windows.log"
+        shell:
+            "mkdir -p $(dirname {output.table:q}) $(dirname {log:q}) && "
+            "python {input.script:q} --master-bed {input.master:q} "
+            "--summit-bed {input.summits:q} "
+            "--chrom-sizes {input.chrom_sizes:q} "
+            "--output-table {output.table:q} --output-bed {output.bed:q} "
+            "> {log:q} 2>&1"
+
+
+    rule count_regulatory_h3k27ac_windows:
+        input:
+            units=lambda wc: ACTIVITY_UNIT_BEDS[wc.library],
+            total=lambda wc: ACTIVITY_UNIT_COUNTS[wc.library],
+            windows=ACTIVITY_REGULATORY_WINDOWS,
+            windows_bed=ACTIVITY_REGULATORY_WINDOWS_BED,
+            chrom_sizes=str(REFERENCE["chrom_sizes"]),
+            script=str(REPO_ROOT / "src" / "format_regulatory_window_counts.py"),
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
+        output:
+            counts=f"{ACTIVITY_REGULATORY_ROOT}/libraries/{{library}}.window_counts.tsv.gz"
         params:
-            atlas_contexts=ACTIVITY_CONTEXTS,
-            reference_context=str(ACTIVITY["reference_context"])
+            context=lambda wc: ACTIVITY_LIBRARIES[wc.library]["context"]
+        wildcard_constraints:
+            library=wildcard_regex(ACTIVITY_H3K27AC_LIBRARIES)
+        threads: 2
         resources:
             mem_mb=4000
         conda:
-            "../envs/activity_qc.yaml"
+            "../envs/alignment.yaml"
         log:
-            f"{RESULT_ROOT}/logs/activity/qc-report.log"
+            f"{RESULT_ROOT}/logs/activity/catalog/{{library}}.log"
+        shell:
+            r"""
+            mkdir -p $(dirname {output.counts:q}) $(dirname {log:q})
+            temporary=$(mktemp -d $(dirname {output.counts:q})/.{wildcards.library}.XXXXXX)
+            trap 'rm -rf "$temporary"' EXIT
+            pigz -dc {input.units:q} \
+              | bedtools coverage -a {input.windows_bed:q} -b stdin \
+                  -counts -sorted -g {input.chrom_sizes:q} \
+                  > "$temporary/coverage.tsv" 2> {log:q}
+            python {input.script:q} --window-table {input.windows:q} \
+              --coverage "$temporary/coverage.tsv" \
+              --total-units {input.total:q} \
+              --library-id {wildcards.library:q} \
+              --context {params.context:q} --output {output.counts:q} \
+              >> {log:q} 2>&1
+            pigz -t {output.counts:q}
+            """
+
+
+    rule build_regulatory_element_catalog:
+        input:
+            master=str(ACTIVITY["master"]["master_bed"]),
+            summits=str(ACTIVITY["master"]["summits_bed"]),
+            context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
+            tss=str(REFERENCE["tss_bed"]),
+            windows=ACTIVITY_REGULATORY_WINDOWS,
+            counts=list(ACTIVITY_REGULATORY_WINDOW_COUNTS.values()),
+            factors=ACTIVITY_TMM_FACTORS,
+            activity=ACTIVITY_TABLE,
+            master_validated=ACTIVITY_MASTER_VALIDATION,
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_elements.py")
+        output:
+            catalog=ACTIVITY_REGULATORY_CATALOG,
+            wide=ACTIVITY_REGULATORY_WIDE,
+            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            mixtures=ACTIVITY_REGULATORY_MIXTURES,
+            summary=ACTIVITY_REGULATORY_SUMMARY,
+            metrics=ACTIVITY_REGULATORY_METRICS,
+            provenance=ACTIVITY_REGULATORY_PROVENANCE
+        params:
+            window_counts=ACTIVITY_REGULATORY_WINDOW_COUNTS,
+            active_paths=ACTIVITY_REGULATORY_ACTIVE,
+            contexts=ACTIVITY_CONTEXTS
+        resources:
+            mem_mb=12000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/catalog.log"
         script:
-            "../scripts/build_activity_qc_report.py"
+            "../scripts/build_regulatory_element_catalog.py"
+
+
+    rule plot_regulatory_element_mixtures:
+        input:
+            catalog=ACTIVITY_REGULATORY_CATALOG,
+            mixtures=ACTIVITY_REGULATORY_MIXTURES,
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "regulatory_mixture_plot.py")
+        output:
+            svg=ACTIVITY_REGULATORY_MIXTURE_PLOT,
+            bins=ACTIVITY_REGULATORY_MIXTURE_BINS,
+            metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS
+        resources:
+            mem_mb=3000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/mixture-plot.log"
+        script:
+            "../scripts/plot_regulatory_element_mixtures.py"
+
+
+    rule build_integrated_qc_report:
+        input:
+            sources=ACTIVITY_REPORT_SOURCE_FILES,
+            activity_metrics=ACTIVITY_METRICS,
+            activity_provenance=ACTIVITY_PROVENANCE,
+            factors=ACTIVITY_TMM_FACTORS,
+            tmm_receipt=ACTIVITY_TMM_RECEIPT,
+            context_signal=ACTIVITY_CONTEXT_SIGNAL,
+            activity_table=ACTIVITY_TABLE,
+            master_metrics=str(ACTIVITY["master"]["stats_json"]),
+            catalog=ACTIVITY_REGULATORY_CATALOG,
+            wide=ACTIVITY_REGULATORY_WIDE,
+            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            mixtures=ACTIVITY_REGULATORY_MIXTURES,
+            summary=ACTIVITY_REGULATORY_SUMMARY,
+            catalog_metrics=ACTIVITY_REGULATORY_METRICS,
+            catalog_provenance=ACTIVITY_REGULATORY_PROVENANCE,
+            mixture_plot=ACTIVITY_REGULATORY_MIXTURE_PLOT,
+            mixture_bins=ACTIVITY_REGULATORY_MIXTURE_BINS,
+            mixture_plot_metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+            implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
+        output:
+            html=ACTIVITY_REPORT_HTML,
+            pdf=ACTIVITY_REPORT_PDF,
+            metrics=ACTIVITY_REPORT_METRICS
+        params:
+            workflow_config=config,
+            report_sources=config["report"]["source_files"],
+            current_files={
+                "activity_metrics": ACTIVITY_METRICS,
+                "activity_provenance": ACTIVITY_PROVENANCE,
+                "normalization_factors": ACTIVITY_TMM_FACTORS,
+                "tmm_software": ACTIVITY_TMM_RECEIPT,
+                "context_signal": ACTIVITY_CONTEXT_SIGNAL,
+                "master_dhs_activity": ACTIVITY_TABLE,
+                "master_elements_long": ACTIVITY_REGULATORY_CATALOG,
+                "master_elements_wide": ACTIVITY_REGULATORY_WIDE,
+                "mixture_models": ACTIVITY_REGULATORY_MIXTURES,
+                "regulatory_element_summary": ACTIVITY_REGULATORY_SUMMARY,
+                "regulatory_element_metrics": ACTIVITY_REGULATORY_METRICS,
+                "regulatory_element_provenance": ACTIVITY_REGULATORY_PROVENANCE,
+                "mixture_distributions": ACTIVITY_REGULATORY_MIXTURE_PLOT,
+                "mixture_distribution_bins": ACTIVITY_REGULATORY_MIXTURE_BINS,
+                "mixture_distribution_metrics": ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+                **{
+                    f"active_elements_{context}": path
+                    for context, path in ACTIVITY_REGULATORY_ACTIVE.items()
+                },
+            }
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/final_report.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/report/integrated-qc.log"
+        script:
+            "../scripts/build_integrated_qc_report.py"

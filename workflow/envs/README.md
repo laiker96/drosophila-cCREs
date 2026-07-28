@@ -11,3 +11,5 @@ environment directory.
 - `atac_qc.yaml`: Tn5 insertion preparation, qpois refinement, BigWigs, and ATAC QC
 - `chip_qc.yaml`: R-based ChIP cross-correlation QC only
 - `reporting.yaml`: MultiQC aggregation
+- `activity_tmm.yaml`: edgeR TMM factors for 10-kb autosomal background counts
+- `final_report.yaml`: deterministic HTML-to-PDF rendering for integrated QC

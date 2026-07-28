@@ -2,7 +2,8 @@ project: activity-workflow-test
 run_id: dry-run
 output_dir: tests/workflow_results
 assay: activity
-input_stage: activity
+input_stage: quantification
+output_stage: catalog
 reference:
   name: dm6
   fasta: tests/fixtures/workflow/tiny.fa
@@ -16,7 +17,7 @@ reference:
   macs3_genome_size: 20000
 samples: []
 activity:
-  schema_version: 1
+  schema_version: 2
   master:
     genome: dm6
     method: reciprocal_summit_complete_linkage_v2
@@ -32,13 +33,13 @@ activity:
     context_matrix_tsv_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     stats_json: tests/fixtures/workflow/tiny.autosomes.txt
     stats_json_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  atlas_contexts: [example]
-  reference_context: reference
+  contexts: [example]
   atac_fragment_maximum: 150
-  normalization: cpm_per_kb_then_tie_aware_reference_qnorm_v1
-  activity_formula: sqrt_atac_times_h3k27ac_v1
+  normalization: background_tmm_10kb_autosomes_v1
+  h3k27ac_signal: summit_max3_500bp_v1
+  mixture_model: guarded_two_gaussian_log10_v1
   libraries:
-    - id: atlas_atac
+    - id: atlas_atac_1
       assay: atac
       cohort: atlas
       context: example
@@ -50,7 +51,19 @@ activity:
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       filtering_contract: short-read-processing-final-v1
       qc_status: accepted
-    - id: atlas_h3
+    - id: atlas_atac_2
+      assay: atac
+      cohort: atlas
+      context: example
+      layout: paired
+      genome: dm6
+      bam: tests/fixtures/workflow/tiny.chrom.sizes
+      bai: tests/fixtures/workflow/tiny.blacklist.bed
+      bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      filtering_contract: short-read-processing-final-v1
+      qc_status: accepted
+    - id: atlas_h3_1
       assay: h3k27ac
       cohort: atlas
       context: example
@@ -62,22 +75,10 @@ activity:
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       filtering_contract: short-read-processing-final-v1
       qc_status: accepted
-    - id: ref_atac_1
-      assay: atac
-      cohort: reference
-      context: reference
-      layout: paired
-      genome: dm6
-      bam: tests/fixtures/workflow/tiny.chrom.sizes
-      bai: tests/fixtures/workflow/tiny.blacklist.bed
-      bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
-      qc_status: accepted
-    - id: ref_atac_2
-      assay: atac
-      cohort: reference
-      context: reference
+    - id: atlas_h3_2
+      assay: h3k27ac
+      cohort: atlas
+      context: example
       layout: paired
       genome: dm6
       bam: tests/fixtures/workflow/tiny.tss.bed
@@ -86,27 +87,11 @@ activity:
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       filtering_contract: short-read-processing-final-v1
       qc_status: accepted
-    - id: ref_h3_1
-      assay: h3k27ac
-      cohort: reference
-      context: reference
-      layout: paired
-      genome: dm6
-      bam: tests/fixtures/workflow/tiny.qpois.bdg
-      bai: tests/fixtures/workflow/index/tiny.1.bt2
-      bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
-      qc_status: accepted
-    - id: ref_h3_2
-      assay: h3k27ac
-      cohort: reference
-      context: reference
-      layout: paired
-      genome: dm6
-      bam: tests/fixtures/workflow/index/tiny.2.bt2
-      bai: tests/fixtures/workflow/index/tiny.3.bt2
-      bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
-      qc_status: accepted
+report:
+  schema_version: 1
+  source_roots: []
+  source_files:
+    - path: tests/fixtures/workflow/sample_R1.fastq
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      kind: fixture
+      source_root: tests/fixtures/workflow

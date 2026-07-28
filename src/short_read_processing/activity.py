@@ -1,4 +1,4 @@
-"""Count and normalize ATAC/H3K27ac signal over a master-DHS registry."""
+"""Count assay units over a variable-width master-DHS registry."""
 
 from __future__ import annotations
 
@@ -32,63 +32,6 @@ LIBRARY_SIGNAL_FIELDS = [
     "raw_count",
     "total_units",
     "cpm_per_kb",
-]
-CONTEXT_SIGNAL_FIELDS = [
-    "master_dhs_id",
-    "chrom",
-    "start",
-    "end",
-    "summit",
-    "width_bp",
-    "context",
-    "assay",
-    "library_n",
-    "library_ids",
-    "raw_count_sum",
-    "raw_count_mean",
-    "total_units_sum",
-    "cpm_per_kb",
-    "cpm_per_kb_sd",
-]
-QNORM_REFERENCE_FIELDS = [
-    "master_dhs_id",
-    "chrom",
-    "start",
-    "end",
-    "summit",
-    "width_bp",
-    "assay",
-    "reference_context",
-    "library_n",
-    "library_ids",
-    "replicate_cpm_per_kb",
-    "reference_cpm_per_kb",
-]
-FINAL_ACTIVITY_FIELDS = [
-    "master_dhs_id",
-    "chrom",
-    "start",
-    "end",
-    "summit",
-    "width_bp",
-    "context",
-    "atac_library_n",
-    "atac_library_ids",
-    "atac_raw_count_sum",
-    "atac_raw_count_mean",
-    "atac_total_units_sum",
-    "atac_cpm_per_kb",
-    "atac_cpm_per_kb_sd",
-    "atac_qnorm",
-    "h3k27ac_library_n",
-    "h3k27ac_library_ids",
-    "h3k27ac_raw_count_sum",
-    "h3k27ac_raw_count_mean",
-    "h3k27ac_total_units_sum",
-    "h3k27ac_cpm_per_kb",
-    "h3k27ac_cpm_per_kb_sd",
-    "h3k27ac_qnorm",
-    "activity",
 ]
 
 
@@ -208,9 +151,7 @@ def count_units(
     for index, element in enumerate(elements):
         by_chrom[element.chrom].append((index, element))
     ordered_chromosomes = chromosome_order or list(by_chrom)
-    chrom_order = {
-        chrom: index for index, chrom in enumerate(ordered_chromosomes)
-    }
+    chrom_order = {chrom: index for index, chrom in enumerate(ordered_chromosomes)}
     if len(chrom_order) != len(ordered_chromosomes) or any(
         chrom not in chrom_order for chrom in by_chrom
     ):
@@ -273,15 +214,16 @@ def _tsv_content(fields: list[str], rows: Iterable[dict[str, Any]]) -> str:
     )
     writer.writeheader()
     for raw in rows:
-        row = {
-            field: (
-                _format_number(raw[field])
-                if isinstance(raw.get(field), (int, float))
-                else raw.get(field, "")
-            )
-            for field in fields
-        }
-        writer.writerow(row)
+        writer.writerow(
+            {
+                field: (
+                    _format_number(raw[field])
+                    if isinstance(raw.get(field), (int, float))
+                    else raw.get(field, "")
+                )
+                for field in fields
+            }
+        )
     return buffer.getvalue()
 
 
@@ -347,17 +289,10 @@ def write_library_signal(
                 "context": context,
                 "raw_count": raw_count,
                 "total_units": total_units,
-                "cpm_per_kb": cpm_per_kb(
-                    raw_count,
-                    total_units,
-                    element.width,
-                ),
+                "cpm_per_kb": cpm_per_kb(raw_count, total_units, element.width),
             }
         )
-    write_deterministic_gzip(
-        output,
-        _tsv_content(LIBRARY_SIGNAL_FIELDS, rows),
-    )
+    write_deterministic_gzip(output, _tsv_content(LIBRARY_SIGNAL_FIELDS, rows))
     write_json_if_changed(
         summary,
         {
@@ -374,71 +309,27 @@ def write_library_signal(
     )
 
 
-def tie_aware_quantile_normalize(
-    target: list[float],
-    reference: list[float],
-) -> tuple[list[float], int]:
-    if len(target) != len(reference) or not target:
-        raise ValueError("Target and reference vectors must have equal nonzero length")
-    if any(not math.isfinite(value) for value in target + reference):
-        raise ValueError("Quantile-normalization vectors must be finite")
-    ordered_target = sorted(range(len(target)), key=lambda index: (target[index], index))
-    ordered_reference = sorted(reference)
-    normalized = [0.0] * len(target)
-    tie_groups = 0
-    start = 0
-    while start < len(target):
-        end = start + 1
-        value = target[ordered_target[start]]
-        while end < len(target) and target[ordered_target[end]] == value:
-            end += 1
-        replacement = statistics.fmean(ordered_reference[start:end])
-        for position in range(start, end):
-            normalized[ordered_target[position]] = replacement
-        if end - start > 1:
-            tie_groups += 1
-        start = end
-    return normalized, tie_groups
-
-
 def _read_library_signal(path: Path) -> list[dict[str, Any]]:
     with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         if reader.fieldnames != LIBRARY_SIGNAL_FIELDS:
             raise ValueError(f"{path}: unexpected library-signal columns")
-        rows = []
-        for row in reader:
-            rows.append(
-                {
-                    **row,
-                    "start": int(row["start"]),
-                    "end": int(row["end"]),
-                    "summit": int(row["summit"]),
-                    "width_bp": int(row["width_bp"]),
-                    "raw_count": int(row["raw_count"]),
-                    "total_units": int(row["total_units"]),
-                    "cpm_per_kb": float(row["cpm_per_kb"]),
-                }
-            )
+        rows = [
+            {
+                **row,
+                "start": int(row["start"]),
+                "end": int(row["end"]),
+                "summit": int(row["summit"]),
+                "width_bp": int(row["width_bp"]),
+                "raw_count": int(row["raw_count"]),
+                "total_units": int(row["total_units"]),
+                "cpm_per_kb": float(row["cpm_per_kb"]),
+            }
+            for row in reader
+        ]
     if not rows:
         raise ValueError(f"{path}: library signal is empty")
     return rows
-
-
-def _pearson(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        raise ValueError("Correlation vectors differ")
-    left_mean = statistics.fmean(left)
-    right_mean = statistics.fmean(right)
-    numerator = sum(
-        (x - left_mean) * (y - right_mean)
-        for x, y in zip(left, right)
-    )
-    left_ss = sum((value - left_mean) ** 2 for value in left)
-    right_ss = sum((value - right_mean) ** 2 for value in right)
-    if left_ss == 0 or right_ss == 0:
-        return 0.0
-    return numerator / math.sqrt(left_ss * right_ss)
 
 
 def _aggregate_rows(
@@ -448,8 +339,7 @@ def _aggregate_rows(
     result = []
     for element_index in range(len(next(iter(rows_by_library.values())))):
         library_rows = [
-            rows_by_library[library_id][element_index]
-            for library_id in library_ids
+            rows_by_library[library_id][element_index] for library_id in library_ids
         ]
         first = library_rows[0]
         raw_counts = [row["raw_count"] for row in library_rows]
@@ -471,284 +361,11 @@ def _aggregate_rows(
                 "library_ids": ",".join(library_ids),
                 "raw_count_sum": sum(raw_counts),
                 "raw_count_mean": statistics.fmean(raw_counts),
-                "total_units_sum": sum(
-                    row["total_units"] for row in library_rows
-                ),
+                "total_units_sum": sum(row["total_units"] for row in library_rows),
                 "cpm_per_kb": statistics.fmean(cpm_values),
                 "cpm_per_kb_sd": (
-                    statistics.stdev(cpm_values)
-                    if len(cpm_values) > 1
-                    else 0.0
+                    statistics.stdev(cpm_values) if len(cpm_values) > 1 else 0.0
                 ),
             }
         )
     return result
-
-
-def build_activity_outputs(
-    *,
-    signal_paths: dict[str, Path],
-    atlas_contexts: list[str],
-    reference_context: str,
-    output_library_signal: Path,
-    output_context_signal: Path,
-    output_reference: Path,
-    output_activity: Path,
-    output_context_views: dict[str, Path],
-    output_metrics: Path,
-    output_provenance: Path,
-    provenance: dict[str, Any],
-) -> dict[str, Any]:
-    """Aggregate library signals, quantile-normalize, and write final outputs."""
-
-    rows_by_library = {
-        library_id: _read_library_signal(path)
-        for library_id, path in sorted(signal_paths.items())
-    }
-    first_rows = next(iter(rows_by_library.values()))
-    master_ids = [row["master_dhs_id"] for row in first_rows]
-    for library_id, rows in rows_by_library.items():
-        if [row["master_dhs_id"] for row in rows] != master_ids:
-            raise ValueError(f"Master IDs differ for library {library_id}")
-    metadata = {
-        library_id: {
-            key: rows[0][key]
-            for key in ("assay", "cohort", "context")
-        }
-        for library_id, rows in rows_by_library.items()
-    }
-
-    combined_rows = [
-        rows_by_library[library_id][element_index]
-        for element_index in range(len(master_ids))
-        for library_id in sorted(
-            rows_by_library,
-            key=lambda item: (
-                metadata[item]["cohort"],
-                metadata[item]["assay"],
-                metadata[item]["context"],
-                item,
-            ),
-        )
-    ]
-    write_deterministic_gzip(
-        output_library_signal,
-        _tsv_content(LIBRARY_SIGNAL_FIELDS, combined_rows),
-    )
-
-    aggregates: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    context_rows = []
-    for context in atlas_contexts:
-        for assay in ("atac", "h3k27ac"):
-            library_ids = sorted(
-                library_id
-                for library_id, values in metadata.items()
-                if values
-                == {"assay": assay, "cohort": "atlas", "context": context}
-            )
-            if not library_ids:
-                raise ValueError(f"Atlas context {context!r} lacks {assay}")
-            aggregate = _aggregate_rows(rows_by_library, library_ids)
-            for row in aggregate:
-                row["context"] = context
-                row["assay"] = assay
-            aggregates[(context, assay)] = aggregate
-            context_rows.extend(aggregate)
-    write_deterministic_gzip(
-        output_context_signal,
-        _tsv_content(CONTEXT_SIGNAL_FIELDS, context_rows),
-    )
-
-    reference_vectors = {}
-    reference_rows = []
-    reference_library_ids_by_assay = {}
-    for assay in ("atac", "h3k27ac"):
-        library_ids = sorted(
-            library_id
-            for library_id, values in metadata.items()
-            if values
-            == {
-                "assay": assay,
-                "cohort": "reference",
-                "context": reference_context,
-            }
-        )
-        if len(library_ids) < 2:
-            raise ValueError(f"Reference requires two {assay} libraries")
-        aggregate = _aggregate_rows(rows_by_library, library_ids)
-        reference_vectors[assay] = [row["cpm_per_kb"] for row in aggregate]
-        reference_library_ids_by_assay[assay] = library_ids
-        for element_index, row in enumerate(aggregate):
-            replicate_values = [
-                rows_by_library[library_id][element_index]["cpm_per_kb"]
-                for library_id in library_ids
-            ]
-            reference_rows.append(
-                {
-                    **{
-                        field: row[field]
-                        for field in (
-                            "master_dhs_id",
-                            "chrom",
-                            "start",
-                            "end",
-                            "summit",
-                            "width_bp",
-                        )
-                    },
-                    "assay": assay,
-                    "reference_context": reference_context,
-                    "library_n": len(library_ids),
-                    "library_ids": ",".join(library_ids),
-                    "replicate_cpm_per_kb": ",".join(
-                        _format_number(value) for value in replicate_values
-                    ),
-                    "reference_cpm_per_kb": row["cpm_per_kb"],
-                }
-            )
-    write_deterministic_gzip(
-        output_reference,
-        _tsv_content(QNORM_REFERENCE_FIELDS, reference_rows),
-    )
-
-    qnorm = {}
-    tie_counts = {}
-    for context in atlas_contexts:
-        for assay in ("atac", "h3k27ac"):
-            values = [
-                row["cpm_per_kb"] for row in aggregates[(context, assay)]
-            ]
-            normalized, ties = tie_aware_quantile_normalize(
-                values,
-                reference_vectors[assay],
-            )
-            qnorm[(context, assay)] = normalized
-            tie_counts[f"{context}:{assay}"] = ties
-
-    final_rows = []
-    context_final_rows = {context: [] for context in atlas_contexts}
-    for element_index, base in enumerate(first_rows):
-        for context in atlas_contexts:
-            assay_rows = {
-                assay: aggregates[(context, assay)][element_index]
-                for assay in ("atac", "h3k27ac")
-            }
-            atac_qnorm = qnorm[(context, "atac")][element_index]
-            h3_qnorm = qnorm[(context, "h3k27ac")][element_index]
-            row = {
-                **{
-                    field: base[field]
-                    for field in (
-                        "master_dhs_id",
-                        "chrom",
-                        "start",
-                        "end",
-                        "summit",
-                        "width_bp",
-                    )
-                },
-                "context": context,
-            }
-            for assay, prefix in (("atac", "atac"), ("h3k27ac", "h3k27ac")):
-                values = assay_rows[assay]
-                for source, suffix in (
-                    ("library_n", "library_n"),
-                    ("library_ids", "library_ids"),
-                    ("raw_count_sum", "raw_count_sum"),
-                    ("raw_count_mean", "raw_count_mean"),
-                    ("total_units_sum", "total_units_sum"),
-                    ("cpm_per_kb", "cpm_per_kb"),
-                    ("cpm_per_kb_sd", "cpm_per_kb_sd"),
-                ):
-                    row[f"{prefix}_{suffix}"] = values[source]
-            row["atac_qnorm"] = atac_qnorm
-            row["h3k27ac_qnorm"] = h3_qnorm
-            row["activity"] = math.sqrt(atac_qnorm * h3_qnorm)
-            final_rows.append(row)
-            context_final_rows[context].append(row)
-    final_content = _tsv_content(FINAL_ACTIVITY_FIELDS, final_rows)
-    write_deterministic_gzip(output_activity, final_content)
-    for context, path in output_context_views.items():
-        write_deterministic_gzip(
-            path,
-            _tsv_content(FINAL_ACTIVITY_FIELDS, context_final_rows[context]),
-        )
-
-    correlations = {}
-    for cohort in ("atlas", "reference"):
-        contexts = atlas_contexts if cohort == "atlas" else [reference_context]
-        for context in contexts:
-            for assay in ("atac", "h3k27ac"):
-                library_ids = sorted(
-                    library_id
-                    for library_id, values in metadata.items()
-                    if values
-                    == {
-                        "assay": assay,
-                        "cohort": cohort,
-                        "context": context,
-                    }
-                )
-                for left_index, left in enumerate(library_ids):
-                    for right in library_ids[left_index + 1 :]:
-                        correlations[f"{cohort}:{context}:{assay}:{left}:{right}"] = (
-                            _pearson(
-                                [
-                                    row["cpm_per_kb"]
-                                    for row in rows_by_library[left]
-                                ],
-                                [
-                                    row["cpm_per_kb"]
-                                    for row in rows_by_library[right]
-                                ],
-                            )
-                        )
-    widths = [row["width_bp"] for row in first_rows]
-    metrics = {
-        "status": "ok",
-        "schema_version": 1,
-        "master_dhs_count": len(master_ids),
-        "atlas_context_count": len(atlas_contexts),
-        "library_count": len(rows_by_library),
-        "width_bp_min": min(widths),
-        "width_bp_median": statistics.median(widths),
-        "width_bp_max": max(widths),
-        "tie_group_counts": tie_counts,
-        "replicate_correlations": correlations,
-        "library_total_units": {
-            library_id: rows[0]["total_units"]
-            for library_id, rows in rows_by_library.items()
-        },
-        "library_zero_fractions": {
-            library_id: sum(row["raw_count"] == 0 for row in rows) / len(rows)
-            for library_id, rows in rows_by_library.items()
-        },
-        "reference_library_ids": reference_library_ids_by_assay,
-    }
-    write_json_if_changed(output_metrics, metrics)
-    output_paths = {
-        "library_signal": output_library_signal,
-        "context_signal": output_context_signal,
-        "qnorm_reference": output_reference,
-        "activity_table": output_activity,
-        "metrics": output_metrics,
-        **{
-            f"context:{context}": path
-            for context, path in output_context_views.items()
-        },
-    }
-    provenance_value = {
-        **provenance,
-        "schema_version": 1,
-        "normalization": "cpm_per_kb_then_tie_aware_reference_qnorm_v1",
-        "activity_formula": "sqrt_atac_times_h3k27ac_v1",
-        "outputs": {
-            name: {
-                "path": str(path.resolve()),
-                "sha256": sha256_file(path),
-            }
-            for name, path in sorted(output_paths.items())
-        },
-    }
-    write_json_if_changed(output_provenance, provenance_value)
-    return metrics

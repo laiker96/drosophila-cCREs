@@ -1,626 +1,339 @@
-# short-read-processing
+# Short-read processing
 
-Snakemake pipeline for accession-to-peaks ATAC-seq and ChIP-seq processing.
-It downloads public runs, prepares `dm6` or `hg38`, processes technical runs in
-parallel, and produces reproducible peak, signal, and QC outputs.
+Reproducible ATAC-seq and ChIP-seq processing from public accessions to a
+summit-aware master DHS registry and a context-resolved regulatory-element
+catalog. Contexts are not hard-coded: they come from the canonical input table.
 
-![Simplified workflow DAG](docs/workflow-dag.svg)
+The production path has three phases separated by an explicit manual QC gate:
 
-## Current endpoints
+1. process reads through library QC and export `pending_review` BAM manifests;
+2. review every library, then construct the master DHS set from accepted ATAC
+   libraries only;
+3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, fit the
+   guarded H3K27ac mixtures, and write regulatory-element catalogs.
 
-- **ATAC-seq (default):** two-ended Tn5 insertion sites from proper paired
-  fragments shorter than 150 bp, lenient MACS3 candidates, unscaled qpois
-  signal refinement, context-level pooling, biological-replicate support, and
-  a summit-aware master DHS registry across contexts.
-- **ATAC-seq (optional):** MACS3 HMMRATAC, followed by the same pooled-context
-  biological-replicate support step. HMMRATAC requires paired-end data.
-- **TF ChIP-seq:** MACS3 narrow peaks and CPM BigWigs.
-- **Histone ChIP-seq:** MACS3 broad peaks and CPM BigWigs.
-- **ChIP controls:** a matched input/control can be named explicitly; IP-only
-  ChIP is also valid and runs without `-c`.
-- **QC:** FastQC before and after trimming, Cutadapt reports, alignment metrics,
-  fragment-aware FRiP, ATAC TSS/fragment profiles, ChIP QC, and MultiQC.
+There is no external-reference or quantile-normalization branch.
 
-The master DHS registry is the final ATAC processing endpoint. H3K27ac
-integration, fixed-width ABC candidate generation, ABC scoring, and Micro-C
-integration remain in the downstream atlas repository.
+## Environment
 
-## Install
-
-All environments remain inside the repository. Create the orchestration
-environment at `.venv`:
+Create the repository-local orchestration environment:
 
 ```bash
-git clone git@github.com:laiker96/short-read-processing.git
-cd short-read-processing
-
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
-export XDG_CACHE_HOME="$PWD/.cache"
-micromamba create --prefix "$PWD/.venv" --file environment.yml -y
+mamba env create --prefix "$PWD/.venv" --file environment.yml
 ```
 
-Run commands without activation:
+Snakemake rule environments are created below `.snakemake/conda` by the local
+profile. Do not create named environments outside the repository.
 
-```bash
-micromamba run --prefix "$PWD/.venv" python src/run_pipeline.py --help
-```
+## Input table
 
-Snakemake creates rule-specific environments below `.snakemake/conda` through
-the local profile. Bioinformatics packages are not installed globally.
-
-## Input files
-
-The primary public-data input is a CSV or TSV following
-[`schemas/sample-sheet.schema.yaml`](schemas/sample-sheet.schema.yaml). One row
-is one public `SRR`, `SRX`, `ERR`, or `ERX` accession.
-
-Required columns:
+The public input is a CSV or TSV conforming to
+`schemas/sample-sheet.schema.yaml`. Its canonical columns are:
 
 | Column | Meaning |
 |---|---|
 | `accession` | Public run or experiment accession |
-| `library_id` | Biological-library identifier; repeat it for technical runs |
-| `assay` | `atac`, `h3k27ac`, `chip_tf`, or the `chip_histone` alias |
-| `context` | Tissue, stage, or cell-type ID used for ATAC pooling |
+| `library_id` | Biological library; technical runs share an ID |
+| `assay` | `atac`, `h3k27ac`, or another supported ChIP assay |
+| `context` | Tissue, stage, or cell type |
 
-The smallest valid ATAC table is:
+Optional control and peak-caller columns are documented in the schema. The two
+reviewed dm6 atlas inputs are `resources/atlas_samples_ip_only.tsv` and
+`resources/atlas_samples_with_inputs.tsv`.
 
-```tsv
-accession	library_id	assay	context
-SRR100001	eye_atac_rep1	atac	eye
-SRR100002	eye_atac_rep2	atac	eye
-```
+Each distinct ATAC `context` becomes a replicate-pooling group. Consequently,
+the same code can build a master from the nine atlas contexts or any other set
+of contexts present in an input table. The default consensus requires at least
+two biological ATAC libraries per context.
 
-Distinct ATAC `library_id` values in the same `context` are biological
-replicates. The pipeline calls replicate peaks, pools the context, and retains
-pooled peaks supported by the configured number of libraries. Multiple
-accessions sharing one `library_id` are technical runs and merge before
-duplicate marking.
+## Logical stages and restart behavior
 
-The genome is supplied once with `--genome` and defaults to `dm6`. FASTQ URLs
-and paired/single-end layout are resolved from ENA/SRA. ATAC defaults to the
-two-ended Tn5/MACS3-qpois method; add the optional `peak_caller` column and set
-it to `hmmratac` to choose HMMRATAC.
+`--until-stage` selects a reproducible stopping boundary:
 
-H3K27ac is IP-only with the same four columns. For matched inputs, add `role`
-and `control_library`:
-
-```tsv
-accession	library_id	assay	context	role	control_library
-SRR200001	eye_h3_rep1	h3k27ac	eye	treatment	eye_input_rep1
-SRR200002	eye_input_rep1	h3k27ac	eye	control
-```
-
-For IP-only ChIP, omit both optional columns. H3K27ac/histone ChIP defaults to
-broad peaks; TF ChIP defaults to narrow peaks. The schema also defines optional
-typed trimming, alignment, MACS3, and HMMRATAC override columns.
-
-## Run
-
-The canonical command validates the tables, downloads FASTQs concurrently,
-writes a resolved YAML, prepares the reference, and starts Snakemake:
-
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py samples.tsv \
-  --project chromatin-study \
-  --run-id baseline \
-  --genome dm6 \
-  --output-dir data/raw/chromatin-study \
-  --reference-root references \
-  --cores 24 \
-  --file-jobs 8 \
-  --connections 8
-```
-
-One mixed table produces a separate resolved workflow config for each assay.
-ATAC contexts require at least two biological libraries by default, each
-covering at least 50% of a pooled peak. Override these thresholds with
-`--atac-minimum-replicates` and `--atac-overlap-fraction`.
-For ATAC, the default `all` target automatically ends by building the master
-DHS registry; no separate master-building command is required.
-
-Use `--until-stage` to stop at a reproducible logical boundary:
-
-| `--until-stage` | Completed outputs |
+| Stage | Completed result |
 |---|---|
-| `trimming` | trimmed FASTQs, raw/trimmed FastQC, and cutadapt reports |
-| `alignment` | accepted final BAM/BAI files, alignment statistics, and the reusable final-BAM manifest |
-| `qc` | library-level signal tracks, replicate peaks, FRiP and assay-specific QC, metrics, and MultiQC; no ATAC context pooling |
-| `master` | QC plus ATAC context pooling, replicate support, and the master-DHS bundle; this is the default |
-| `activity` | raw and CPM-per-kb counts, reference quantiles, quantile-normalized values, and the activity table |
-| `activity-qc` | activity plus replicate, sparsity, tie, and reference-distribution QC; this is the default activity endpoint |
+| `trimming` | raw/trimmed FastQC, Cutadapt metrics, trimmed FASTQs |
+| `alignment` | filtered final BAM/BAI, alignment QC, final-BAM manifest |
+| `qc` | peaks, FRiP and assay QC, MultiQC |
+| `master` | replicate-supported context peaks and master DHS bundle/manifest |
+| `quantification` | raw, CPM/kb, background-TMM factors and normalized master-element signals |
+| `catalog` | max-window H3K27ac mixtures, long/wide catalogs, and active sets |
+| `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the catalog |
 
-The valid stopping point depends on `--from-stage`: accession input may stop
-at trimming through master, final-BAM input may stop at alignment through
-master, master input stops at master, and activity input may stop at activity or
-activity-QC. Omitting `--until-stage` in activity mode selects `activity-qc`.
-For a mixed ATAC/ChIP table, `master` builds the ATAC master and completes the
-ChIP library-level QC endpoint. Advancing the same `project`/`run-id` to a
-later stopping point reuses completed outputs; the stopping point is execution
-state and is therefore excluded from the scientific semantic hash.
+Snakemake owns completeness. Re-running the same `project`/`run_id` resumes
+from existing valid outputs and never realigns merely because a later stage is
+requested. Advancing `--until-stage` does not change the scientific semantic
+digest. Incomplete outputs are rebuilt because the profiles retain
+`rerun-incomplete: true`.
 
-Useful boundaries:
+Cross-run reuse is strict and manifest-based:
 
-```bash
-# Download only
-python src/run_pipeline.py samples.tsv --download-only --output-dir data/raw/project
-
-# Reuse completed downloads and only write the resolved YAML
-python src/run_pipeline.py samples.tsv --skip-download \
-  --manifest data/raw/project/download_manifest.tsv --config-only
-
-# Build the DAG without executing jobs
-python src/run_pipeline.py samples.tsv --skip-download \
-  --manifest data/raw/project/download_manifest.tsv --snakemake-dry-run
-
-# Produce reference-library BAMs and QC without pooling an ATAC context
-python src/run_pipeline.py reference_samples.tsv --until-stage qc \
-  --project reference --run-id processing-v1 --genome dm6
-```
-
-Run these through `micromamba run --prefix "$PWD/.venv"` as in the main
-example.
-
-## Reuse existing artifacts
-
-The workflow starting stage is explicit:
-
-| `--from-stage` | Required artifact | First scientific processing step |
+| `--from-stage` | Required artifact | Allowed stopping points |
 |---|---|---|
-| `accessions` | accession sample sheet | FASTQ acquisition |
-| `final-bam` | complete final-BAM manifest | ATAC/ChIP downstream processing |
-| `master` | complete master-DHS bundle manifest | bundle validation and registration |
-| `activity` | master plus accepted atlas/reference BAM manifests | assay-unit counting and activity normalization |
+| `accessions` | accession table/download manifest | trimming through QC |
+| `final-bam` | `--final-bam-manifest` | alignment or QC with pending/accepted BAMs; master with a fully reviewed ATAC-only manifest |
+| `master` | `--master-manifest` | validate/export the master bundle |
+| `quantification` | master plus accepted ATAC/H3K27ac BAM manifests | quantification, catalog, or report |
 
-`accessions` is the default and preserves the original behavior. Reuse modes
-are strict: a missing, mismatched, rejected, or corrupt artifact is an error.
-They never fall back to FASTQ download, trimming, alignment, duplicate marking,
-or general BAM filtering.
-
-### Start from filtered BAMs
-
-The final-BAM manifest follows
-[`schemas/final-bam-manifest.schema.yaml`](schemas/final-bam-manifest.schema.yaml).
-Paths are relative to the manifest directory unless absolute. Every biological
-library in each represented assay must occur exactly once. A manifest may
-select only ATAC from a mixed accession sheet, but it may not contain only some
-ATAC libraries.
-
-Every successful sample-processing run automatically exports:
+The workflow automatically exports:
 
 ```text
-results/<project>/<run-id>/provenance/manifests/final-bams.tsv
+results/<project>/<run_id>/provenance/manifests/final-bams.tsv
+results/<project>/<run_id>/qc/library-review.tsv
+results/<project>/<run_id>/provenance/manifests/master-dhs.tsv
 ```
 
-Pipeline-produced BAMs are recorded as `qc_status=pending_review`; completing
-the workflow is not itself scientific QC acceptance. Both `pending_review` and
-`accepted` BAMs can be reused for downstream peak calling and QC, while
-`rejected` BAMs fail immediately in ordinary final-BAM reuse. A reviewed
-activity manifest instead retains every treatment row with either `accepted`
-or `rejected` status. Rejected rows require a reason in `notes`, are skipped
-explicitly, and are recorded in activity provenance; a missing or
-`pending_review` row remains an error.
+Automatically exported new BAMs have `qc_status=pending_review`. The QC endpoint
+also writes a single human-readable row per library to `qc/library-review.tsv`.
+Apply explicit pass/fail decisions with `src/review_final_bam_manifest.py`.
+Master DHS
+construction refuses any `pending_review` ATAC row, excludes documented
+rejections, and records those exclusions in the resolved configuration. Each
+remaining ATAC context must still satisfy `--atac-minimum-replicates`.
+Quantification likewise requires reviewed ATAC and H3K27ac manifests. Rejected
+libraries require a reason. Single-end H3K27ac libraries also require a
+reviewed `estimated_fragment_length_bp`.
 
-The optional `estimated_fragment_length_bp` column records the primary
-phantompeakqualtools estimate. It is required when reviewing a single-end
-histone ChIP library and must be blank for paired-end libraries. Apply a
-complete decision table atomically with:
+## Phase 1: master DHS construction
+
+First process accessions through QC. Omitting `--until-stage` has the same QC
+endpoint in accession mode:
 
 ```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/review_final_bam_manifest.py \
-  results/<project>/<run-id>/provenance/manifests/final-bams.tsv \
-  --decisions data/raw/<project>/h3k27ac.qc-decisions.tsv \
-  --output data/raw/<project>/h3k27ac.reviewed.tsv
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --project drosophila-atlas --run-id qc-v1 --genome dm6 \
+  --until-stage qc --cores 16
 ```
 
-The decision table columns are `library_id`, `qc_status`,
-`estimated_fragment_length_bp`, and `notes`, and it must cover every manifest
-row exactly once.
+This first run:
 
-For BAMs imported from outside this workflow, create the initial manifest from
-exact `<library_id>.final.bam` filenames:
+1. downloads immutable FASTQs with checksums and resume state;
+2. runs lane-level QC/trimming/alignment;
+3. merges technical runs by `library_id`, marks duplicates, and filters BAMs;
+4. calls replicate peaks and produces FRiP, ATAC TSS/fragment, H3K27ac
+   cross-correlation, and MultiQC outputs;
+5. exports a final-BAM manifest whose new libraries are `pending_review` and a
+   populated `qc/library-review.tsv` for manual review.
+
+The review table contains context and layout, final-BAM depth, proper-pair
+fraction, FRiP, peak count, assay-specific metrics, and paths to MultiQC and
+the per-library plots. ATAC rows include TSS enrichment, fragment-length
+median, and fractions below 150 bp and from 180--250 bp. TSS enrichment is the
+maximum aggregate signal in the central +/-50 bp divided by the mean signal in
+the two terminal 100-bp flanks of the +/-2-kb profile. Histone/ChIP rows include
+phantompeakqualtools fragment-shift estimates, NSC, RSC, and quality tag.
+
+Copy the generated table outside the Snakemake result namespace, then edit only
+the final three review columns. Set `qc_decision` to `pass` or `fail`; a failed
+row requires a reason in `notes`. The suggested phantompeakqualtools shift is
+pre-populated as `estimated_fragment_length_bp` for single-end H3K27ac and
+should be reviewed rather than accepted blindly.
 
 ```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/create_final_bam_manifest.py \
-  resources/atlas_samples_ip_only.tsv \
-  --assay atac \
-  --bam-dir results/atac \
-  --output data/raw/drosophila-atlas/atlas-atac.final-bams.tsv \
-  --genome dm6 --layout paired \
-  --qc-status accepted \
-  --source-project atlas-atac-dm6 --source-run-id imported-final-bams
+mkdir -p data/reviewed
+cp results/<qc-project>/qc-v1/qc/library-review.tsv \
+  data/reviewed/atlas-atac.library-review.tsv
 ```
 
-The command computes full BAM/BAI SHA-256 values and writes the manifest
-atomically without replacing identical content. Then build the qpois master
-directly from those BAMs:
+Apply the decisions without editing the generated manifest in place:
 
 ```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+python src/review_final_bam_manifest.py \
+  results/<qc-project>/qc-v1/provenance/manifests/final-bams.tsv \
+  --review-table data/reviewed/atlas-atac.library-review.tsv \
+  --output data/reviewed/atlas-atac.reviewed.tsv
+```
+
+The command maps `pass` to final-manifest `qc_status=accepted` and `fail` to
+`qc_status=rejected`, verifies that every library has exactly one decision, and
+does not alter the original manifest. The older `--decisions` option and
+`accepted`/`rejected` values remain supported for compatibility.
+
+Then construct the master from the reviewed ATAC manifest. This strict reuse
+mode cannot download FASTQs, trim reads, or align again:
+
+```bash
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
   --from-stage final-bam \
-  --final-bam-manifest data/raw/drosophila-atlas/atlas-atac.final-bams.tsv \
-  --project drosophila-atlas --run-id qpois-master-v1 --genome dm6 \
-  --config-dir data/raw/drosophila-atlas/configs/qpois-master-v1 \
-  --cores 24
+  --final-bam-manifest data/reviewed/atlas-atac.reviewed.tsv \
+  --project drosophila-atlas --run-id master-v1 --genome dm6 \
+  --until-stage master --cores 16
 ```
 
-Before any peak or QC job consumes an imported BAM, a validation rule checks:
+This second run calls/refines peaks for accepted ATAC libraries, pools them
+within each context, applies replicate support, and builds the summit-aware,
+variable-width master registry. Rejected rows remain in the reviewed input
+manifest and are copied into `provenance.excluded_master_libraries` in the
+resolved configuration.
 
-- the declared full BAM and BAI SHA-256 values;
-- `samtools quickcheck`;
-- readability of the explicitly declared index;
-- coordinate sort order;
-- exact chromosome names, order, and lengths against the selected reference;
-- the `short-read-processing-final-v1` filtering contract and
-  `qc_status=accepted`.
+The master is not a simple interval union or fixed-width resize. It preserves
+representative summits, reciprocal-summit clustering, the configured maximum
+summit span, and context membership.
 
-Validation receipts are written under
-`provenance/external_bams/<library_id>.validated.json`. The imported BAMs and
-indexes remain immutable and are never copied, indexed, touched, or rewritten.
+To resume the pre-review QC run, repeat it with the same project/run ID and
+download manifest, for example:
 
-### Reuse a frozen master set
+```bash
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --project drosophila-atlas --run-id qc-v1 --genome dm6 \
+  --skip-download --manifest data/raw/download_manifest.tsv \
+  --until-stage qc --cores 16
+```
 
-The complete bundle, rather than only `master_dhs.bed`, is frozen with
-[`schemas/master-manifest.schema.yaml`](schemas/master-manifest.schema.yaml):
+There is no interactive pause inside Snakemake. The completed QC job and the
+review command form the explicit checkpoint; a separate master invocation is
+required. A master invocation with any pending ATAC decision fails before
+Snakemake starts.
 
-An ATAC run that builds or validates a master registry automatically exports:
+## Phase 2: quantification and catalog
+
+Use the same accession table as metadata, the exported master manifest, and
+one or more reviewed final-BAM manifests:
+
+```bash
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage quantification \
+  --master-manifest data/raw/drosophila-atlas/master-dhs.tsv \
+  --activity-bam-manifest data/raw/drosophila-atlas/atac.accepted.tsv \
+  --activity-bam-manifest data/raw/drosophila-atlas/h3k27ac.accepted.tsv \
+  --report-source-root results/drosophila-atlas/master-v1 \
+  --report-source-root results/drosophila-atlas-h3k27ac/qc-v1 \
+  --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
+  --until-stage report --cores 16
+```
+
+This mode validates hashes and BAM/reference compatibility before computation.
+It cannot download FASTQs or invoke alignment.
+
+Use `--until-stage quantification` to stop after counting and normalization.
+Re-run the same command with `--until-stage catalog` to reuse those outputs and
+continue with the mixture/catalog stage, or with `--until-stage report` to add
+the final integrated report. Repeated `--report-source-root` values freeze the
+upstream manifests, JSON metrics, TSS profiles, fragment histograms,
+cross-correlation results, and MultiQC locations into the report configuration.
+The master-manifest result root is discovered automatically when possible.
+Report inputs affect only reporting and are excluded from the scientific
+semantic digest.
+
+## Quantification method
+
+Assay units are prepared independently:
+
+- paired-end ATAC retains proper pairs with `0 < abs(TLEN) < 150`, applies the
+  Tn5 shift, and counts one-base insertions over each exact variable-width
+  master DHS;
+- paired-end H3K27ac counts one fragment per proper pair;
+- single-end H3K27ac extends reads using the reviewed fragment length.
+
+The pipeline saves per-library raw counts and CPM/kb. It estimates TMM factors
+separately for ATAC and H3K27ac from raw counts in fixed 10-kb autosomal
+background bins. Context values are equal-weight means of normalized biological
+libraries. The quantification table retains raw, CPM/kb, normalized CPM/kb,
+replicate SD, and `sqrt(ATAC × H3K27ac)` values.
+
+## H3K27ac signal and guarded mixtures
+
+For every master summit, H3K27ac is counted in three clipped, non-overlapping
+500-bp windows:
 
 ```text
-results/<project>/<run-id>/provenance/manifests/master-dhs.tsv
+left:   [summit-750, summit-250)
+center: [summit-250, summit+250)
+right:  [summit+250, summit+750)
 ```
 
-Use `src/create_master_manifest.py` only to import a complete master bundle
-that was created outside the current workflow namespace:
+Replicates are averaged within context before selecting the maximum normalized
+window. The two-Gaussian model is fitted to positive `log10(max-window
+H3K27ac)` values among DHSs open in that context.
 
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/create_master_manifest.py \
-  results/drosophila-atlas/qpois-master-v1/atac/master \
-  --output data/raw/drosophila-atlas/qpois-master-v1.master.tsv \
-  --genome dm6 \
-  --method reciprocal_summit_complete_linkage_v2 \
-  --source-project drosophila-atlas --source-run-id qpois-master-v1
-```
+A fit is marked supported only if all guards pass:
 
-Validate and register it in another run namespace:
+- at least 200 positive member DHSs;
+- `BIC(one Gaussian) - BIC(two Gaussians) >= 10`;
+- Ashman's D is at least 2;
+- both component weights are at least 0.10;
+- exactly one posterior-0.5 crossing lies between the component means;
+- the fitted population has nonzero variance.
 
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage master \
-  --master-manifest data/raw/drosophila-atlas/qpois-master-v1.master.tsv \
-  --project drosophila-atlas --run-id reuse-master-v1 --genome dm6 \
-  --config-dir data/raw/drosophila-atlas/configs/reuse-master-v1 \
-  --cores 2
-```
+Whenever a two-component fit exists, every positive member DHS is assigned to
+`low` or `high` using posterior probability 0.5, even if a guard fails. Such
+rows are retained with `mixture_supported=0`,
+`mixture_guardrail_warning=1`, and the exact semicolon-separated failures in
+`mixture_guardrail_failures`. No unsupported call is silently promoted to a
+supported one.
 
-Master mode performs bundle validation and provenance registration only.
-`build_atac_master_dhs` is deliberately absent from this DAG.
+## Regulatory classes
 
-### Build the ABC activity input
+Distance is measured from the master DHS summit to the nearest reference TSS:
 
-The activity stage consumes the frozen master set, accepted paired-end atlas
-BAMs, and accepted paired-end normalization-reference BAMs. All artifacts are
-explicit and checksummed; this stage has no download, trimming, alignment,
-peak-calling, or master-reconstruction fallback.
+| Class | Summit-to-TSS distance |
+|---|---:|
+| `promoter_associated` | ≤250 bp |
+| `proximal_enhancer_like` | 251–1,000 bp |
+| `distal_enhancer_like` | >1,000 bp |
+| `unclassified_no_tss_on_contig` | no TSS on that contig |
 
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage activity \
-  --master-manifest \
-    results/drosophila-atlas/qpois-master-v1/provenance/manifests/master-dhs.tsv \
-  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-atac.accepted.tsv \
-  --activity-atlas-bam-manifest data/raw/drosophila-atlas/atlas-h3k27ac.reviewed.tsv \
-  --activity-reference-sheet \
-    data/raw/drosophila-s2-t0-reference/s2_t0_gse95689.tsv \
-  --activity-reference-bam-manifest \
-    data/raw/drosophila-s2-t0-reference/s2-t0-atac.accepted.tsv \
-  --activity-reference-bam-manifest \
-    data/raw/drosophila-s2-t0-reference/s2-t0-h3k27ac.accepted.tsv \
-  --activity-reference-context s2_t0 \
-  --project drosophila-atlas --run-id activity-s2-t0-v1 --genome dm6 \
-  --config-dir data/raw/drosophila-atlas/configs/activity-s2-t0-v1 \
-  --cores 24
-```
-
-Repeat either BAM-manifest option when ATAC and H3K27ac are stored in separate
-manifests. The atlas accession sheet remains the positional input and supplies
-library-to-context metadata; ChIP controls and explicitly rejected treatment
-libraries are ignored for activity quantification. Rejection decisions and
-reasons remain in provenance.
-
-For each accepted ATAC BAM, the workflow retains proper pairs with
-`0 < abs(TLEN) < 150`, applies the standard two-ended Tn5 shift, and counts both
-one-base insertion records. For each accepted H3K27ac BAM, it counts one
-positive-TLEN fragment per proper pair for paired-end data. For single-end
-H3K27ac, it extends each retained primary read strand-aware from its five-prime
-coordinate to that library's reviewed `estimated_fragment_length_bp`, clips at
-chromosome boundaries, and counts the inferred fragment. Raw counts are converted to
-`CPM_per_kb = count * 10^9 / (total assay units * element width_bp)`, preserving
-the variable-width master elements. Biological libraries are averaged with
-equal weight within context and assay. ATAC and H3K27ac distributions are then
-tie-aware quantile-normalized separately to the corresponding mean reference
-profile. The combined value is `sqrt(atac_qnorm * h3k27ac_qnorm)`.
-
-Prepared insertion/fragment BED records are ordered by reference chromosome and
-coordinate with a bounded-memory external sort. Sort runs spill under the
-rule's temporary output directory and are deleted after atomic output promotion,
-so large BAMs do not require the complete BED stream to fit in memory.
-
-Library layout and any single-end fragment estimate are retained in validation
-receipts and activity provenance. Single-end ATAC remains unsupported.
-
-The canonical endpoint is:
-
-```text
-results/<project>/<run-id>/activity/master_dhs_activity.tsv.gz
-```
-
-It contains one row per master DHS and atlas context, including coordinates,
-the original element width, contributing libraries, raw count sums and means,
-library-depth/length-normalized values, replicate standard deviations,
-assay-specific quantile-normalized values, and the combined activity value.
-Supporting outputs are:
-
-```text
-activity/library_signal.tsv.gz             per-library raw and CPM_per_kb values
-activity/context_signal.pre_qnorm.tsv.gz   context/assay aggregates before qnorm
-activity/qnorm_reference.tsv.gz            frozen assay-specific reference profiles
-activity/contexts/<context>.activity.tsv.gz
-activity/activity_metrics.json
-activity/activity_provenance.json
-activity/qc/replicate_correlations.tsv
-activity/qc/distribution_quantiles.tsv
-activity/qc/activity_qc_metrics.json
-activity/qc/activity_qc_report.html
-```
-
-The downstream `activity-qc` rule consumes only these completed activity
-tables; it never reads BAMs or schedules counting again when those outputs are
-current. The self-contained HTML report compares pre- and post-normalization
-quantile profiles with the assay-matched S2 reference, reports zero and tie
-behavior, and calculates raw, log1p, and Spearman replicate correlations from
-the per-library CPM-per-kb table. It also lists context/assay groups represented
-by only one biological library. The report is descriptive and deliberately
-does not apply an automatic correlation or sparsity acceptance threshold.
-
-Use `--until-stage activity` to stop after producing the ABC input table
-without the report. The default activity command above continues through
-`--until-stage activity-qc`.
-
-Every resolved configuration records sample-sheet, schema, and artifact
-manifest hashes plus a timestamp-independent semantic SHA-256. Changing an
-artifact, parameter, or scientific selection requires a new `run-id`; the
-pipeline does not overwrite a scientifically different result namespace.
-
-### Curated dm6 inputs
-
-```bash
-# Current atlas selection: ATAC plus IP-only H3K27ac
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --project drosophila-atlas --run-id ip-only --genome dm6 \
-  --output-dir data/raw/drosophila-atlas \
-  --cores 24
-
-# Alternative table containing available matched H3K27ac inputs
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/atlas_samples_with_inputs.tsv \
-  --project drosophila-atlas --run-id matched-inputs --genome dm6 \
-  --output-dir data/raw/drosophila-atlas \
-  --cores 24
-
-# Reprocess the D17 ATAC/H3K27ac comparator (not an automatic qnorm choice)
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py resources/hq_cell_line_samples.tsv \
-  --project drosophila-cell-line-reference --run-id d17-reference --genome dm6 \
-  --output-dir data/raw/drosophila-cell-line-reference \
-  --cores 24
-```
-
-Selection provenance is documented in
-[`resources/README.md`](resources/README.md).
-
-## ATAC default method
-
-For paired-end ATAC, each biological library is processed as follows:
-
-1. Retain proper, nonduplicate alignments with `0 < |TLEN| < 150`.
-2. Apply the Tn5 offsets with `alignmentSieve --ATACshift`.
-3. Convert both shifted mates to one-base insertion records.
-4. Run MACS3 `callpeak -f BED -q 0.10 --nomodel --shift -75 --extsize
-   150 --keep-dup all -B`.
-5. Clip the MACS3 treatment pileup and local lambda to the declared chromosome
-   sizes, then run `macs3 bdgcmp -m qpois`. Validate/clip the resulting qpois
-   bedGraph as a defensive boundary check. Intervals wholly outside the
-   reference are discarded; partially overlapping intervals retain their
-   original signal value on the valid reference span. `--SPMR` is intentionally
-   not used in this branch.
-6. Progress from qpois exponent 2 through 325 and retain components 50–400 bp;
-   broader components split as the threshold rises.
-7. Concatenate replicate insertion records within each context and repeat
-   candidate calling and refinement on the pool.
-8. Retain a pooled peak when the configured number of replicate peak sets each
-   cover the configured fraction of its bases.
-9. Find each retained peak's summit in its pooled signal track and reconcile
-   peaks across contexts into a variable-width master DHS registry.
-
-Single-end ATAC follows the same insertion/qpois path without the unavailable
-paired-fragment-length filter. HMMRATAC is an explicit paired-end alternative.
+An active element is an open DHS assigned to the high H3K27ac component. This
+binary annotation is intended for an encyclopedia-style catalog; continuous
+ATAC, H3K27ac, and combined activity values remain the appropriate inputs for
+ABC scoring.
 
 ## Outputs
 
-Each run is namespaced below `results/<project>/<run-id>/`.
-
-ATAC context endpoints (the directory remains named `conditions` internally):
+Master bundle:
 
 ```text
-atac/conditions/<context>/
-  peaks/
-    <context>.candidates.narrowPeak
-    <context>.qpois-refined.bed
-    <context>.qpois-excluded.bed
-    <context>.qpois-refinement.json
-    <context>.replicate-supported.bed       final context-level peak set
-    <context>.replicate-support.tsv
-    <context>.replicate-support.json
-  tracks/
-    <context>.MACS3-pileup.unscaled.bw
-    <context>.qpois.bw
+results/<project>/<run_id>/atac/master/master_dhs.bed
+results/<project>/<run_id>/atac/master/master_dhs_summits.bed
+results/<project>/<run_id>/atac/master/master_dhs_membership.tsv
+results/<project>/<run_id>/atac/master/master_dhs_context_matrix.tsv
+results/<project>/<run_id>/atac/master/master_dhs.json
 ```
 
-For HMMRATAC contexts, the pooled files are
-`<context>.hmmratac.narrowPeak`, `<context>.CPM.bw`, and the same
-`replicate-supported` BED/TSV/JSON outputs.
-
-Qpois-refined BEDs contain BED6 followed by maximum qpois score and selection
-exponent. Replicate-supported BEDs contain BED6 followed by `condition_id`,
-`support_n`, `replicate_n`, `support_fraction`, comma-separated supporting
-library IDs, and `peak_method`.
-
-The final cross-context ATAC outputs are:
+Quantification:
 
 ```text
-atac/master/
-  master_dhs.bed                  strict BED6 variable-width master intervals
-  master_dhs_summits.bed          one-base representative summits
-  master_dhs_membership.tsv       every contributing context peak
-  master_dhs_context_matrix.tsv   context presence for each master DHS
-  master_dhs.json                 parameters and summary statistics
+results/<project>/<run_id>/activity/quantification/libraries/*.signal.tsv.gz
+results/<project>/<run_id>/activity/quantification/tmm_input_counts.tsv.gz
+results/<project>/<run_id>/activity/quantification/normalization_factors.tsv
+results/<project>/<run_id>/activity/quantification/context_signal.tsv.gz
+results/<project>/<run_id>/activity/quantification/master_dhs_activity.tsv.gz
+results/<project>/<run_id>/activity/quantification/activity_metrics.json
+results/<project>/<run_id>/activity/quantification/activity_provenance.json
 ```
 
-For qpois contexts, each source summit is the center of the maximum plateau in
-the pooled unscaled MACS3 pileup within that refined peak. HMMRATAC contexts use
-their pooled CPM BigWig. If an interval contains no finite signal, its midpoint
-is used and recorded as a fallback. A source interval extending beyond a
-reference contig is clipped to the contig boundary; the original coordinates
-and clipping flag remain in `master_dhs_membership.tsv`.
-
-Source peaks are considered the same DHS only when each peak contains the
-other's summit, their complete summit span is at most 150 bp (recorded as
-`atac_master.summit_max_distance`), and the cluster does not already contain a
-peak from that context. Narrow peaks are considered first, so a broad peak from
-one context is assigned only to the narrow DHS containing its maximum and
-cannot collapse two sites resolved in another. The representative summit is
-the observed source summit nearest the median of the contributing source
-summits (with deterministic ties).
-
-After this initial clustering, adjacent clusters with representative summits
-less than 50 bp apart are treated as context-shifted calls of the same DHS and
-merged when their context sets are disjoint. They remain separate when at least
-one context contributes a source peak to both clusters, because that context
-independently resolved two sites. The closest eligible pair merges first, and
-the combined source-summit span must still be at most 150 bp. The 50 bp rule is
-recorded as `atac_master.minimum_summit_separation`. Consequently, the default
-qpois workflow does not pad a boundary-clipped master DHS merely to reach 50
-bp. This setting is a minimum separation between representative summits, not a
-minimum final interval width: a sub-50-bp interval may remain when
-shared-context evidence resolves two nearby sites, or when midpoint clipping
-trims an asymmetric source-peak envelope even though neighboring summits are
-at least 50 bp apart.
-
-Final boundaries are the envelope of contributing refined peaks and are
-clipped at the midpoint between adjacent master summits only when their
-envelopes overlap. This step never resizes DHSs to 500 bp; standardized ABC
-windows are constructed downstream.
-
-ChIP endpoints:
+Catalog:
 
 ```text
-peaks/<sample>/
-  <sample>_peaks.narrowPeak       TF ChIP
-  <sample>_peaks.broadPeak        histone ChIP
-  <sample>_treat_pileup.bdg
-  <sample>_control_lambda.bdg
-tracks/<sample>.CPM.bw
+results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz
+results/<project>/<run_id>/activity/catalog/master_elements_wide.tsv.gz
+results/<project>/<run_id>/activity/catalog/active/<context>.active_elements.tsv.gz
+results/<project>/<run_id>/activity/catalog/mixture_models.tsv
+results/<project>/<run_id>/activity/catalog/regulatory_element_summary.tsv
+results/<project>/<run_id>/activity/catalog/h3k27ac_mixture_distributions.svg
+results/<project>/<run_id>/activity/catalog/regulatory_element_metrics.json
+results/<project>/<run_id>/activity/catalog/regulatory_element_provenance.json
 ```
 
-ChIP `callpeak` uses `-B --SPMR`; `-c` is added only when `control_library` is
-present. Alignment BAMs are retained for reproducible downstream reruns, while
-replicate-only ATAC peak evidence and insertion files live below `work/`.
-
-Shared outputs include:
+Integrated report:
 
 ```text
-bam/                         filtered, indexed alignments
-qc/fastqc/                   raw and trimmed FastQC
-qc/cutadapt/                 trimming reports
-qc/alignment/                SAMtools statistics
-qc/frip/                     numerator, denominator, and FRiP
-qc/tss/ and qc/fragments/    ATAC QC
-qc/chip/                     ChIP fingerprint/cross-correlation
-qc/metrics.tsv and .json     stable machine-readable summary
-qc/multiqc/                  aggregate HTML report
-provenance/resolved_config.json
-logs/
+results/<project>/<run_id>/activity/report/integrated_qc_report.html
+results/<project>/<run_id>/activity/report/integrated_qc_report.pdf
+results/<project>/<run_id>/activity/report/integrated_qc_report.json
 ```
 
-## Restartability and parallelism
+The report includes frozen input and output inventories with checksums, BAM QC
+and FRiP statistics, H3K27ac cross-correlation, ATAC TSS plots, master-registry
+statistics, TMM factors, active-element TSS classes, mixture fits and exact
+guardrail warnings. The JSON sidecar records every report input and output hash.
 
-Re-run the identical command to resume:
-
-- aria2 resumes partial ENA downloads, and the downloader independently
-  revalidates reported checksums before declaring acquisition complete;
-- aria2 retries only checksum-failed/incomplete FASTQs three times by default;
-  use `--checksum-retries` to change the bounded retry count;
-- SRA conversion promotes FASTQs only after successful completion;
-- reference preparation and every processing stage are Snakemake outputs;
-- `--until-stage` can be advanced in the same run namespace without changing
-  the scientific semantic hash;
-- temporary scientific outputs are written in staging paths before promotion;
-- completed alignments are reused when peak parameters change;
-- validated external BAMs and master bundles are immutable workflow inputs;
-- successful stages automatically export reusable final-BAM and master-bundle
-  manifests under `provenance/manifests/`;
-- identical manifests/configurations retain stable semantic hashes and do not
-  replace unchanged resolved YAML;
-- a changed scientific parameter set should use a new `run-id`.
-
-Independent accessions, technical lanes, biological libraries, and contexts
-are separate jobs. `--cores` limits aggregate CPU usage; each rule separately
-declares threads and memory. For downloads, `--file-jobs` is concurrent files
-and `--connections` is segmented connections per file.
-
-## SLURM
-
-All site-specific launchers and profiles belong under the ignored `slurm/`
-directory. Do not run downloads, alignment, peak calling, or environment
-installation on a login node.
-
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/run_pipeline.py samples.tsv \
-  --workflow-profile slurm/profile \
-  --jobs 50 --cores 200 --max-threads 16
-```
-
-`--jobs` caps submitted/running jobs, `--cores` caps aggregate requested CPUs,
-and `--max-threads` caps one rule. Cluster hostnames, accounts, partitions, and
-paths must remain in ignored files under `slurm/`.
-
-## IGV session
-
-Build a portable session from the final ATAC contexts and optional ChIP run:
-
-```bash
-micromamba run --prefix "$PWD/.venv" \
-  python src/build_igv_session.py \
-  results/drosophila-atlas.atac.dm6/ip-only/atac \
-  --chip-root results/drosophila-atlas.chip_histone.dm6/ip-only \
-  --output results/atlas.igv.xml --genome dm6 \
-  --final-atac-only --chip-one-per-context
-```
-
-The final-only view contains pooled ATAC pileup/qpois tracks and the
-replicate-supported ATAC peaks. The ChIP context option deterministically
-selects the first sorted replicate (normally `rep1`) for each context.
-When `atac/master/master_dhs.bed` exists, it is added automatically as the
-first feature track; use `--master-bed` to select another registry explicitly.
+The long table contains one master-element/context row and reports both mixture
+components. The wide table contains one row per master element with
+context-prefixed membership, signal, mixture, warning, and activity columns.
+Each per-context active file contains the high-component rows, including
+unsupported-fit assignments with their explicit warning fields.
 
 ## Verification
 
@@ -628,11 +341,12 @@ first feature track; use `--master-bed` to select another registry explicitly.
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
 export XDG_CACHE_HOME="$PWD/.cache"
 
-micromamba run --prefix "$PWD/.venv" pytest -q
-micromamba run --prefix "$PWD/.venv" \
+mamba run --prefix "$PWD/.venv" pytest -q
+mamba run --prefix "$PWD/.venv" \
   snakemake --snakefile workflow/Snakefile \
   --configfile tests/fixtures/workflow_config.yaml --lint
-micromamba run --prefix "$PWD/.venv" \
+mamba run --prefix "$PWD/.venv" \
   snakemake --snakefile workflow/Snakefile \
-  --configfile docs/workflow-dag.config.yaml --cores 16 --dry-run
+  --configfile tests/fixtures/workflow_config.yaml --cores 8 --dry-run
+git diff --check
 ```

@@ -22,7 +22,7 @@ def main() -> int:
     parser.add_argument("--total-units", type=Path, required=True)
     parser.add_argument("--library-id", required=True)
     parser.add_argument("--assay", choices=("atac", "h3k27ac"), required=True)
-    parser.add_argument("--cohort", choices=("atlas", "reference"), required=True)
+    parser.add_argument("--cohort", choices=("atlas",), required=True)
     parser.add_argument("--context", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)

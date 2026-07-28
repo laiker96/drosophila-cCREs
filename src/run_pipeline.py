@@ -77,7 +77,7 @@ def main() -> int:
     parser.add_argument("--snakemake-dry-run", action="store_true")
     parser.add_argument(
         "--from-stage",
-        choices=("accessions", "final-bam", "master", "activity"),
+        choices=("accessions", "final-bam", "master", "quantification"),
         default="accessions",
         help=(
             "Explicit workflow starting artifact. Reuse modes are strict and "
@@ -88,8 +88,8 @@ def main() -> int:
         "--until-stage",
         choices=OUTPUT_STAGES,
         help=(
-            "Stop after this logical stage. Omit to retain the existing master "
-            "endpoint, or the activity-QC endpoint in activity mode."
+            "Stop after this logical stage. Defaults to QC from accessions, master "
+            "from reviewed final BAMs, and report from quantification artifacts."
         ),
     )
     parser.add_argument(
@@ -100,30 +100,27 @@ def main() -> int:
     parser.add_argument(
         "--master-manifest",
         type=Path,
-        help="Immutable master-DHS bundle manifest for master or activity mode",
+        help="Immutable master-DHS bundle manifest for master or quantification mode",
     )
     parser.add_argument(
-        "--activity-atlas-bam-manifest",
+        "--activity-bam-manifest",
         type=Path,
         action="append",
         default=[],
-        help="Accepted atlas final-BAM manifest; repeat for assay-specific manifests",
+        help=(
+            "Accepted ATAC/H3K27ac final-BAM manifest for quantification; "
+            "repeat for assay-specific manifests"
+        ),
     )
     parser.add_argument(
-        "--activity-reference-sheet",
-        type=Path,
-        help="Accession metadata for the selected normalization-reference cohort",
-    )
-    parser.add_argument(
-        "--activity-reference-bam-manifest",
+        "--report-source-root",
         type=Path,
         action="append",
         default=[],
-        help="Accepted reference final-BAM manifest; repeat as needed",
-    )
-    parser.add_argument(
-        "--activity-reference-context",
-        help="Reference context ID; inferred only when the reference sheet has one",
+        help=(
+            "Completed upstream result root whose QC manifests, JSONs, and plots "
+            "should be included in the final report; repeat as needed"
+        ),
     )
     parser.add_argument("--atac-minimum-replicates", type=int, default=2)
     parser.add_argument("--atac-overlap-fraction", type=float, default=0.5)
@@ -151,10 +148,8 @@ def main() -> int:
         if (
             args.final_bam_manifest
             or args.master_manifest
-            or args.activity_atlas_bam_manifest
-            or args.activity_reference_sheet
-            or args.activity_reference_bam_manifest
-            or args.activity_reference_context
+            or args.activity_bam_manifest
+            or args.report_source_root
         ):
             parser.error(
                 "artifact manifests require the matching reuse --from-stage"
@@ -176,13 +171,10 @@ def main() -> int:
                 parser.error("--from-stage final-bam requires --final-bam-manifest")
             if args.master_manifest:
                 parser.error("--master-manifest requires --from-stage master")
-            if (
-                args.activity_atlas_bam_manifest
-                or args.activity_reference_sheet
-                or args.activity_reference_bam_manifest
-                or args.activity_reference_context
-            ):
-                parser.error("activity options require --from-stage activity")
+            if args.activity_bam_manifest:
+                parser.error("activity options require --from-stage quantification")
+            if args.report_source_root:
+                parser.error("report sources require --from-stage quantification")
         if args.from_stage == "master":
             if not args.master_manifest:
                 parser.error("--from-stage master requires --master-manifest")
@@ -190,32 +182,20 @@ def main() -> int:
                 parser.error(
                     "--from-stage master consumes the frozen master bundle, not BAMs"
                 )
-            if (
-                args.activity_atlas_bam_manifest
-                or args.activity_reference_sheet
-                or args.activity_reference_bam_manifest
-                or args.activity_reference_context
-            ):
-                parser.error("activity options require --from-stage activity")
-        if args.from_stage == "activity":
+            if args.activity_bam_manifest:
+                parser.error("activity options require --from-stage quantification")
+            if args.report_source_root:
+                parser.error("report sources require --from-stage quantification")
+        if args.from_stage == "quantification":
             if not args.master_manifest:
-                parser.error("--from-stage activity requires --master-manifest")
-            if not args.activity_atlas_bam_manifest:
+                parser.error("--from-stage quantification requires --master-manifest")
+            if not args.activity_bam_manifest:
                 parser.error(
-                    "--from-stage activity requires --activity-atlas-bam-manifest"
-                )
-            if not args.activity_reference_sheet:
-                parser.error(
-                    "--from-stage activity requires --activity-reference-sheet"
-                )
-            if not args.activity_reference_bam_manifest:
-                parser.error(
-                    "--from-stage activity requires --activity-reference-bam-manifest"
+                    "--from-stage quantification requires --activity-bam-manifest"
                 )
             if args.final_bam_manifest:
                 parser.error(
-                    "activity mode uses --activity-atlas-bam-manifest and "
-                    "--activity-reference-bam-manifest"
+                    "quantification mode uses --activity-bam-manifest"
                 )
 
     sample_sheet = args.sample_sheet.resolve()
@@ -242,27 +222,18 @@ def main() -> int:
         elif args.from_stage == "master":
             manifests = [args.master_manifest]
         else:
-            manifests = [
-                args.master_manifest,
-                *args.activity_atlas_bam_manifest,
-                *args.activity_reference_bam_manifest,
-            ]
+            manifests = [args.master_manifest, *args.activity_bam_manifest]
         print(f"Strict reuse-only mode: starting from {args.from_stage}")
         for artifact in manifests:
             print(f"  manifest={artifact.resolve()}")
         print("FASTQ download, trimming, and alignment fallback are disabled")
 
-    if args.from_stage == "activity":
+    if args.from_stage == "quantification":
         configs = [
             generate_activity_config(
-                atlas_sample_sheet_path=sample_sheet,
-                reference_sample_sheet_path=args.activity_reference_sheet.resolve(),
-                atlas_final_bam_manifests=[
-                    path.resolve() for path in args.activity_atlas_bam_manifest
-                ],
-                reference_final_bam_manifests=[
-                    path.resolve()
-                    for path in args.activity_reference_bam_manifest
+                sample_sheet_path=sample_sheet,
+                final_bam_manifests=[
+                    path.resolve() for path in args.activity_bam_manifest
                 ],
                 master_manifest_path=args.master_manifest.resolve(),
                 output_dir=args.config_dir.resolve(),
@@ -273,7 +244,10 @@ def main() -> int:
                 require_files=True,
                 schema_path=args.schema.resolve(),
                 genome=args.genome,
-                reference_context=args.activity_reference_context,
+                output_stage=output_stage,
+                report_source_roots=[
+                    path.resolve() for path in args.report_source_root
+                ],
             )
         ]
     else:

@@ -22,6 +22,10 @@ from .artifacts import (
 from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
 from .workflow_config import validate_stage_selection, workflow_semantic_sha256
+from .integrated_report import (
+    discover_report_source_files,
+    report_source_record,
+)
 
 
 GENOME_DEFAULTS = {
@@ -389,10 +393,12 @@ def generate_configs(
     for row in manifest_rows:
         manifest_by_request[row["requested_accession"]].append(row)
 
+    reviewed_master_exclusions: list[dict[str, str]] = []
     final_bams = (
         read_final_bam_manifest(
             final_bam_manifest_path,
             require_files=require_fastq_files,
+            allow_rejected=output_stage == "master",
         )
         if input_stage == "final-bam"
         else {}
@@ -421,6 +427,59 @@ def generate_configs(
                 "Final-BAM manifest is incomplete for its selected assay(s): "
                 + ", ".join(missing)
             )
+        sheet_by_library_id = {
+            str(row["library_id"]): row for row in sheet_rows
+        }
+        for library_id, artifact in final_bams.items():
+            sheet_row = sheet_by_library_id[library_id]
+            for field in ("assay", "context", "role"):
+                if str(artifact[field]) != str(sheet_row[field]):
+                    raise AcquisitionError(
+                        f"Final-BAM manifest {field} for {library_id!r} "
+                        "does not match the sample sheet"
+                    )
+            if artifact["genome"] != genome:
+                raise AcquisitionError(
+                    f"Final-BAM manifest genome for {library_id!r} "
+                    f"is {artifact['genome']!r}, expected {genome!r}"
+                )
+        if output_stage == "master":
+            if selected_assays != {"atac"}:
+                raise AcquisitionError(
+                    "Master DHS construction requires an ATAC-only final-BAM manifest"
+                )
+            pending = sorted(
+                library_id
+                for library_id, artifact in final_bams.items()
+                if artifact["qc_status"] == "pending_review"
+            )
+            if pending:
+                raise AcquisitionError(
+                    "Master DHS construction requires manual QC decisions for every "
+                    "ATAC library; pending_review: " + ", ".join(pending)
+                )
+            reviewed_master_exclusions = [
+                {
+                    "id": library_id,
+                    "assay": "atac",
+                    "context": artifact["context"],
+                    "role": artifact["role"],
+                    "layout": artifact["layout"],
+                    "qc_status": "rejected",
+                    "reason": artifact["notes"],
+                }
+                for library_id, artifact in sorted(final_bams.items())
+                if artifact["qc_status"] == "rejected"
+            ]
+            final_bams = {
+                library_id: artifact
+                for library_id, artifact in final_bams.items()
+                if artifact["qc_status"] == "accepted"
+            }
+            if not final_bams:
+                raise AcquisitionError(
+                    "Master DHS construction has no accepted ATAC libraries"
+                )
         sheet_rows = [
             row for row in sheet_rows if str(row["library_id"]) in final_bams
         ]
@@ -559,6 +618,10 @@ def generate_configs(
             config["provenance"]["final_bam_manifest_sha256"] = sha256_file(
                 final_bam_manifest_path
             )
+            if output_stage == "master":
+                config["provenance"]["excluded_master_libraries"] = (
+                    reviewed_master_exclusions
+                )
         if assay == "atac":
             from .consensus import condition_specs
 
@@ -638,8 +701,6 @@ def _activity_libraries(
     sheet_rows: list[dict[str, Any]],
     manifests: dict[str, dict[str, str]],
     genome: str,
-    cohort: str,
-    selected_context: str | None,
     path_base: Path,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     sheet_by_library: dict[str, dict[str, Any]] = {}
@@ -648,7 +709,7 @@ def _activity_libraries(
     unknown = sorted(set(manifests) - set(sheet_by_library))
     if unknown:
         raise AcquisitionError(
-            f"{cohort} BAM manifest contains libraries absent from its sample sheet: "
+            "Activity BAM manifest contains libraries absent from the sample sheet: "
             + ", ".join(unknown)
         )
 
@@ -657,12 +718,11 @@ def _activity_libraries(
         for library_id, row in sheet_by_library.items()
         if row["role"] == "treatment"
         and row["assay"] in {"atac", "chip_histone"}
-        and (selected_context is None or str(row["context"]) == selected_context)
     }
     missing = sorted(set(selected) - set(manifests))
     if missing:
         raise AcquisitionError(
-            f"{cohort} final-BAM manifests are missing treatment libraries: "
+            "Activity final-BAM manifests are missing treatment libraries: "
             + ", ".join(missing)
         )
     libraries: list[dict[str, Any]] = []
@@ -672,21 +732,21 @@ def _activity_libraries(
         for field in ("context", "role"):
             if str(artifact[field]) != str(row[field]):
                 raise AcquisitionError(
-                    f"{cohort} BAM {library_id!r} {field} differs from its sample sheet"
+                    f"Activity BAM {library_id!r} {field} differs from its sample sheet"
                 )
         if artifact["assay"] != row["assay"]:
             raise AcquisitionError(
-                f"{cohort} BAM {library_id!r} assay differs from its sample sheet"
+                f"Activity BAM {library_id!r} assay differs from its sample sheet"
             )
         if artifact["genome"] != genome:
             raise AcquisitionError(
-                f"{cohort} BAM {library_id!r} uses {artifact['genome']!r}, "
+                f"Activity BAM {library_id!r} uses {artifact['genome']!r}, "
                 f"expected {genome!r}"
             )
         qc_status = artifact["qc_status"]
         if qc_status == "pending_review":
             raise AcquisitionError(
-                f"{cohort} activity BAM {library_id!r} requires qc_status='accepted'"
+                f"Activity BAM {library_id!r} requires qc_status='accepted'"
             )
         assay = "h3k27ac" if artifact["assay"] == "chip_histone" else "atac"
         estimated_fragment_length = artifact.get(
@@ -695,12 +755,12 @@ def _activity_libraries(
         if artifact["layout"] == "single" and assay == "h3k27ac":
             if not estimated_fragment_length:
                 raise AcquisitionError(
-                    f"{cohort} single-end H3K27ac BAM {library_id!r} requires "
+                    f"Single-end H3K27ac BAM {library_id!r} requires "
                     "estimated_fragment_length_bp"
                 )
         elif estimated_fragment_length:
             raise AcquisitionError(
-                f"{cohort} BAM {library_id!r} must leave "
+                f"Activity BAM {library_id!r} must leave "
                 "estimated_fragment_length_bp blank unless it is single-end H3K27ac"
             )
         if qc_status == "rejected":
@@ -709,7 +769,7 @@ def _activity_libraries(
                     "id": library_id,
                     "assay": assay,
                     "context": str(row["context"]),
-                    "cohort": cohort,
+                    "cohort": "atlas",
                     "layout": artifact["layout"],
                     "qc_status": qc_status,
                     "estimated_fragment_length_bp": (
@@ -723,13 +783,13 @@ def _activity_libraries(
             continue
         if assay == "atac" and artifact["layout"] != "paired":
             raise AcquisitionError(
-                f"{cohort} activity ATAC BAM {library_id!r} must be paired-end"
+                f"Activity ATAC BAM {library_id!r} must be paired-end"
             )
         library: dict[str, Any] = {
             "id": library_id,
             "assay": assay,
             "context": str(row["context"]),
-            "cohort": cohort,
+            "cohort": "atlas",
             "layout": artifact["layout"],
             "genome": artifact["genome"],
             "bam": _display_path(artifact["bam"], path_base),
@@ -752,10 +812,8 @@ def _activity_libraries(
 
 def generate_activity_config(
     *,
-    atlas_sample_sheet_path: Path,
-    reference_sample_sheet_path: Path,
-    atlas_final_bam_manifests: list[Path],
-    reference_final_bam_manifests: list[Path],
+    sample_sheet_path: Path,
+    final_bam_manifests: list[Path],
     master_manifest_path: Path,
     output_dir: Path,
     project: str,
@@ -765,99 +823,55 @@ def generate_activity_config(
     require_files: bool,
     schema_path: Path = DEFAULT_SCHEMA,
     genome: str = "dm6",
-    reference_context: str | None = None,
+    output_stage: str = "report",
+    report_source_roots: list[Path] | None = None,
 ) -> Path:
-    """Generate one resolved master-DHS activity configuration."""
+    """Generate one resolved master-DHS quantification/catalog configuration."""
 
     project = _safe_id(project, "project ID")
     run_id = _safe_id(run_id, "run ID")
+    output_stage = validate_stage_selection("quantification", output_stage)
     if genome not in GENOME_DEFAULTS:
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
-    atlas_rows = read_sample_sheet(
-        atlas_sample_sheet_path,
+    sheet_rows = read_sample_sheet(
+        sample_sheet_path,
         schema_path=schema_path,
     )
-    reference_rows = read_sample_sheet(
-        reference_sample_sheet_path,
-        schema_path=schema_path,
-    )
-    reference_contexts = sorted(
-        {
-            str(row["context"])
-            for row in reference_rows
-            if row["role"] == "treatment"
-            and row["assay"] in {"atac", "chip_histone"}
-        }
-    )
-    if reference_context is None:
-        if len(reference_contexts) != 1:
-            raise AcquisitionError(
-                "Reference sheet contains multiple contexts; select one explicitly"
-            )
-        reference_context = reference_contexts[0]
-    reference_context = _safe_id(reference_context, "reference context")
-    if reference_context not in reference_contexts:
-        raise AcquisitionError(
-            f"Reference context {reference_context!r} is absent from the reference sheet"
-        )
-
-    atlas_manifests = _merge_final_bam_manifests(
-        atlas_final_bam_manifests,
+    manifests = _merge_final_bam_manifests(
+        final_bam_manifests,
         require_files=require_files,
         allow_rejected=True,
     )
-    reference_manifests = _merge_final_bam_manifests(
-        reference_final_bam_manifests,
-        require_files=require_files,
-        allow_rejected=True,
-    )
-    atlas_libraries, atlas_contexts, atlas_exclusions = _activity_libraries(
-        sheet_rows=atlas_rows,
-        manifests=atlas_manifests,
+    libraries, contexts, exclusions = _activity_libraries(
+        sheet_rows=sheet_rows,
+        manifests=manifests,
         genome=genome,
-        cohort="atlas",
-        selected_context=None,
-        path_base=path_base,
-    )
-    (
-        reference_libraries,
-        _reference_contexts,
-        reference_exclusions,
-    ) = _activity_libraries(
-        sheet_rows=reference_rows,
-        manifests=reference_manifests,
-        genome=genome,
-        cohort="reference",
-        selected_context=reference_context,
         path_base=path_base,
     )
     artifact_paths = [
         library[field]
-        for library in atlas_libraries + reference_libraries
+        for library in libraries
         for field in ("bam", "bai")
     ]
     if len(artifact_paths) != len(set(artifact_paths)):
         raise AcquisitionError(
             "Activity libraries must use distinct BAM and BAI artifact paths"
         )
-    for context in atlas_contexts:
+    for context in contexts:
         assays = {
             library["assay"]
-            for library in atlas_libraries
+            for library in libraries
             if library["context"] == context
         }
         if assays != {"atac", "h3k27ac"}:
             raise AcquisitionError(
-                f"Atlas context {context!r} does not have both ATAC and H3K27ac"
+                f"Context {context!r} does not have both ATAC and H3K27ac"
             )
     for assay in ("atac", "h3k27ac"):
-        reference_count = sum(
-            library["assay"] == assay for library in reference_libraries
-        )
-        if reference_count < 2:
+        assay_count = sum(library["assay"] == assay for library in libraries)
+        if assay_count < 2:
             raise AcquisitionError(
-                f"Reference context {reference_context!r} requires at least two "
-                f"accepted {assay} libraries"
+                f"Background TMM requires at least two accepted {assay} libraries"
             )
 
     master = read_master_manifest(
@@ -876,64 +890,88 @@ def generate_activity_config(
         )
         for key, value in master.items()
     }
+    inferred_source_roots: list[Path] = []
+    resolved_master_manifest = master_manifest_path.resolve()
+    for parent in resolved_master_manifest.parents:
+        if parent.name == "provenance":
+            inferred_source_roots.append(parent.parent)
+            break
+    source_roots = sorted(
+        {
+            path.resolve()
+            for path in [*(report_source_roots or []), *inferred_source_roots]
+        }
+    )
+    report_records = {
+        record["path"]: record
+        for record in discover_report_source_files(source_roots)
+    }
+    for path, kind in (
+        (sample_sheet_path, "sample_sheet"),
+        (schema_path, "sample_sheet_schema"),
+        (master_manifest_path, "master_manifest"),
+        *((path, "final_bam_manifest") for path in final_bam_manifests),
+    ):
+        record = report_source_record(
+            path,
+            kind=kind,
+            source_root=path.resolve().parent,
+        )
+        report_records[record["path"]] = record
     provenance: dict[str, Any] = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "input_mode": "activity_artifact_manifests",
-        "atlas_sample_sheet": _display_path(
-            atlas_sample_sheet_path,
-            path_base,
-        ),
-        "atlas_sample_sheet_sha256": sha256_file(atlas_sample_sheet_path),
-        "reference_sample_sheet": _display_path(
-            reference_sample_sheet_path,
-            path_base,
-        ),
-        "reference_sample_sheet_sha256": sha256_file(
-            reference_sample_sheet_path
-        ),
+        "input_mode": "quantification_artifact_manifests",
+        "sample_sheet": _display_path(sample_sheet_path, path_base),
+        "sample_sheet_sha256": sha256_file(sample_sheet_path),
         "sample_sheet_schema": _display_path(schema_path, path_base),
         "sample_sheet_schema_sha256": sha256_file(schema_path),
         "master_manifest": _display_path(master_manifest_path, path_base),
         "master_manifest_sha256": sha256_file(master_manifest_path),
-        "atlas_final_bam_manifests": [
-            _display_path(path, path_base)
-            for path in atlas_final_bam_manifests
+        "final_bam_manifests": [
+            _display_path(path, path_base) for path in final_bam_manifests
         ],
-        "atlas_final_bam_manifest_sha256": [
-            sha256_file(path) for path in atlas_final_bam_manifests
+        "final_bam_manifest_sha256": [
+            sha256_file(path) for path in final_bam_manifests
         ],
-        "reference_final_bam_manifests": [
-            _display_path(path, path_base)
-            for path in reference_final_bam_manifests
-        ],
-        "reference_final_bam_manifest_sha256": [
-            sha256_file(path) for path in reference_final_bam_manifests
-        ],
-        "excluded_activity_libraries": atlas_exclusions + reference_exclusions,
+        "excluded_activity_libraries": exclusions,
     }
     config: dict[str, Any] = {
         "project": project,
         "run_id": run_id,
         "output_dir": "results",
         "assay": "activity",
-        "input_stage": "activity",
-        "output_stage": "activity-qc",
+        "input_stage": "quantification",
+        "output_stage": output_stage,
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
         "activity": {
-            "schema_version": 1,
+            "schema_version": 2,
             "master": activity_master,
-            "atlas_contexts": atlas_contexts,
-            "reference_context": reference_context,
-            "libraries": atlas_libraries + reference_libraries,
+            "contexts": contexts,
+            "libraries": libraries,
             "atac_fragment_maximum": 150,
-            "normalization": "cpm_per_kb_then_tie_aware_reference_qnorm_v1",
-            "activity_formula": "sqrt_atac_times_h3k27ac_v1",
+            "normalization": "background_tmm_10kb_autosomes_v1",
+            "h3k27ac_signal": "summit_max3_500bp_v1",
+            "mixture_model": "guarded_two_gaussian_log10_v1",
+        },
+        "report": {
+            "schema_version": 1,
+            "source_roots": [
+                _display_path(path, path_base) for path in source_roots
+            ],
+            "source_files": [
+                {
+                    **record,
+                    "path": _display_path(record["path"], path_base),
+                    "source_root": _display_path(record["source_root"], path_base),
+                }
+                for _path, record in sorted(report_records.items())
+            ],
         },
         "provenance": provenance,
     }
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{project}.activity.yaml"
+    output_path = output_dir / f"{project}.quantification.yaml"
     _write_config_if_changed(output_path, config)
     return output_path.resolve()

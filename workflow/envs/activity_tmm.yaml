@@ -1,0 +1,8 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - r-base=4.5.3
+  - bioconductor-edger=4.8.2
+  - r-jsonlite=2.0.0

@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+import shlex
 from urllib.parse import urlparse
 
 
@@ -9,6 +10,9 @@ REPO_ROOT = Path(workflow.basedir).parent.resolve()
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from short_read_processing.consensus import condition_specs
+from short_read_processing.activity_tmm import (
+    TMM_BACKGROUND_METHOD,
+)
 from short_read_processing.workflow_config import (
     guard_result_namespace,
     resolve_input_paths,
@@ -496,6 +500,7 @@ ATAC_MASTER_TARGETS = (
 
 ACTIVITY_ROOT = f"{RESULT_ROOT}/activity"
 ACTIVITY_WORK = f"{WORK_ROOT}/activity"
+ACTIVITY_QUANTIFICATION_ROOT = f"{ACTIVITY_ROOT}/quantification"
 ACTIVITY_LIBRARIES = (
     {str(library["id"]): library for library in ACTIVITY["libraries"]}
     if ACTIVITY
@@ -548,39 +553,71 @@ ACTIVITY_UNIT_COUNTS = {
     for library in ACTIVITY_LIBRARY_IDS
 }
 ACTIVITY_LIBRARY_SIGNALS = {
-    library: f"{ACTIVITY_ROOT}/libraries/{library}.signal.tsv.gz"
+    library: f"{ACTIVITY_QUANTIFICATION_ROOT}/libraries/{library}.signal.tsv.gz"
     for library in ACTIVITY_LIBRARY_IDS
 }
 ACTIVITY_LIBRARY_SUMMARIES = {
-    library: f"{ACTIVITY_ROOT}/libraries/{library}.summary.json"
+    library: f"{ACTIVITY_QUANTIFICATION_ROOT}/libraries/{library}.summary.json"
     for library in ACTIVITY_LIBRARY_IDS
 }
-ACTIVITY_CONTEXTS = list(ACTIVITY["atlas_contexts"]) if ACTIVITY else []
-ACTIVITY_CONTEXT_VIEWS = {
-    context: f"{ACTIVITY_ROOT}/contexts/{context}.activity.tsv.gz"
+ACTIVITY_CONTEXTS = list(ACTIVITY["contexts"]) if ACTIVITY else []
+ACTIVITY_BACKGROUND_BINS = (
+    f"{ACTIVITY_QUANTIFICATION_ROOT}/background/autosomal_10kb_bins.bed"
+)
+ACTIVITY_BACKGROUND_COUNTS = {
+    library: f"{ACTIVITY_WORK}/background_10kb/{library}.counts.tsv.gz"
+    for library in ACTIVITY_LIBRARY_IDS
+}
+ACTIVITY_TMM_COUNTS = f"{ACTIVITY_QUANTIFICATION_ROOT}/tmm_input_counts.tsv.gz"
+ACTIVITY_TMM_METADATA = f"{ACTIVITY_QUANTIFICATION_ROOT}/tmm_input_libraries.tsv"
+ACTIVITY_TMM_FACTORS = f"{ACTIVITY_QUANTIFICATION_ROOT}/normalization_factors.tsv"
+ACTIVITY_TMM_RECEIPT = f"{ACTIVITY_QUANTIFICATION_ROOT}/tmm_software.json"
+ACTIVITY_CONTEXT_SIGNAL = f"{ACTIVITY_QUANTIFICATION_ROOT}/context_signal.tsv.gz"
+ACTIVITY_TABLE = f"{ACTIVITY_QUANTIFICATION_ROOT}/master_dhs_activity.tsv.gz"
+ACTIVITY_METRICS = f"{ACTIVITY_QUANTIFICATION_ROOT}/activity_metrics.json"
+ACTIVITY_PROVENANCE = f"{ACTIVITY_QUANTIFICATION_ROOT}/activity_provenance.json"
+ACTIVITY_REGULATORY_ROOT = f"{ACTIVITY_ROOT}/catalog"
+ACTIVITY_REGULATORY_WINDOWS = f"{ACTIVITY_REGULATORY_ROOT}/h3k27ac_windows.tsv.gz"
+ACTIVITY_REGULATORY_WINDOWS_BED = f"{ACTIVITY_REGULATORY_ROOT}/h3k27ac_windows.bed"
+ACTIVITY_REGULATORY_WINDOW_COUNTS = {
+    library: f"{ACTIVITY_REGULATORY_ROOT}/libraries/{library}.window_counts.tsv.gz"
+    for library in ACTIVITY_H3K27AC_LIBRARIES
+}
+ACTIVITY_REGULATORY_CATALOG = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_long.tsv.gz"
+ACTIVITY_REGULATORY_WIDE = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_wide.tsv.gz"
+ACTIVITY_REGULATORY_ACTIVE = {
+    context: f"{ACTIVITY_REGULATORY_ROOT}/active/{context}.active_elements.tsv.gz"
     for context in ACTIVITY_CONTEXTS
 }
-ACTIVITY_LIBRARY_SIGNAL = f"{ACTIVITY_ROOT}/library_signal.tsv.gz"
-ACTIVITY_CONTEXT_SIGNAL = f"{ACTIVITY_ROOT}/context_signal.pre_qnorm.tsv.gz"
-ACTIVITY_QNORM_REFERENCE = f"{ACTIVITY_ROOT}/qnorm_reference.tsv.gz"
-ACTIVITY_TABLE = f"{ACTIVITY_ROOT}/master_dhs_activity.tsv.gz"
-ACTIVITY_METRICS = f"{ACTIVITY_ROOT}/activity_metrics.json"
-ACTIVITY_PROVENANCE = f"{ACTIVITY_ROOT}/activity_provenance.json"
-ACTIVITY_QC_ROOT = f"{ACTIVITY_ROOT}/qc"
-ACTIVITY_QC_CORRELATIONS = f"{ACTIVITY_QC_ROOT}/replicate_correlations.tsv"
-ACTIVITY_QC_DISTRIBUTIONS = f"{ACTIVITY_QC_ROOT}/distribution_quantiles.tsv"
-ACTIVITY_QC_METRICS = f"{ACTIVITY_QC_ROOT}/activity_qc_metrics.json"
-ACTIVITY_QC_REPORT = f"{ACTIVITY_QC_ROOT}/activity_qc_report.html"
-ACTIVITY_TARGETS = (
+ACTIVITY_REGULATORY_MIXTURES = f"{ACTIVITY_REGULATORY_ROOT}/mixture_models.tsv"
+ACTIVITY_REGULATORY_SUMMARY = f"{ACTIVITY_REGULATORY_ROOT}/regulatory_element_summary.tsv"
+ACTIVITY_REGULATORY_METRICS = f"{ACTIVITY_REGULATORY_ROOT}/regulatory_element_metrics.json"
+ACTIVITY_REGULATORY_PROVENANCE = f"{ACTIVITY_REGULATORY_ROOT}/regulatory_element_provenance.json"
+ACTIVITY_REGULATORY_MIXTURE_PLOT = f"{ACTIVITY_REGULATORY_ROOT}/h3k27ac_mixture_distributions.svg"
+ACTIVITY_REGULATORY_MIXTURE_BINS = f"{ACTIVITY_REGULATORY_ROOT}/h3k27ac_mixture_distribution_bins.tsv.gz"
+ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS = f"{ACTIVITY_REGULATORY_ROOT}/h3k27ac_mixture_distribution_metrics.json"
+ACTIVITY_REPORT_ROOT = f"{ACTIVITY_ROOT}/report"
+ACTIVITY_REPORT_HTML = f"{ACTIVITY_REPORT_ROOT}/integrated_qc_report.html"
+ACTIVITY_REPORT_PDF = f"{ACTIVITY_REPORT_ROOT}/integrated_qc_report.pdf"
+ACTIVITY_REPORT_METRICS = f"{ACTIVITY_REPORT_ROOT}/integrated_qc_report.json"
+ACTIVITY_REPORT_SOURCE_FILES = (
+    [str(source["path"]) for source in config["report"]["source_files"]]
+    if ACTIVITY
+    else []
+)
+ACTIVITY_QUANTIFICATION_TARGETS = (
     list(ACTIVITY_BAM_VALIDATIONS.values())
     + [ACTIVITY_MASTER_VALIDATION]
     + list(ACTIVITY_LIBRARY_SIGNALS.values())
     + list(ACTIVITY_LIBRARY_SUMMARIES.values())
-    + list(ACTIVITY_CONTEXT_VIEWS.values())
     + [
-        ACTIVITY_LIBRARY_SIGNAL,
+        ACTIVITY_BACKGROUND_BINS,
+        *ACTIVITY_BACKGROUND_COUNTS.values(),
+        ACTIVITY_TMM_COUNTS,
+        ACTIVITY_TMM_METADATA,
+        ACTIVITY_TMM_FACTORS,
+        ACTIVITY_TMM_RECEIPT,
         ACTIVITY_CONTEXT_SIGNAL,
-        ACTIVITY_QNORM_REFERENCE,
         ACTIVITY_TABLE,
         ACTIVITY_METRICS,
         ACTIVITY_PROVENANCE,
@@ -589,13 +626,32 @@ ACTIVITY_TARGETS = (
     if ACTIVITY
     else []
 )
-ACTIVITY_QC_TARGETS = (
-    ACTIVITY_TARGETS
+ACTIVITY_CATALOG_TARGETS = (
+    ACTIVITY_QUANTIFICATION_TARGETS
     + [
-        ACTIVITY_QC_CORRELATIONS,
-        ACTIVITY_QC_DISTRIBUTIONS,
-        ACTIVITY_QC_METRICS,
-        ACTIVITY_QC_REPORT,
+        ACTIVITY_REGULATORY_WINDOWS,
+        ACTIVITY_REGULATORY_WINDOWS_BED,
+        *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
+        ACTIVITY_REGULATORY_CATALOG,
+        ACTIVITY_REGULATORY_WIDE,
+        *ACTIVITY_REGULATORY_ACTIVE.values(),
+        ACTIVITY_REGULATORY_MIXTURES,
+        ACTIVITY_REGULATORY_SUMMARY,
+        ACTIVITY_REGULATORY_METRICS,
+        ACTIVITY_REGULATORY_PROVENANCE,
+        ACTIVITY_REGULATORY_MIXTURE_PLOT,
+        ACTIVITY_REGULATORY_MIXTURE_BINS,
+        ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+    ]
+    if ACTIVITY
+    else []
+)
+ACTIVITY_REPORT_TARGETS = (
+    ACTIVITY_CATALOG_TARGETS
+    + [
+        ACTIVITY_REPORT_HTML,
+        ACTIVITY_REPORT_PDF,
+        ACTIVITY_REPORT_METRICS,
     ]
     if ACTIVITY
     else []
@@ -652,6 +708,9 @@ FLAGSTATS = {sample: f"{RESULT_ROOT}/qc/alignment/{sample}.flagstat.txt" for sam
 FRIP_JSON = {sample: f"{RESULT_ROOT}/qc/frip/{sample}.json" for sample in TREATMENTS}
 FRIP_TSV = {sample: f"{RESULT_ROOT}/qc/frip/{sample}.tsv" for sample in TREATMENTS}
 TSS_PLOTS = {sample: f"{RESULT_ROOT}/qc/tss/{sample}.profile.png" for sample in ATAC_SAMPLES}
+TSS_PROFILE_TABLES = {
+    sample: f"{RESULT_ROOT}/qc/tss/{sample}.profile.tsv" for sample in ATAC_SAMPLES
+}
 FRAGMENT_HISTOGRAMS = {
     sample: f"{RESULT_ROOT}/qc/fragments/{sample}.histogram.tsv" for sample in ATAC_SAMPLES
 }
@@ -663,9 +722,25 @@ CROSSCORRELATION = {
     sample: f"{RESULT_ROOT}/qc/chip/{sample}.cross_correlation.txt"
     for sample in CHIP_TREATMENTS
 }
+CROSSCORRELATION_PLOTS = {
+    sample: f"{RESULT_ROOT}/qc/chip/{sample}.cross_correlation.pdf"
+    for sample in CHIP_TREATMENTS
+}
 METRICS_TSV = f"{RESULT_ROOT}/qc/metrics.tsv"
 METRICS_JSON = f"{RESULT_ROOT}/qc/metrics.json"
 MULTIQC_REPORT = f"{RESULT_ROOT}/qc/multiqc/multiqc_report.html"
+LIBRARY_QC_REVIEW = (
+    f"{RESULT_ROOT}/qc/library-review.tsv" if SAMPLE_IDS else None
+)
+LIBRARY_QC_REVIEW_INPUTS = {
+    sample: {
+        "tss_profile": TSS_PROFILE_TABLES.get(sample),
+        "fragment_histogram": FRAGMENT_HISTOGRAMS.get(sample),
+        "cross_correlation": CROSSCORRELATION.get(sample),
+        "cross_correlation_plot": CROSSCORRELATION_PLOTS.get(sample),
+    }
+    for sample in SAMPLE_IDS
+}
 REFERENCE_TARGETS = (
     (BT2_INDEX + [FASTA_INDEX] if BUILD_SAMPLE_IDS else [])
     + [
@@ -710,6 +785,7 @@ QC_TARGETS = (
     + list(FINGERPRINTS.values())
     + list(CROSSCORRELATION.values())
     + [METRICS_TSV, METRICS_JSON, MULTIQC_REPORT]
+    + ([LIBRARY_QC_REVIEW] if LIBRARY_QC_REVIEW else [])
 )
 MASTER_TARGETS = (
     QC_TARGETS
@@ -729,10 +805,12 @@ MASTER_TARGETS = (
 )
 
 STANDARD_FINAL_TARGETS = MASTER_TARGETS
-if OUTPUT_STAGE == "activity-qc":
-    FINAL_TARGETS = ACTIVITY_QC_TARGETS
-elif OUTPUT_STAGE == "activity":
-    FINAL_TARGETS = ACTIVITY_TARGETS
+if OUTPUT_STAGE == "report":
+    FINAL_TARGETS = ACTIVITY_REPORT_TARGETS
+elif OUTPUT_STAGE == "catalog":
+    FINAL_TARGETS = ACTIVITY_CATALOG_TARGETS
+elif OUTPUT_STAGE == "quantification":
+    FINAL_TARGETS = ACTIVITY_QUANTIFICATION_TARGETS
 elif INPUT_STAGE == "master":
     FINAL_TARGETS = [
         EXTERNAL_MASTER_VALIDATION,

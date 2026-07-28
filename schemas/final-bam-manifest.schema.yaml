@@ -68,8 +68,9 @@ rules:
   - BAM and BAI paths must exist, be distinct, and not be reused by another row.
   - Full SHA-256 values are mandatory.
   - Workflow validation checks BAM integrity, explicit-index readability, coordinate sorting, and exact reference sequence names and lengths.
-  - pending_review and accepted BAMs may enter downstream peak calling and QC.
+  - pending_review and accepted BAMs may enter downstream peak calling and QC; master DHS construction accepts only reviewed accepted BAMs as inputs.
+  - Master DHS construction requires an explicit accepted or rejected decision for every ATAC library; rejected rows remain in the reviewed manifest and are excluded from the master inputs.
   - Activity selection requires every treatment library to have a reviewed accepted or rejected status; pending_review is an error.
   - Rejected activity rows remain in the reviewed manifest, require a nonblank reason in notes, and are excluded explicitly rather than treated as missing.
   - Reviewed single-end histone libraries require estimated_fragment_length_bp; paired-end rows leave it blank.
-  - Outside activity selection, a missing or rejected library is an error; the workflow never falls back to FASTQ acquisition.
+  - Outside master construction and activity selection, a missing or rejected library is an error; the workflow never falls back to FASTQ acquisition.

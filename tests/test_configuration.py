@@ -68,7 +68,7 @@ def test_atac_defaults_and_contexts_group_biological_and_technical_runs(tmp_path
     sample = config["samples"][0]
 
     assert config["assay"] == "atac"
-    assert config["output_stage"] == "master"
+    assert config["output_stage"] == "qc"
     assert config["reference"]["name"] == "dm6"
     assert sample["accessions"] == ["SRR123456", "SRR123457"]
     assert sample["context"] == "embryo"
@@ -153,6 +153,19 @@ def test_config_records_requested_output_stage(tmp_path):
     output = _generate(tmp_path, plans, sheet, output_stage="qc")[0]
 
     assert yaml.safe_load(output.read_text())["output_stage"] == "qc"
+
+
+def test_accession_input_cannot_construct_master_before_manual_review(tmp_path):
+    accessions = ("SRR123456", "SRR123457")
+    plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
+    sheet = (
+        HEADER
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+    )
+
+    with pytest.raises(AcquisitionError, match="Cannot stop at 'master'"):
+        _generate(tmp_path, plans, sheet, output_stage="master")
 
 
 def test_final_bam_input_cannot_stop_at_trimming(tmp_path):
@@ -290,22 +303,30 @@ def test_explicit_hmmratac_rejects_single_end_atac(tmp_path):
         _generate(tmp_path, [plan], sheet)
 
 
-def _write_final_bam_manifest(tmp_path: Path, libraries: list[tuple[str, str]]) -> Path:
+def _write_final_bam_manifest(
+    tmp_path: Path,
+    libraries: list[tuple[str, str]],
+    *,
+    row_overrides: dict[str, dict[str, str]] | None = None,
+) -> Path:
     manifest = tmp_path / "final-bams.tsv"
     rows = [
         "library_id\tassay\tcontext\trole\tlayout\tbam\tbai\tgenome\t"
-        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status"
+        "filtering_contract\tbam_sha256\tbai_sha256\tqc_status\tnotes"
     ]
+    row_overrides = row_overrides or {}
     for library_id, context in libraries:
         bam = tmp_path / "external" / f"{library_id}.bam"
         bai = tmp_path / "external" / f"{library_id}.bam.bai"
         bam.parent.mkdir(exist_ok=True)
         bam.write_bytes(f"bam-{library_id}".encode())
         bai.write_bytes(f"bai-{library_id}".encode())
+        override = row_overrides.get(library_id, {})
         rows.append(
             f"{library_id}\tatac\t{context}\ttreatment\tpaired\t{bam}\t{bai}\tdm6\t"
             f"{FINAL_BAM_FILTERING_CONTRACT}\t{sha256_file(bam)}\t"
-            f"{sha256_file(bai)}\taccepted"
+            f"{sha256_file(bai)}\t{override.get('qc_status', 'accepted')}\t"
+            f"{override.get('notes', '')}"
         )
     manifest.write_text("\n".join(rows) + "\n")
     return manifest
@@ -401,6 +422,123 @@ def test_final_bam_mode_generates_reuse_only_samples(tmp_path):
     assert len(config["provenance"]["semantic_sha256"]) == 64
 
 
+def test_master_requires_every_atac_library_to_be_reviewed(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path,
+        [("atac_rep1", "eye"), ("atac_rep2", "eye")],
+        row_overrides={"atac_rep2": {"qc_status": "pending_review"}},
+    )
+
+    with pytest.raises(AcquisitionError, match="pending_review: atac_rep2"):
+        generate_configs(
+            manifest_path=None,
+            sample_sheet_path=sheet,
+            output_dir=tmp_path / "configs",
+            project="test-project",
+            run_id="master-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_fastq_files=True,
+            input_stage="final-bam",
+            output_stage="master",
+            final_bam_manifest_path=manifest,
+        )
+
+
+def test_master_excludes_documented_rejection_and_records_provenance(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+        "SRR100003\tatac_rep3\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path,
+        [("atac_rep1", "eye"), ("atac_rep2", "eye"), ("atac_rep3", "eye")],
+        row_overrides={
+            "atac_rep1": {
+                "qc_status": "rejected",
+                "notes": "failed manual ATAC QC",
+            }
+        },
+    )
+
+    output = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "configs",
+        project="test-project",
+        run_id="master-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        output_stage="master",
+        final_bam_manifest_path=manifest,
+    )[0]
+    config = yaml.safe_load(output.read_text())
+
+    assert [sample["id"] for sample in config["samples"]] == [
+        "atac_rep2",
+        "atac_rep3",
+    ]
+    assert config["atac_consensus"]["conditions"][0]["samples"] == [
+        "atac_rep2",
+        "atac_rep3",
+    ]
+    assert config["provenance"]["excluded_master_libraries"] == [
+        {
+            "id": "atac_rep1",
+            "assay": "atac",
+            "context": "eye",
+            "role": "treatment",
+            "layout": "paired",
+            "qc_status": "rejected",
+            "reason": "failed manual ATAC QC",
+        }
+    ]
+
+
+def test_pending_final_bams_remain_valid_for_qc_only(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path,
+        [("atac_rep1", "eye"), ("atac_rep2", "eye")],
+        row_overrides={
+            "atac_rep1": {"qc_status": "pending_review"},
+            "atac_rep2": {"qc_status": "pending_review"},
+        },
+    )
+
+    output = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "configs",
+        project="test-project",
+        run_id="qc-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        output_stage="qc",
+        final_bam_manifest_path=manifest,
+    )[0]
+
+    assert yaml.safe_load(output.read_text())["output_stage"] == "qc"
+
+
 def test_final_bam_mode_rejects_partial_selected_assay(tmp_path):
     sheet = tmp_path / "samples.tsv"
     sheet.write_text(
@@ -458,27 +596,23 @@ def test_identical_final_bam_config_keeps_content_and_mtime(tmp_path):
     assert regenerated.stat().st_mtime_ns == timestamp
 
 
-def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
-    atlas_sheet = tmp_path / "atlas.tsv"
-    atlas_sheet.write_text(
+def test_activity_config_requires_complete_accepted_contexts(tmp_path):
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
         "accession\tlibrary_id\tassay\tcontext\n"
         "SRR100001\tatlas_atac\tatac\teye\n"
         "SRR100002\tatlas_h3\th3k27ac\teye\n"
+        "SRR100003\tatlas_atac_2\tatac\teye\n"
+        "SRR100004\tatlas_h3_2\th3k27ac\teye\n"
     )
-    reference_sheet = tmp_path / "reference.tsv"
-    reference_sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
-        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
-        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
-        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
-    )
-    atlas_manifest = _write_activity_bam_manifest(
+    manifest = _write_activity_bam_manifest(
         tmp_path,
         "atlas",
         [
             ("atlas_atac", "atac", "eye"),
             ("atlas_h3", "chip_histone", "eye"),
+            ("atlas_atac_2", "atac", "eye"),
+            ("atlas_h3_2", "chip_histone", "eye"),
         ],
         row_overrides={
             "atlas_h3": {
@@ -487,23 +621,11 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
             }
         },
     )
-    reference_manifest = _write_activity_bam_manifest(
-        tmp_path,
-        "reference",
-        [
-            ("ref_atac_1", "atac", "s2_t0"),
-            ("ref_atac_2", "atac", "s2_t0"),
-            ("ref_h3_1", "chip_histone", "s2_t0"),
-            ("ref_h3_2", "chip_histone", "s2_t0"),
-        ],
-    )
     master_manifest = _write_master_manifest(tmp_path)
 
     output = generate_activity_config(
-        atlas_sample_sheet_path=atlas_sheet,
-        reference_sample_sheet_path=reference_sheet,
-        atlas_final_bam_manifests=[atlas_manifest],
-        reference_final_bam_manifests=[reference_manifest],
+        sample_sheet_path=sheet,
+        final_bam_manifests=[manifest],
         master_manifest_path=master_manifest,
         output_dir=tmp_path / "configs",
         project="activity-test",
@@ -511,23 +633,31 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
         reference_root=tmp_path / "references",
         path_base=tmp_path,
         require_files=True,
+        output_stage="quantification",
     )
     config = yaml.safe_load(output.read_text())
 
     assert config["assay"] == "activity"
-    assert config["input_stage"] == "activity"
-    assert config["output_stage"] == "activity-qc"
+    assert config["input_stage"] == "quantification"
+    assert config["output_stage"] == "quantification"
+    assert config["report"]["schema_version"] == 1
+    assert {
+        source["kind"] for source in config["report"]["source_files"]
+    } >= {
+        "sample_sheet",
+        "sample_sheet_schema",
+        "master_manifest",
+        "final_bam_manifest",
+    }
     assert config["samples"] == []
-    assert config["activity"]["atlas_contexts"] == ["eye"]
-    assert config["activity"]["reference_context"] == "s2_t0"
+    assert config["activity"]["contexts"] == ["eye"]
+    assert config["activity"]["normalization"] == "background_tmm_10kb_autosomes_v1"
     assert {
         (library["cohort"], library["assay"])
         for library in config["activity"]["libraries"]
     } == {
         ("atlas", "atac"),
         ("atlas", "h3k27ac"),
-        ("reference", "atac"),
-        ("reference", "h3k27ac"),
     }
     assert all(
         library["qc_status"] == "accepted"
@@ -546,46 +676,30 @@ def test_activity_config_requires_complete_accepted_assay_cohorts(tmp_path):
 def test_activity_config_requires_fragment_length_for_single_end_h3k27ac(
     tmp_path,
 ):
-    atlas_sheet = tmp_path / "atlas.tsv"
-    atlas_sheet.write_text(
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
         "accession\tlibrary_id\tassay\tcontext\n"
         "SRR100001\tatlas_atac\tatac\teye\n"
         "SRR100002\tatlas_h3\th3k27ac\teye\n"
+        "SRR100003\tatlas_atac_2\tatac\teye\n"
+        "SRR100004\tatlas_h3_2\th3k27ac\teye\n"
     )
-    reference_sheet = tmp_path / "reference.tsv"
-    reference_sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
-        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
-        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
-        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
-    )
-    atlas_manifest = _write_activity_bam_manifest(
+    manifest = _write_activity_bam_manifest(
         tmp_path,
         "atlas-single",
         [
             ("atlas_atac", "atac", "eye"),
             ("atlas_h3", "chip_histone", "eye"),
+            ("atlas_atac_2", "atac", "eye"),
+            ("atlas_h3_2", "chip_histone", "eye"),
         ],
         row_overrides={"atlas_h3": {"layout": "single"}},
-    )
-    reference_manifest = _write_activity_bam_manifest(
-        tmp_path,
-        "reference-paired",
-        [
-            ("ref_atac_1", "atac", "s2_t0"),
-            ("ref_atac_2", "atac", "s2_t0"),
-            ("ref_h3_1", "chip_histone", "s2_t0"),
-            ("ref_h3_2", "chip_histone", "s2_t0"),
-        ],
     )
 
     with pytest.raises(AcquisitionError, match="estimated_fragment_length_bp"):
         generate_activity_config(
-            atlas_sample_sheet_path=atlas_sheet,
-            reference_sample_sheet_path=reference_sheet,
-            atlas_final_bam_manifests=[atlas_manifest],
-            reference_final_bam_manifests=[reference_manifest],
+            sample_sheet_path=sheet,
+            final_bam_manifests=[manifest],
             master_manifest_path=_write_master_manifest(tmp_path),
             output_dir=tmp_path / "configs",
             project="activity-test",
@@ -596,47 +710,31 @@ def test_activity_config_requires_fragment_length_for_single_end_h3k27ac(
         )
 
 
-def test_activity_config_rejects_pending_review_reference(tmp_path):
-    atlas_sheet = tmp_path / "atlas.tsv"
-    atlas_sheet.write_text(
+def test_activity_config_rejects_pending_review_library(tmp_path):
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
         "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR100001\tatlas_atac\tatac\teye\n"
-        "SRR100002\tatlas_h3\th3k27ac\teye\n"
+        "SRR100001\tatac_1\tatac\teye\n"
+        "SRR100002\tatac_2\tatac\teye\n"
+        "SRR100003\th3_1\th3k27ac\teye\n"
+        "SRR100004\th3_2\th3k27ac\teye\n"
     )
-    reference_sheet = tmp_path / "reference.tsv"
-    reference_sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
-        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
-        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
-        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
-    )
-    atlas_manifest = _write_activity_bam_manifest(
+    manifest = _write_activity_bam_manifest(
         tmp_path,
-        "atlas",
+        "pending",
         [
-            ("atlas_atac", "atac", "eye"),
-            ("atlas_h3", "chip_histone", "eye"),
-        ],
-    )
-    reference_manifest = _write_activity_bam_manifest(
-        tmp_path,
-        "reference",
-        [
-            ("ref_atac_1", "atac", "s2_t0"),
-            ("ref_atac_2", "atac", "s2_t0"),
-            ("ref_h3_1", "chip_histone", "s2_t0"),
-            ("ref_h3_2", "chip_histone", "s2_t0"),
+            ("atac_1", "atac", "eye"),
+            ("atac_2", "atac", "eye"),
+            ("h3_1", "chip_histone", "eye"),
+            ("h3_2", "chip_histone", "eye"),
         ],
         qc_status="pending_review",
     )
 
     with pytest.raises(AcquisitionError, match="requires qc_status='accepted'"):
         generate_activity_config(
-            atlas_sample_sheet_path=atlas_sheet,
-            reference_sample_sheet_path=reference_sheet,
-            atlas_final_bam_manifests=[atlas_manifest],
-            reference_final_bam_manifests=[reference_manifest],
+            sample_sheet_path=sheet,
+            final_bam_manifests=[manifest],
             master_manifest_path=_write_master_manifest(tmp_path),
             output_dir=tmp_path / "configs",
             project="activity-test",
@@ -648,28 +746,24 @@ def test_activity_config_rejects_pending_review_reference(tmp_path):
 
 
 def test_activity_config_records_and_skips_documented_rejection(tmp_path):
-    atlas_sheet = tmp_path / "atlas.tsv"
-    atlas_sheet.write_text(
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
         "accession\tlibrary_id\tassay\tcontext\n"
         "SRR100001\tatlas_atac\tatac\teye\n"
         "SRR100002\tatlas_h3_good\th3k27ac\teye\n"
         "SRR100003\tatlas_h3_bad\th3k27ac\teye\n"
+        "SRR100004\tatlas_atac_2\tatac\teye\n"
+        "SRR100005\tatlas_h3_good_2\th3k27ac\teye\n"
     )
-    reference_sheet = tmp_path / "reference.tsv"
-    reference_sheet.write_text(
-        "accession\tlibrary_id\tassay\tcontext\n"
-        "SRR200001\tref_atac_1\tatac\ts2_t0\n"
-        "SRR200002\tref_atac_2\tatac\ts2_t0\n"
-        "SRR200003\tref_h3_1\th3k27ac\ts2_t0\n"
-        "SRR200004\tref_h3_2\th3k27ac\ts2_t0\n"
-    )
-    atlas_manifest = _write_activity_bam_manifest(
+    manifest = _write_activity_bam_manifest(
         tmp_path,
         "atlas-reviewed",
         [
             ("atlas_atac", "atac", "eye"),
             ("atlas_h3_good", "chip_histone", "eye"),
             ("atlas_h3_bad", "chip_histone", "eye"),
+            ("atlas_atac_2", "atac", "eye"),
+            ("atlas_h3_good_2", "chip_histone", "eye"),
         ],
         row_overrides={
             "atlas_h3_bad": {
@@ -678,22 +772,9 @@ def test_activity_config_records_and_skips_documented_rejection(tmp_path):
             }
         },
     )
-    reference_manifest = _write_activity_bam_manifest(
-        tmp_path,
-        "reference-reviewed",
-        [
-            ("ref_atac_1", "atac", "s2_t0"),
-            ("ref_atac_2", "atac", "s2_t0"),
-            ("ref_h3_1", "chip_histone", "s2_t0"),
-            ("ref_h3_2", "chip_histone", "s2_t0"),
-        ],
-    )
-
     output = generate_activity_config(
-        atlas_sample_sheet_path=atlas_sheet,
-        reference_sample_sheet_path=reference_sheet,
-        atlas_final_bam_manifests=[atlas_manifest],
-        reference_final_bam_manifests=[reference_manifest],
+        sample_sheet_path=sheet,
+        final_bam_manifests=[manifest],
         master_manifest_path=_write_master_manifest(tmp_path),
         output_dir=tmp_path / "configs",
         project="activity-test",

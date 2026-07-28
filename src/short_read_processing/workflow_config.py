@@ -56,12 +56,12 @@ EXTERNAL_MASTER_FIELDS = {
 ACTIVITY_FIELDS = {
     "schema_version",
     "master",
-    "atlas_contexts",
-    "reference_context",
+    "contexts",
     "libraries",
     "atac_fragment_maximum",
     "normalization",
-    "activity_formula",
+    "h3k27ac_signal",
+    "mixture_model",
 }
 ACTIVITY_LIBRARY_FIELDS = {
     "id",
@@ -77,6 +77,8 @@ ACTIVITY_LIBRARY_FIELDS = {
     "filtering_contract",
     "qc_status",
 }
+REPORT_FIELDS = {"schema_version", "source_roots", "source_files"}
+REPORT_SOURCE_FIELDS = {"path", "sha256", "kind", "source_root"}
 REFERENCE_FIELDS = {
     "name",
     "fasta",
@@ -94,14 +96,21 @@ OUTPUT_STAGES = (
     "alignment",
     "qc",
     "master",
-    "activity",
-    "activity-qc",
+    "quantification",
+    "catalog",
+    "report",
 )
 OUTPUT_STAGES_BY_INPUT = {
-    "accessions": {"trimming", "alignment", "qc", "master"},
+    "accessions": {"trimming", "alignment", "qc"},
     "final-bam": {"alignment", "qc", "master"},
     "master": {"master"},
-    "activity": {"activity", "activity-qc"},
+    "quantification": {"quantification", "catalog", "report"},
+}
+DEFAULT_OUTPUT_STAGE_BY_INPUT = {
+    "accessions": "qc",
+    "final-bam": "master",
+    "master": "master",
+    "quantification": "report",
 }
 
 
@@ -122,7 +131,7 @@ def workflow_semantic_sha256(config: dict[str, Any]) -> str:
     semantic_input = {
         key: value
         for key, value in config.items()
-        if key not in {"provenance", "output_stage"}
+        if key not in {"provenance", "output_stage", "report"}
     }
     provenance = config.get("provenance", {})
     semantic_input["provenance_inputs"] = {
@@ -138,9 +147,7 @@ def validate_stage_selection(input_stage: str, output_stage: str | None) -> str:
 
     if input_stage not in OUTPUT_STAGES_BY_INPUT:
         raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
-    resolved = output_stage or (
-        "activity-qc" if input_stage == "activity" else "master"
-    )
+    resolved = output_stage or DEFAULT_OUTPUT_STAGE_BY_INPUT[input_stage]
     if resolved not in OUTPUT_STAGES:
         raise AcquisitionError(f"Unsupported output stage: {resolved!r}")
     if resolved not in OUTPUT_STAGES_BY_INPUT[input_stage]:
@@ -203,9 +210,9 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         raise AcquisitionError("reference must be a mapping")
     _required(config["reference"], REFERENCE_FIELDS, "Reference")
     input_stage = str(config.get("input_stage", "accessions"))
-    if input_stage not in {"accessions", "final-bam", "master", "activity"}:
+    if input_stage not in {"accessions", "final-bam", "master", "quantification"}:
         raise AcquisitionError(f"Unsupported input_stage: {input_stage!r}")
-    validate_stage_selection(input_stage, config.get("output_stage"))
+    output_stage = validate_stage_selection(input_stage, config.get("output_stage"))
     provenance = config.get("provenance")
     if provenance is not None:
         if not isinstance(provenance, dict):
@@ -238,10 +245,10 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     elif external_master is not None:
         raise AcquisitionError("external_master requires input_stage=master")
     activity = config.get("activity")
-    if input_stage == "activity":
+    if input_stage == "quantification":
         if config["assay"] != "activity" or not isinstance(activity, dict):
             raise AcquisitionError(
-                "Activity input stage requires assay=activity and an activity mapping"
+                "Quantification input stage requires assay=activity and an activity mapping"
             )
         _required(activity, ACTIVITY_FIELDS, "Activity")
         master = activity["master"]
@@ -257,24 +264,23 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity master {field} is not a SHA-256 digest"
                 )
-        if activity["schema_version"] != 1:
+        if activity["schema_version"] != 2:
             raise AcquisitionError("Unsupported activity schema version")
         if int(activity["atac_fragment_maximum"]) < 2:
             raise AcquisitionError("Activity ATAC fragment maximum is invalid")
-        if (
-            activity["normalization"]
-            != "cpm_per_kb_then_tie_aware_reference_qnorm_v1"
-            or activity["activity_formula"] != "sqrt_atac_times_h3k27ac_v1"
-        ):
+        if activity["normalization"] != "background_tmm_10kb_autosomes_v1":
             raise AcquisitionError("Unsupported activity normalization method")
-        atlas_contexts = activity["atlas_contexts"]
-        reference_context = str(activity["reference_context"])
         if (
-            not isinstance(atlas_contexts, list)
-            or not atlas_contexts
-            or len(atlas_contexts) != len(set(atlas_contexts))
-            or any(not SAFE_ID_RE.fullmatch(str(item)) for item in atlas_contexts)
-            or not SAFE_ID_RE.fullmatch(reference_context)
+            activity["h3k27ac_signal"] != "summit_max3_500bp_v1"
+            or activity["mixture_model"] != "guarded_two_gaussian_log10_v1"
+        ):
+            raise AcquisitionError("Unsupported regulatory-element method")
+        contexts = activity["contexts"]
+        if (
+            not isinstance(contexts, list)
+            or not contexts
+            or len(contexts) != len(set(contexts))
+            or any(not SAFE_ID_RE.fullmatch(str(item)) for item in contexts)
         ):
             raise AcquisitionError("Activity contexts are invalid")
         libraries = activity["libraries"]
@@ -309,9 +315,9 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity library {library_id}: invalid assay"
                 )
-            if library["cohort"] not in {"atlas", "reference"}:
+            if library["cohort"] != "atlas":
                 raise AcquisitionError(
-                    f"Activity library {library_id}: invalid cohort"
+                    f"Activity library {library_id}: cohort must be atlas"
                 )
             layout = library["layout"]
             if layout not in {"single", "paired"}:
@@ -365,37 +371,58 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity library {library_id}: invalid context"
                 )
-            if library["cohort"] == "atlas" and context not in atlas_contexts:
+            if context not in contexts:
                 raise AcquisitionError(
-                    f"Activity library {library_id}: unknown atlas context"
+                    f"Activity library {library_id}: unknown context"
                 )
-            if library["cohort"] == "reference" and context != reference_context:
-                raise AcquisitionError(
-                    f"Activity library {library_id}: reference context differs"
-                )
-        for context in atlas_contexts:
+        for context in contexts:
             assays = {
                 library["assay"]
                 for library in libraries
-                if library["cohort"] == "atlas"
-                and library["context"] == context
+                if library["context"] == context
             }
             if assays != {"atac", "h3k27ac"}:
                 raise AcquisitionError(
-                    f"Activity atlas context {context!r} lacks an assay"
+                    f"Activity context {context!r} lacks an assay"
                 )
         for assay in ("atac", "h3k27ac"):
             count = sum(
-                library["cohort"] == "reference"
-                and library["assay"] == assay
+                library["assay"] == assay
                 for library in libraries
             )
             if count < 2:
                 raise AcquisitionError(
-                    f"Activity reference requires two accepted {assay} libraries"
+                    f"Activity background TMM requires two {assay} libraries"
                 )
+        report = config.get("report")
+        if not isinstance(report, dict):
+            raise AcquisitionError("Quantification configuration requires report metadata")
+        _required(report, REPORT_FIELDS, "Report")
+        if report["schema_version"] != 1:
+            raise AcquisitionError("Unsupported report schema version")
+        roots = report["source_roots"]
+        if (
+            not isinstance(roots, list)
+            or len(roots) != len(set(str(item) for item in roots))
+        ):
+            raise AcquisitionError("Report source roots must be a unique list")
+        source_files = report["source_files"]
+        if not isinstance(source_files, list) or not source_files:
+            raise AcquisitionError("Report source files must be a non-empty list")
+        source_paths = []
+        for source in source_files:
+            if not isinstance(source, dict):
+                raise AcquisitionError("Report source-file records must be mappings")
+            _required(source, REPORT_SOURCE_FIELDS, "Report source file")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(source["sha256"])):
+                raise AcquisitionError("Report source-file SHA-256 is invalid")
+            if not source["path"] or not source["kind"]:
+                raise AcquisitionError("Report source-file path and kind are required")
+            source_paths.append(str(source["path"]))
+        if len(source_paths) != len(set(source_paths)):
+            raise AcquisitionError("Report source-file paths must be unique")
     elif activity is not None:
-        raise AcquisitionError("activity mapping requires input_stage=activity")
+        raise AcquisitionError("activity mapping requires input_stage=quantification")
 
     qpois = config.get("atac_qpois")
     if (
@@ -473,10 +500,10 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
 
     samples = config["samples"]
     if not isinstance(samples, list) or (
-        not samples and input_stage not in {"master", "activity"}
+        not samples and input_stage not in {"master", "quantification"}
     ):
         raise AcquisitionError("samples must be a non-empty list")
-    if input_stage in {"master", "activity"} and samples:
+    if input_stage in {"master", "quantification"} and samples:
         raise AcquisitionError(
             f"{input_stage.capitalize()} configuration must not schedule sample processing"
         )
@@ -533,9 +560,16 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Sample {sample_id}: final BAM and reference genomes differ"
                 )
-            if final_bam["qc_status"] not in {"pending_review", "accepted"}:
+            allowed_qc_statuses = (
+                {"accepted"}
+                if output_stage == "master"
+                else {"pending_review", "accepted"}
+            )
+            if final_bam["qc_status"] not in allowed_qc_statuses:
                 raise AcquisitionError(
-                    f"Sample {sample_id}: final BAM QC status is invalid or rejected"
+                    f"Sample {sample_id}: final BAM QC status "
+                    f"{final_bam['qc_status']!r} is invalid for output stage "
+                    f"{output_stage!r}"
                 )
             if final_bam["filtering_contract"] != "short-read-processing-final-v1":
                 raise AcquisitionError(
@@ -676,4 +710,20 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
             path = Path(activity["master"][key])
             activity["master"][key] = str(
                 path if path.is_absolute() else (base / path).resolve()
+            )
+    report = config.get("report")
+    if report:
+        report["source_roots"] = [
+            str(path if path.is_absolute() else (base / path).resolve())
+            for value in report["source_roots"]
+            for path in [Path(value)]
+        ]
+        for source in report["source_files"]:
+            path = Path(source["path"])
+            source["path"] = str(
+                path if path.is_absolute() else (base / path).resolve()
+            )
+            root = Path(source["source_root"])
+            source["source_root"] = str(
+                root if root.is_absolute() else (base / root).resolve()
             )

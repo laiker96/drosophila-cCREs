@@ -99,6 +99,25 @@ def test_output_stage_does_not_change_scientific_semantic_digest():
     assert workflow_semantic_sha256(config) == trimming
 
 
+def test_report_sources_do_not_change_scientific_semantic_digest():
+    config = copy.deepcopy(BASE_CONFIG)
+    original = workflow_semantic_sha256(config)
+    config["report"] = {
+        "schema_version": 1,
+        "source_roots": ["upstream"],
+        "source_files": [
+            {
+                "path": "upstream/qc/metrics.json",
+                "sha256": "a" * 64,
+                "kind": "qc_metrics",
+                "source_root": "upstream",
+            }
+        ],
+    }
+
+    assert workflow_semantic_sha256(config) == original
+
+
 def test_result_namespace_rejects_changed_semantic_configuration(tmp_path):
     config = copy.deepcopy(BASE_CONFIG)
     config["provenance"] = {}
@@ -225,6 +244,7 @@ def test_qpois_condition_consensus_builds_master_dhs_as_final_atac_step(tmp_path
     config = copy.deepcopy(BASE_CONFIG)
     _add_second_replicate(config)
     _enable_consensus(config)
+    _use_reviewed_final_bams(config, tmp_path)
 
     output = _dry_run(tmp_path, config, "qpois-consensus")
 
@@ -263,7 +283,12 @@ def test_qpois_condition_consensus_builds_master_dhs_as_final_atac_step(tmp_path
         ),
         (
             "qc",
-            ("refine_atac_replicate_qpois", "frip", "multiqc"),
+            (
+                "refine_atac_replicate_qpois",
+                "frip",
+                "multiqc",
+                "library_qc_review_table",
+            ),
             ("pool_atac_condition_insertions", "build_atac_master_dhs"),
         ),
     ],
@@ -287,6 +312,7 @@ def test_hmmratac_condition_consensus_dry_run(tmp_path):
     config["samples"][0]["peak_caller"] = _hmmratac()
     _add_second_replicate(config)
     _enable_consensus(config)
+    _use_reviewed_final_bams(config, tmp_path)
 
     output = _dry_run(tmp_path, config, "hmmratac-consensus")
 
@@ -364,15 +390,20 @@ def _external_final_bam(sample: str, tmp_path: Path) -> dict:
     }
 
 
-def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
-    config = copy.deepcopy(BASE_CONFIG)
-    _add_second_replicate(config)
-    _enable_consensus(config)
+def _use_reviewed_final_bams(config: dict, tmp_path: Path) -> None:
     config["input_stage"] = "final-bam"
+    config["output_stage"] = "master"
     for sample in config["samples"]:
         sample.pop("r1")
         sample.pop("r2")
         sample["final_bam"] = _external_final_bam(sample["id"], tmp_path)
+
+
+def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    _add_second_replicate(config)
+    _enable_consensus(config)
+    _use_reviewed_final_bams(config, tmp_path)
 
     output = _dry_run(tmp_path, config, "external-final-bams")
 
@@ -391,6 +422,29 @@ def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
         "bowtie2_index",
     ):
         assert forbidden not in output
+
+
+def test_master_config_rejects_pending_final_bam():
+    config = copy.deepcopy(BASE_CONFIG)
+    _add_second_replicate(config)
+    _enable_consensus(config)
+    config["input_stage"] = "final-bam"
+    config["output_stage"] = "master"
+    for sample in config["samples"]:
+        sample.pop("r1")
+        sample.pop("r2")
+        sample["final_bam"] = {
+            "bam": f"{sample['id']}.bam",
+            "bai": f"{sample['id']}.bam.bai",
+            "genome": "dm6",
+            "filtering_contract": "short-read-processing-final-v1",
+            "bam_sha256": "a" * 64,
+            "bai_sha256": "b" * 64,
+            "qc_status": "pending_review",
+        }
+
+    with pytest.raises(AcquisitionError, match="invalid for output stage 'master'"):
+        validate_workflow_config(config)
 
 
 def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
@@ -434,10 +488,11 @@ def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
         assert forbidden not in output
 
 
-def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path):
+def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     config = copy.deepcopy(BASE_CONFIG)
     config["assay"] = "activity"
-    config["input_stage"] = "activity"
+    config["input_stage"] = "quantification"
+    config["output_stage"] = "catalog"
     config["samples"] = []
     config.pop("atac_qpois")
     master = {}
@@ -462,13 +517,11 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
         }
     )
     libraries = []
-    for library_id, assay, cohort, context in (
-        ("atlas_atac", "atac", "atlas", "ctx"),
-        ("atlas_h3", "h3k27ac", "atlas", "ctx"),
-        ("ref_atac_1", "atac", "reference", "ref"),
-        ("ref_atac_2", "atac", "reference", "ref"),
-        ("ref_h3_1", "h3k27ac", "reference", "ref"),
-        ("ref_h3_2", "h3k27ac", "reference", "ref"),
+    for library_id, assay, context in (
+        ("atlas_atac", "atac", "ctx"),
+        ("atlas_atac_2", "atac", "ctx"),
+        ("atlas_h3", "h3k27ac", "ctx"),
+        ("atlas_h3_2", "h3k27ac", "ctx"),
     ):
         bam = tmp_path / "bams" / f"{library_id}.bam"
         bai = tmp_path / "bams" / f"{library_id}.bam.bai"
@@ -479,7 +532,7 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
             {
                 "id": library_id,
                 "assay": assay,
-                "cohort": cohort,
+                "cohort": "atlas",
                 "context": context,
                 "layout": "single" if library_id == "atlas_h3" else "paired",
                 "genome": "dm6",
@@ -497,17 +550,29 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
             }
         )
     config["activity"] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "master": master,
-        "atlas_contexts": ["ctx"],
-        "reference_context": "ref",
+        "contexts": ["ctx"],
         "libraries": libraries,
         "atac_fragment_maximum": 150,
-        "normalization": "cpm_per_kb_then_tie_aware_reference_qnorm_v1",
-        "activity_formula": "sqrt_atac_times_h3k27ac_v1",
+        "normalization": "background_tmm_10kb_autosomes_v1",
+        "h3k27ac_signal": "summit_max3_500bp_v1",
+        "mixture_model": "guarded_two_gaussian_log10_v1",
+    }
+    config["report"] = {
+        "schema_version": 1,
+        "source_roots": [],
+        "source_files": [
+            {
+                "path": str(tmp_path / "master" / "stats_json"),
+                "sha256": "a" * 64,
+                "kind": "master_metrics",
+                "source_root": str(tmp_path / "master"),
+            }
+        ],
     }
 
-    output = _dry_run(tmp_path, config, "activity")
+    output = _dry_run(tmp_path, config, "catalog")
 
     for expected in (
         "validate_activity_bam",
@@ -516,12 +581,24 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
         "prepare_activity_h3k27ac_fragments",
         "prepare_activity_h3k27ac_single_fragments",
         "count_activity_library",
-        "build_master_dhs_activity_table",
-        "build_activity_qc_report",
+        "build_regulatory_h3k27ac_windows",
+        "count_regulatory_h3k27ac_windows",
+        "build_regulatory_element_catalog",
+        "plot_regulatory_element_mixtures",
+        "build_activity_background_bins",
+        "count_activity_background_library",
+        "build_activity_tmm_inputs",
+        "calculate_activity_tmm_factors",
+        "build_activity_tmm_table",
         "master_dhs_activity.tsv.gz",
-        "activity_qc_report.html",
+        "master_elements_long.tsv.gz",
+        "master_elements_wide.tsv.gz",
+        "ctx.active_elements.tsv.gz",
+        "mixture_models.tsv",
+        "h3k27ac_mixture_distributions.svg",
     ):
         assert expected in output
+    assert "build_integrated_qc_report" not in output
     for forbidden in (
         "fastqc_raw",
         "trim_pe",
@@ -532,8 +609,35 @@ def test_activity_dry_run_counts_and_normalizes_without_read_processing(tmp_path
     ):
         assert forbidden not in output
 
-    config["output_stage"] = "activity"
-    activity_only_output = _dry_run(tmp_path, config, "activity-only")
-    assert "build_master_dhs_activity_table" in activity_only_output
-    assert "master_dhs_activity.tsv.gz" in activity_only_output
-    assert "build_activity_qc_report" not in activity_only_output
+    invalid_method = copy.deepcopy(config)
+    invalid_method["activity"]["normalization"] = "unknown"
+    with pytest.raises(
+        AcquisitionError,
+        match="Unsupported activity normalization",
+    ):
+        validate_workflow_config(invalid_method)
+
+    insufficient_libraries = copy.deepcopy(config)
+    insufficient_libraries["activity"]["libraries"] = [
+        library
+        for library in insufficient_libraries["activity"]["libraries"]
+        if library["id"] != "atlas_h3_2"
+    ]
+    with pytest.raises(AcquisitionError, match="background TMM requires two h3k27ac"):
+        validate_workflow_config(insufficient_libraries)
+
+    invalid_report = copy.deepcopy(config)
+    invalid_report["report"]["source_files"][0]["sha256"] = "invalid"
+    with pytest.raises(AcquisitionError, match="source-file SHA-256"):
+        validate_workflow_config(invalid_report)
+
+    config["output_stage"] = "report"
+    report_output = _dry_run(tmp_path, config, "report")
+    assert "build_integrated_qc_report" in report_output
+    assert "integrated_qc_report.pdf" in report_output
+
+    config["output_stage"] = "quantification"
+    quantification_output = _dry_run(tmp_path, config, "quantification-only")
+    assert "build_activity_tmm_table" in quantification_output
+    assert "master_dhs_activity.tsv.gz" in quantification_output
+    assert "build_regulatory_element_catalog" not in quantification_output

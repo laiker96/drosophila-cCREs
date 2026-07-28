@@ -78,3 +78,31 @@ def test_review_manifest_requires_single_end_fragment_length(tmp_path, monkeypat
 
     with pytest.raises(AcquisitionError, match="requires a positive"):
         main()
+
+
+def test_review_manifest_accepts_rich_pass_fail_review_table(tmp_path, monkeypatch):
+    source = _source_manifest(tmp_path)
+    review = tmp_path / "library-review.tsv"
+    review.write_text(
+        "library_id\tcontext\tfrip\tqc_decision\t"
+        "estimated_fragment_length_bp\tnotes\n"
+        "h3\teye\t0.12\tPASS\t165\tlooks good\n"
+    )
+    output = tmp_path / "reviewed.tsv"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "review_final_bam_manifest.py",
+            str(source),
+            "--review-table",
+            str(review),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert main() == 0
+    row = read_final_bam_manifest(output)["h3"]
+    assert row["qc_status"] == "accepted"
+    assert row["estimated_fragment_length_bp"] == "165"

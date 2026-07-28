@@ -110,7 +110,8 @@ rule atac_tss_profile:
     input:
         matrix=f"{RESULT_ROOT}/qc/tss/{{sample}}.matrix.gz"
     output:
-        plot=f"{RESULT_ROOT}/qc/tss/{{sample}}.profile.png"
+        plot=f"{RESULT_ROOT}/qc/tss/{{sample}}.profile.png",
+        table=f"{RESULT_ROOT}/qc/tss/{{sample}}.profile.tsv"
     wildcard_constraints:
         sample=ATAC_RE
     conda:
@@ -118,7 +119,8 @@ rule atac_tss_profile:
     log:
         f"{RESULT_ROOT}/logs/qc/{{sample}}.plotProfile.log"
     shell:
-        "plotProfile -m {input.matrix:q} -out {output.plot:q} --perGroup > {log:q} 2>&1"
+        "plotProfile -m {input.matrix:q} -out {output.plot:q} --perGroup "
+        "--outFileNameData {output.table:q} > {log:q} 2>&1"
 
 
 rule atac_fragment_histogram:
@@ -269,3 +271,27 @@ rule multiqc:
         "mkdir -p {params.outdir:q} $(dirname {log:q}) && "
         "multiqc {params.scan:q} --outdir {params.outdir:q} "
         "--filename multiqc_report.html --force > {log:q} 2>&1"
+
+
+if SAMPLE_IDS:
+    rule library_qc_review_table:
+        input:
+            manifest=FINAL_BAM_EXPORT_MANIFEST,
+            metrics=METRICS_TSV,
+            multiqc=MULTIQC_REPORT,
+            tss_profiles=list(TSS_PROFILE_TABLES.values()),
+            fragment_histograms=list(FRAGMENT_HISTOGRAMS.values()),
+            cross_correlation=list(CROSSCORRELATION.values()),
+            cross_correlation_plots=list(CROSSCORRELATION_PLOTS.values())
+        output:
+            table=LIBRARY_QC_REVIEW
+        params:
+            library_qc=json.dumps(LIBRARY_QC_REVIEW_INPUTS, sort_keys=True)
+        resources:
+            mem_mb=1000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/qc/library-review.log"
+        script:
+            "../scripts/build_library_qc_review.py"

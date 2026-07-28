@@ -34,9 +34,8 @@ FIELDS = [
     "source_run_id",
     "notes",
 ]
-DECISION_FIELDS = {
+REVIEW_FIELDS = {
     "library_id",
-    "qc_status",
     "estimated_fragment_length_bp",
     "notes",
 }
@@ -69,10 +68,15 @@ def _write_if_changed(path: Path, content: str) -> None:
 
 def _read_decisions(path: Path) -> dict[str, dict[str, str]]:
     columns, rows = read_delimited_rows(path)
-    missing = sorted(DECISION_FIELDS - set(columns))
+    missing = sorted(REVIEW_FIELDS - set(columns))
     if missing:
         raise AcquisitionError(
             f"{path} is missing required columns: " + ", ".join(missing)
+        )
+    decision_column = "qc_decision" if "qc_decision" in columns else "qc_status"
+    if decision_column not in columns:
+        raise AcquisitionError(
+            f"{path} is missing required column: qc_decision"
         )
     decisions: dict[str, dict[str, str]] = {}
     for line_number, row in enumerate(rows, start=2):
@@ -81,10 +85,16 @@ def _read_decisions(path: Path) -> dict[str, dict[str, str]]:
             raise AcquisitionError(f"library_id on line {line_number} is blank")
         if library_id in decisions:
             raise AcquisitionError(f"Duplicate QC decision for {library_id!r}")
-        status = row["qc_status"]
-        if status not in {"accepted", "rejected"}:
+        raw_status = row[decision_column].strip().lower()
+        status = {
+            "pass": "accepted",
+            "fail": "rejected",
+            "accepted": "accepted",
+            "rejected": "rejected",
+        }.get(raw_status)
+        if status is None:
             raise AcquisitionError(
-                f"QC decision for {library_id!r} must be accepted or rejected"
+                f"QC decision for {library_id!r} must be pass or fail"
             )
         notes = row["notes"].strip()
         if status == "rejected" and not notes:
@@ -104,7 +114,17 @@ def _read_decisions(path: Path) -> dict[str, dict[str, str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input_manifest", type=Path)
-    parser.add_argument("--decisions", required=True, type=Path)
+    review_input = parser.add_mutually_exclusive_group(required=True)
+    review_input.add_argument(
+        "--review-table",
+        type=Path,
+        help="Completed library-review.tsv with pass/fail decisions",
+    )
+    review_input.add_argument(
+        "--decisions",
+        type=Path,
+        help="Legacy decision-table option",
+    )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -113,7 +133,8 @@ def main() -> int:
         require_files=True,
         allow_rejected=True,
     )
-    decisions = _read_decisions(args.decisions.resolve())
+    review_table = args.review_table or args.decisions
+    decisions = _read_decisions(review_table.resolve())
     missing = sorted(set(source) - set(decisions))
     unknown = sorted(set(decisions) - set(source))
     if missing or unknown:
