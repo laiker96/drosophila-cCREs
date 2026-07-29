@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import copy
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import re
@@ -21,6 +23,7 @@ from .artifacts import (
 )
 from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
+from .stage_checkpoints import read_stage_checkpoint
 from .workflow_config import validate_stage_selection, workflow_semantic_sha256
 from .integrated_report import (
     discover_report_source_files,
@@ -311,9 +314,11 @@ def generate_configs(
     atac_minimum_replicates: int = 2,
     atac_overlap_fraction: float = 0.5,
     input_stage: str = "accessions",
+    start_stage: str | None = None,
     output_stage: str | None = None,
     final_bam_manifest_path: Path | None = None,
     master_manifest_path: Path | None = None,
+    qc_checkpoint_manifest_path: Path | None = None,
 ) -> list[Path]:
     project = _safe_id(project, "project ID")
     run_id = _safe_id(run_id, "run ID")
@@ -321,17 +326,31 @@ def generate_configs(
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
     if input_stage not in {"accessions", "final-bam", "master"}:
         raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
-    output_stage = validate_stage_selection(input_stage, output_stage)
+    start_stage = start_stage or input_stage
+    output_stage = validate_stage_selection(start_stage, output_stage)
     if input_stage == "accessions" and manifest_path is None:
         raise AcquisitionError("Accession mode requires a download manifest")
     if input_stage == "final-bam" and final_bam_manifest_path is None:
         raise AcquisitionError("Final-BAM mode requires a final-BAM manifest")
     if input_stage == "master" and master_manifest_path is None:
         raise AcquisitionError("Master mode requires a master manifest")
+    if start_stage == "qc" and qc_checkpoint_manifest_path is None:
+        raise AcquisitionError("QC reuse requires a QC checkpoint manifest")
 
     sheet_rows = read_sample_sheet(sample_sheet_path, schema_path=schema_path)
     sample_sheet_sha256 = sha256_file(sample_sheet_path)
     schema_sha256 = sha256_file(schema_path)
+    qc_checkpoint = (
+        read_stage_checkpoint(
+            qc_checkpoint_manifest_path,
+            expected_stage="qc",
+            require_files=require_fastq_files,
+        )
+        if start_stage == "qc"
+        else None
+    )
+    if qc_checkpoint is not None and qc_checkpoint["parameters"].get("assay") != "atac":
+        raise AcquisitionError("Master construction requires an ATAC QC checkpoint")
 
     if input_stage == "master":
         if not any(row["assay"] == "atac" for row in sheet_rows):
@@ -367,6 +386,7 @@ def generate_configs(
             "output_dir": "results",
             "assay": "atac",
             "input_stage": "master",
+            "start_stage": start_stage,
             "output_stage": output_stage,
             "reference": _reference_config(genome, reference_root, path_base),
             "samples": [],
@@ -563,6 +583,26 @@ def generate_configs(
                 sample["final_bam"] = artifact
             if item["role"] == "treatment":
                 sample["peak_caller"] = item["peak_caller"]
+                if qc_checkpoint is not None:
+                    checkpoint_callers = qc_checkpoint["parameters"].get(
+                        "peak_callers", {}
+                    )
+                    if checkpoint_callers.get(str(item["id"])) != item["peak_caller"]:
+                        raise AcquisitionError(
+                            f"QC checkpoint peak parameters for {item['id']!r} differ "
+                            "from the requested master configuration"
+                        )
+                    label = f"replicate_peak.{item['id']}"
+                    if label not in qc_checkpoint["artifacts"]:
+                        raise AcquisitionError(
+                            f"QC checkpoint lacks replicate peak evidence for {item['id']!r}"
+                        )
+                    record = qc_checkpoint["artifacts"][label]
+                    sample["qc_peak"] = {
+                        "path": _display_path(record["path"], path_base),
+                        "sha256": record["sha256"],
+                        "method": item["peak_caller"]["command"],
+                    }
             if assay.startswith("chip") and item["role"] == "treatment":
                 control_library = str(item["control"] or "")
                 if control_library:
@@ -588,6 +628,7 @@ def generate_configs(
             "output_dir": "results",
             "assay": assay,
             "input_stage": input_stage,
+            "start_stage": start_stage,
             "output_stage": output_stage,
             "reference": _reference_config(genome, reference_root, path_base),
             "samples": samples,
@@ -622,10 +663,24 @@ def generate_configs(
                 config["provenance"]["excluded_master_libraries"] = (
                     reviewed_master_exclusions
                 )
+            if qc_checkpoint is not None:
+                config["provenance"]["qc_checkpoint_manifest"] = _display_path(
+                    qc_checkpoint_manifest_path, path_base
+                )
+                config["provenance"]["qc_checkpoint_manifest_sha256"] = sha256_file(
+                    qc_checkpoint_manifest_path
+                )
         if assay == "atac":
             from .consensus import condition_specs
 
             config["atac_qpois"] = dict(ATAC_QPOIS_DEFAULTS)
+            if qc_checkpoint is not None and qc_checkpoint["parameters"].get(
+                "atac_qpois"
+            ) != config["atac_qpois"]:
+                raise AcquisitionError(
+                    "QC checkpoint qpois-refinement parameters differ from the "
+                    "requested master configuration"
+                )
             samples_by_context: dict[str, list[str]] = defaultdict(list)
             for item in items:
                 samples_by_context[str(item["context"])].append(str(item["id"]))
@@ -824,13 +879,14 @@ def generate_activity_config(
     schema_path: Path = DEFAULT_SCHEMA,
     genome: str = "dm6",
     output_stage: str = "report",
+    start_stage: str = "master",
     report_source_roots: list[Path] | None = None,
 ) -> Path:
     """Generate one resolved master-DHS quantification/catalog configuration."""
 
     project = _safe_id(project, "project ID")
     run_id = _safe_id(run_id, "run ID")
-    output_stage = validate_stage_selection("quantification", output_stage)
+    output_stage = validate_stage_selection(start_stage, output_stage)
     if genome not in GENOME_DEFAULTS:
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
     sheet_rows = read_sample_sheet(
@@ -941,6 +997,7 @@ def generate_activity_config(
         "output_dir": "results",
         "assay": "activity",
         "input_stage": "quantification",
+        "start_stage": start_stage,
         "output_stage": output_stage,
         "reference": _reference_config(genome, reference_root, path_base),
         "samples": [],
@@ -974,4 +1031,100 @@ def generate_activity_config(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.quantification.yaml"
     _write_config_if_changed(output_path, config)
+    return output_path.resolve()
+
+
+def generate_resume_config(
+    *,
+    checkpoint_manifest_path: Path,
+    start_stage: str,
+    output_stage: str,
+    sample_sheet_path: Path,
+    output_dir: Path,
+    path_base: Path,
+) -> Path:
+    """Resume a completed boundary in its original result namespace."""
+
+    output_stage = validate_stage_selection(start_stage, output_stage)
+    checkpoint = read_stage_checkpoint(
+        checkpoint_manifest_path,
+        expected_stage=start_stage,
+        require_files=True,
+    )
+    record = checkpoint["artifacts"].get("resolved_config")
+    if record is None:
+        raise AcquisitionError("Stage checkpoint lacks the resolved_config artifact")
+    try:
+        source = json.loads(Path(record["path"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AcquisitionError(f"Cannot read checkpoint resolved config: {error}") from error
+    recorded_semantic = source.get("provenance", {}).get("semantic_sha256")
+    if recorded_semantic != checkpoint["semantic_sha256"]:
+        raise AcquisitionError(
+            "Stage checkpoint and resolved configuration semantic digests differ"
+        )
+    if sha256_file(sample_sheet_path) != source.get("provenance", {}).get(
+        "sample_sheet_sha256"
+    ):
+        raise AcquisitionError(
+            "The supplied sample sheet differs from the checkpoint sample sheet"
+        )
+    resumed = copy.deepcopy(source)
+
+    def display(value: str) -> str:
+        return _display_path(value, path_base)
+
+    reference = resumed["reference"]
+    for key in (
+        "fasta",
+        "bowtie2_index",
+        "chrom_sizes",
+        "blacklist_bed",
+        "tss_bed",
+        "autosomes_file",
+    ):
+        reference[key] = display(reference[key])
+    for sample in resumed["samples"]:
+        for key in ("r1", "r2"):
+            if key in sample:
+                sample[key] = [display(value) for value in sample[key]]
+        adapter = sample["parameters"]["trimming"].get("adapter_fasta")
+        if adapter:
+            sample["parameters"]["trimming"]["adapter_fasta"] = display(adapter)
+        if "final_bam" in sample:
+            for key in ("bam", "bai"):
+                sample["final_bam"][key] = display(sample["final_bam"][key])
+        if "qc_peak" in sample:
+            sample["qc_peak"]["path"] = display(sample["qc_peak"]["path"])
+    for master_key in ("external_master",):
+        master = resumed.get(master_key)
+        if master:
+            for key in MASTER_FILE_FIELDS:
+                master[key] = display(master[key])
+    activity = resumed.get("activity")
+    if activity:
+        for library in activity["libraries"]:
+            for key in ("bam", "bai"):
+                library[key] = display(library[key])
+        for key in MASTER_FILE_FIELDS:
+            activity["master"][key] = display(activity["master"][key])
+    report = resumed.get("report")
+    if report:
+        report["source_roots"] = [display(value) for value in report["source_roots"]]
+        for report_source in report["source_files"]:
+            report_source["path"] = display(report_source["path"])
+            report_source["source_root"] = display(report_source["source_root"])
+
+    resumed["start_stage"] = start_stage
+    resumed["output_stage"] = output_stage
+    if workflow_semantic_sha256(resumed) != recorded_semantic:
+        raise AcquisitionError(
+            "Checkpoint resolved paths cannot be reconstructed into the original "
+            "scientific configuration"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / (
+        f"{resumed['project']}.{start_stage}-to-{output_stage}.yaml"
+    )
+    _write_config_if_changed(output_path, resumed)
     return output_path.resolve()

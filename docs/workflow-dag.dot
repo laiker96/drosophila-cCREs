@@ -1,44 +1,104 @@
 digraph workflow {
-  graph [rankdir=LR, bgcolor="transparent", pad=0.25, nodesep=0.35, ranksep=0.55];
+  graph [rankdir=TB, bgcolor="#ffffff", pad=0.25, nodesep=0.35,
+         ranksep=0.45, newrank=true, compound=true, fontname="Helvetica"];
   node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11,
         color="#40566b", fillcolor="#f4f7fa", margin="0.13,0.08"];
   edge [color="#607d8b", arrowsize=0.7];
 
-  accessions [label="Accession + library + assay + context"];
-  download [label="Checksummed FASTQ download"];
-  trim [label="FastQC + Cutadapt\n--until-stage trimming"];
-  align [label="Bowtie2 + merge + duplicate mark + filter\n--until-stage alignment"];
-  bammanifest [label="Checksummed pending\nfinal-BAM manifest", fillcolor="#e5f1ff"];
-  qc [label="Peaks + FRiP + assay QC + MultiQC\n--until-stage qc", fillcolor="#f1e9fa"];
-  reviewtable [label="Per-library QC review TSV\nuser sets pass/fail", fillcolor="#f8e8f5"];
-  reviewedbam [label="Reviewed final-BAM manifest", fillcolor="#e5f1ff"];
-  context [label="Replicate-supported ATAC peaks\nper input-table context", fillcolor="#dff3e5"];
-  master [label="Variable-width summit-aware\nmaster DHS registry\n--until-stage master", fillcolor="#ccebd6"];
-  mastermanifest [label="Checksummed master bundle", fillcolor="#e7f5eb"];
+  subgraph cluster_qc {
+    label="Invocation 1: public accessions to library QC";
+    color="#b8c8d4";
+    style="rounded";
+    margin=14;
 
-  validate [label="Validate accepted BAMs + master\nno upstream fallback", fillcolor="#eef6ff"];
-  units [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
-  exact [label="Exact master-interval\nraw counts + CPM/kb", fillcolor="#fff4d8"];
-  background [label="10-kb autosomal background counts", fillcolor="#fff4d8"];
-  tmm [label="Assay-specific background TMM\nfactors + normalized contexts", fillcolor="#fff0c7"];
-  quantify [label="Master-DHS activity table\n--until-stage quantification", fillcolor="#ffe5a8"];
-  windows [label="Three 500-bp H3K27ac windows\nmax after context averaging", fillcolor="#fff4d8"];
-  mixture [label="Guarded two-Gaussian fit\nlow/high + explicit warnings", fillcolor="#f7e4b2"];
-  catalog [label="Long + wide catalogs\nactive elements per context\n--until-stage catalog", fillcolor="#f7e4b2"];
-  browser [label="Context BEDs + mean TMM BigWigs\nportable IGV sessions", fillcolor="#e1f0f7"];
-  report [label="Integrated HTML/PDF QC report\ninputs, outputs, statistics + plots\n--until-stage report", fillcolor="#e8e1f5"];
+    inputs [label="Sample sheet\naccession + library + assay + context"];
+    download [label="Checksummed FASTQ\ndownload"];
+    reference [label="Checksummed dm6/hg38\nreference preparation", fillcolor="#eef6ff"];
+    trim [label="Raw/trimmed FastQC + Cutadapt\ntrimming checkpoint"];
+    align [label="Lane alignment + library merge\nduplicate mark + filter\nalignment checkpoint"];
+    bammanifest [label="Pending final-BAM\nmanifest", fillcolor="#e5f1ff"];
+    qc [label="Lenient replicate peaks + FRiP\nassay QC + MultiQC", fillcolor="#f1e9fa"];
+    qccheckpoint [label="Checksummed QC checkpoint\npeak/refinement parameters", fillcolor="#f1e9fa"];
+    reviewtable [label="Per-library QC\nreview table", fillcolor="#f8e8f5"];
 
-  accessions -> download -> trim -> align -> qc -> reviewtable -> reviewedbam -> context -> master -> mastermanifest;
-  align -> bammanifest -> reviewtable;
+    inputs -> download -> trim -> align;
+    inputs -> reference;
+    reference -> align;
+    align -> bammanifest;
+    align -> qc;
+    qc -> qccheckpoint;
+    bammanifest -> reviewtable;
+    qc -> reviewtable;
+    {rank=same; download; reference;}
+    {rank=same; bammanifest; qccheckpoint;}
+  }
+
+  subgraph cluster_review {
+    label="Explicit manual checkpoint";
+    color="#d4b8ca";
+    style="rounded,dashed";
+    margin=14;
+
+    review [label="User records pass/fail\nand fragment length when required", fillcolor="#f8e8f5"];
+    reviewedbam [label="Reviewed final-BAM manifest\naccepted + documented rejections", fillcolor="#e5f1ff"];
+
+    review -> reviewedbam;
+  }
+
+  subgraph cluster_master {
+    label="Invocation 2: reviewed ATAC BAMs to master DHS registry";
+    color="#a9ccb5";
+    style="rounded";
+    margin=14;
+
+    context [label="Pooled context calls +\nreplicate-support filter", fillcolor="#dff3e5"];
+    master [label="Variable-width summit-aware\nmaster DHS registry", fillcolor="#ccebd6"];
+    mastermanifest [label="Checksummed master bundle\nmaster checkpoint", fillcolor="#e7f5eb"];
+
+    context -> master -> mastermanifest;
+  }
+
+  subgraph cluster_activity {
+    label="Invocation 3: accepted BAMs and frozen master to catalog/report";
+    color="#d9c18c";
+    style="rounded";
+    margin=14;
+
+    validate [label="Validate accepted BAMs + master\nno upstream fallback", fillcolor="#eef6ff"];
+    units [label="ATAC Tn5 insertions +\nH3K27ac fragments", fillcolor="#fff4d8"];
+    exact [label="Exact master-interval\nraw counts + CPM/kb", fillcolor="#fff4d8"];
+    background [label="10-kb autosomal\nbackground counts", fillcolor="#fff4d8"];
+    windows [label="Three 500-bp\nH3K27ac windows", fillcolor="#fff4d8"];
+    tmm [label="Assay-specific background TMM\nfactors", fillcolor="#fff0c7"];
+    quantify [label="Normalized context signals +\nmaster-DHS activity table\nquantification checkpoint", fillcolor="#ffe5a8"];
+    mixture [label="Context-averaged max window +\nguarded two-Gaussian fit", fillcolor="#f7e4b2"];
+    catalog [label="Long/wide catalogs + active elements\ncatalog checkpoint", fillcolor="#f7e4b2"];
+    browser [label="Mean TMM ATAC/H3 + pooled qpois\ncompact and context IGV", fillcolor="#e1f0f7"];
+    sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
+    report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
+
+    validate -> units;
+    units -> exact;
+    units -> background;
+    units -> windows;
+    exact -> tmm;
+    background -> tmm;
+    exact -> quantify;
+    tmm -> quantify;
+    windows -> mixture;
+    quantify -> mixture -> catalog;
+    units -> browser [style=dashed];
+    tmm -> browser;
+    catalog -> browser -> report;
+    sources -> report [style=dashed];
+    {rank=same; exact; background; windows;}
+    {rank=same; browser; sources;}
+  }
+
+  reviewtable -> review;
+  reviewedbam -> context;
+  qccheckpoint -> context;
   reviewedbam -> validate;
-  mastermanifest -> validate -> units;
-  units -> exact -> tmm;
-  units -> background -> tmm -> quantify;
-  units -> windows -> mixture;
-  master -> windows;
-  quantify -> mixture -> catalog;
-  tmm -> browser;
-  catalog -> browser -> report;
-  reviewedbam -> report [style=dashed];
-  mastermanifest -> report [style=dashed];
+  mastermanifest -> validate;
+  reference -> validate [style=dashed, constraint=false];
 }

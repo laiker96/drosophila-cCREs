@@ -7,11 +7,7 @@ if SAMPLE_IDS:
             bams=list(FINAL_BAMS.values()),
             bais=list(FINAL_BAIS.values()),
             validations=list(EXTERNAL_BAM_VALIDATIONS.values()),
-            completion=(
-                METRICS_JSON
-                if OUTPUT_STAGE in {"qc", "master"}
-                else ALIGNMENT_QC_FILES
-            )
+            completion=(METRICS_JSON if OUTPUT_STAGE == "qc" else [])
         output:
             manifest=FINAL_BAM_EXPORT_MANIFEST
         params:
@@ -51,3 +47,48 @@ if ATAC_MASTER_ENABLED:
             f"{RESULT_ROOT}/logs/provenance/export-master-dhs.log"
         script:
             "../scripts/write_master_manifest.py"
+
+
+rule export_stage_resolved_config:
+    output:
+        config=f"{RESULT_ROOT}/provenance/configs/{{stage}}.resolved_config.json"
+    params:
+        config=json.dumps(config, sort_keys=True)
+    wildcard_constraints:
+        stage="trimming|alignment|qc|master|quantification|catalog|report"
+    resources:
+        mem_mb=1000
+    conda:
+        "../envs/reporting.yaml"
+    log:
+        f"{RESULT_ROOT}/logs/provenance/{{stage}}.resolved_config.log"
+    script:
+        "../scripts/write_provenance.py"
+
+
+rule export_stage_checkpoint:
+    input:
+        artifacts=lambda wc: list(STAGE_CHECKPOINT_ARTIFACTS[wc.stage].values())
+    output:
+        manifest=(
+            f"{RESULT_ROOT}/provenance/manifests/"
+            "{stage}.checkpoint.json"
+        )
+    params:
+        artifacts=lambda wc: STAGE_CHECKPOINT_ARTIFACTS[wc.stage],
+        source_project=PROJECT,
+        source_run_id=RUN_ID,
+        semantic_sha256=str(
+            config.get("provenance", {}).get("semantic_sha256", "0" * 64)
+        ),
+        parameters=STAGE_CHECKPOINT_PARAMETERS
+    wildcard_constraints:
+        stage="trimming|alignment|qc|master|quantification|catalog|report"
+    resources:
+        mem_mb=1000
+    conda:
+        "../envs/reporting.yaml"
+    log:
+        f"{RESULT_ROOT}/logs/provenance/{{stage}}.checkpoint.log"
+    script:
+        "../scripts/write_stage_checkpoint.py"

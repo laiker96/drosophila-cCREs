@@ -1,5 +1,6 @@
 """Accession-resolved ATAC-seq and ChIP-seq processing workflow."""
 
+import json
 import sys
 from pathlib import Path
 import shlex
@@ -15,6 +16,7 @@ from short_read_processing.activity_tmm import (
 )
 from short_read_processing.workflow_config import (
     guard_result_namespace,
+    named_artifacts,
     resolve_input_paths,
     validate_stage_selection,
     validate_workflow_config,
@@ -31,7 +33,8 @@ PROJECT = str(config["project"])
 RUN_ID = str(config["run_id"])
 ASSAY = str(config["assay"])
 INPUT_STAGE = str(config.get("input_stage", "accessions"))
-OUTPUT_STAGE = validate_stage_selection(INPUT_STAGE, config.get("output_stage"))
+START_STAGE = str(config.get("start_stage", INPUT_STAGE))
+OUTPUT_STAGE = validate_stage_selection(START_STAGE, config.get("output_stage"))
 ACTIVITY = config.get("activity")
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
@@ -47,6 +50,9 @@ BUILD_SAMPLE_IDS = [
 ]
 EXTERNAL_BAM_SAMPLES = [
     sample for sample in SAMPLE_IDS if "final_bam" in SAMPLES[sample]
+]
+EXTERNAL_QC_PEAK_SAMPLES = [
+    sample for sample in SAMPLE_IDS if "qc_peak" in SAMPLES[sample]
 ]
 TREATMENTS = [sample for sample in SAMPLE_IDS if SAMPLES[sample]["role"] == "treatment"]
 CHIP_TREATMENTS = TREATMENTS if ASSAY.startswith("chip") else []
@@ -144,6 +150,7 @@ ATAC_HMMRATAC_CONDITIONS = [
 SAMPLE_RE = wildcard_regex(SAMPLE_IDS)
 BUILD_SAMPLE_RE = wildcard_regex(BUILD_SAMPLE_IDS)
 EXTERNAL_BAM_SAMPLE_RE = wildcard_regex(EXTERNAL_BAM_SAMPLES)
+EXTERNAL_QC_PEAK_SAMPLE_RE = wildcard_regex(EXTERNAL_QC_PEAK_SAMPLES)
 ATAC_RE = wildcard_regex(ATAC_SAMPLES)
 ATAC_QPOIS_RE = wildcard_regex(ATAC_QPOIS_SAMPLES)
 ATAC_QPOIS_PE_RE = wildcard_regex(ATAC_QPOIS_PE_SAMPLES)
@@ -236,9 +243,6 @@ EXTERNAL_BAM_VALIDATIONS = {
     sample: f"{RESULT_ROOT}/provenance/external_bams/{sample}.validated.json"
     for sample in EXTERNAL_BAM_SAMPLES
 }
-CHIP_BIGWIGS = {
-    sample: f"{RESULT_ROOT}/tracks/{sample}.CPM.bw" for sample in CHIP_TREATMENTS
-}
 ATAC_SHIFTED_BIGWIGS = {
     sample: f"{RESULT_ROOT}/tracks/{sample}.Tn5-shifted.CPM.bw" for sample in ATAC_SAMPLES
 }
@@ -273,20 +277,32 @@ ATAC_REPLICATE_QPOIS_BDG = {
     sample: f"{ATAC_WORK}/replicates/{sample}.qpois.bdg" for sample in ATAC_QPOIS_SAMPLES
 }
 ATAC_REPLICATE_REFINED = {
-    sample: f"{ATAC_WORK}/replicates/{sample}/peaks/{sample}.qpois-refined.bed"
+    sample: (
+        str(SAMPLES[sample]["qc_peak"]["path"])
+        if sample in EXTERNAL_QC_PEAK_SAMPLES
+        else f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.qpois-refined.bed"
+    )
     for sample in ATAC_QPOIS_SAMPLES
 }
 ATAC_REPLICATE_EXCLUDED = {
-    sample: f"{ATAC_WORK}/replicates/{sample}/peaks/{sample}.qpois-excluded.bed"
+    sample: f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.qpois-excluded.bed"
     for sample in ATAC_QPOIS_SAMPLES
 }
 ATAC_REPLICATE_STATS = {
-    sample: f"{ATAC_WORK}/replicates/{sample}/peaks/{sample}.qpois-refinement.json"
+    sample: f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.qpois-refinement.json"
     for sample in ATAC_QPOIS_SAMPLES
 }
 ATAC_REPLICATE_HMM_PEAKS = {
-    sample: f"{ATAC_WORK}/replicates/{sample}/peaks/{sample}.hmmratac.narrowPeak"
+    sample: (
+        str(SAMPLES[sample]["qc_peak"]["path"])
+        if sample in EXTERNAL_QC_PEAK_SAMPLES
+        else f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.hmmratac.narrowPeak"
+    )
     for sample in HMMRATAC_SAMPLES
+}
+EXTERNAL_QC_PEAK_VALIDATIONS = {
+    sample: f"{RESULT_ROOT}/provenance/external_qc_peaks/{sample}.validated.json"
+    for sample in EXTERNAL_QC_PEAK_SAMPLES
 }
 
 ATAC_CONDITION_INSERTIONS = {
@@ -545,11 +561,11 @@ ACTIVITY_MASTER_VALIDATION = (
     else None
 )
 ACTIVITY_UNIT_BEDS = {
-    library: f"{ACTIVITY_WORK}/units/{library}.bed.gz"
+    library: f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{library}.bed.gz"
     for library in ACTIVITY_LIBRARY_IDS
 }
 ACTIVITY_UNIT_COUNTS = {
-    library: f"{ACTIVITY_WORK}/units/{library}.count.txt"
+    library: f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{library}.count.txt"
     for library in ACTIVITY_LIBRARY_IDS
 }
 ACTIVITY_LIBRARY_SIGNALS = {
@@ -638,6 +654,9 @@ ACTIVITY_CONTEXT_IGV_SESSIONS = {
     context: f"{ACTIVITY_CATALOG_IGV_ROOT}/{context}.xml"
     for context in ACTIVITY_CONTEXTS
 }
+ACTIVITY_ALL_CONTEXTS_IGV_SESSION = (
+    f"{ACTIVITY_REGULATORY_ROOT}/all-contexts.igv.xml"
+)
 ACTIVITY_REPORT_ROOT = f"{ACTIVITY_ROOT}/report"
 ACTIVITY_REPORT_HTML = f"{ACTIVITY_REPORT_ROOT}/integrated_qc_report.html"
 ACTIVITY_REPORT_PDF = f"{ACTIVITY_REPORT_ROOT}/integrated_qc_report.pdf"
@@ -650,11 +669,12 @@ ACTIVITY_REPORT_SOURCE_FILES = (
 ACTIVITY_QUANTIFICATION_TARGETS = (
     list(ACTIVITY_BAM_VALIDATIONS.values())
     + [ACTIVITY_MASTER_VALIDATION]
+    + list(ACTIVITY_UNIT_BEDS.values())
+    + list(ACTIVITY_UNIT_COUNTS.values())
     + list(ACTIVITY_LIBRARY_SIGNALS.values())
     + list(ACTIVITY_LIBRARY_SUMMARIES.values())
     + [
         ACTIVITY_BACKGROUND_BINS,
-        *ACTIVITY_BACKGROUND_COUNTS.values(),
         ACTIVITY_TMM_COUNTS,
         ACTIVITY_TMM_METADATA,
         ACTIVITY_TMM_FACTORS,
@@ -691,13 +711,13 @@ ACTIVITY_CATALOG_TARGETS = (
         *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
         *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
         *ACTIVITY_CONTEXT_IGV_SESSIONS.values(),
+        ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
     ]
     if ACTIVITY
     else []
 )
 ACTIVITY_REPORT_TARGETS = (
-    ACTIVITY_CATALOG_TARGETS
-    + [
+    [
         ACTIVITY_REPORT_HTML,
         ACTIVITY_REPORT_PDF,
         ACTIVITY_REPORT_METRICS,
@@ -814,7 +834,9 @@ TRIMMING_TARGETS = (
     + [RESOLVED_CONFIG]
 )
 ALIGNMENT_TARGETS = (
-    TRIMMING_TARGETS
+    RAW_FASTQC
+    + TRIMMED_FASTQC
+    + CUTADAPT_JSON
     + REFERENCE_TARGETS
     + list(FINAL_BAMS.values())
     + list(FINAL_BAIS.values())
@@ -824,8 +846,6 @@ ALIGNMENT_TARGETS = (
 )
 QC_TARGETS = (
     ALIGNMENT_TARGETS
-    + list(CHIP_BIGWIGS.values())
-    + list(ATAC_SHIFTED_BIGWIGS.values())
     + list(PEAKS.values())
     + CALLPEAK_BEDGRAPHS
     + list(FRIP_TSV.values())
@@ -837,7 +857,9 @@ QC_TARGETS = (
     + ([LIBRARY_QC_REVIEW] if LIBRARY_QC_REVIEW else [])
 )
 MASTER_TARGETS = (
-    QC_TARGETS
+    [RESOLVED_CONFIG]
+    + list(EXTERNAL_BAM_VALIDATIONS.values())
+    + ([FINAL_BAM_EXPORT_MANIFEST] if FINAL_BAM_EXPORT_MANIFEST else [])
     + list(ATAC_CONDITION_CANDIDATES.values())
     + list(ATAC_CONDITION_REFINED.values())
     + list(ATAC_CONDITION_EXCLUDED.values())
@@ -852,6 +874,166 @@ MASTER_TARGETS = (
     + ATAC_MASTER_TARGETS
     + ([MASTER_EXPORT_MANIFEST] if MASTER_EXPORT_MANIFEST else [])
 )
+
+STAGE_CHECKPOINT_MANIFESTS = {
+    stage: f"{RESULT_ROOT}/provenance/manifests/{stage}.checkpoint.json"
+    for stage in (
+        "trimming",
+        "alignment",
+        "qc",
+        "master",
+        "quantification",
+        "catalog",
+        "report",
+    )
+}
+STAGE_RESOLVED_CONFIGS = {
+    stage: f"{RESULT_ROOT}/provenance/configs/{stage}.resolved_config.json"
+    for stage in STAGE_CHECKPOINT_MANIFESTS
+}
+
+
+STAGE_CHECKPOINT_ARTIFACTS = {
+    "trimming": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["trimming"],
+        **{
+            f"trimmed_fastq.{unit}": path
+            for unit, path in TRIMMED_FASTQ_BY_UNIT.items()
+        },
+        **named_artifacts(
+            [*RAW_FASTQC, *TRIMMED_FASTQC, *CUTADAPT_JSON],
+            "trimming_artifact",
+        ),
+    },
+    "alignment": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["alignment"],
+        **(
+            {"final_bam_manifest": FINAL_BAM_EXPORT_MANIFEST}
+            if FINAL_BAM_EXPORT_MANIFEST
+            else {}
+        ),
+    },
+    "qc": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["qc"],
+        **(
+            {"final_bam_manifest": FINAL_BAM_EXPORT_MANIFEST}
+            if FINAL_BAM_EXPORT_MANIFEST
+            else {}
+        ),
+        **(
+            {"library_review": LIBRARY_QC_REVIEW}
+            if LIBRARY_QC_REVIEW
+            else {}
+        ),
+        "metrics_tsv": METRICS_TSV,
+        "metrics_json": METRICS_JSON,
+        "multiqc_report": MULTIQC_REPORT,
+        **{
+            f"replicate_peak.{sample}": path
+            for sample, path in PEAKS.items()
+        },
+        **named_artifacts(
+            [
+                *FRIP_TSV.values(),
+                *TSS_PLOTS.values(),
+                *TSS_PROFILE_TABLES.values(),
+                *FRAGMENT_HISTOGRAMS.values(),
+                *FINGERPRINTS.values(),
+                *CROSSCORRELATION.values(),
+                *CROSSCORRELATION_PLOTS.values(),
+            ],
+            "qc_artifact",
+        ),
+    },
+    "master": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["master"],
+        **(
+            {"master_manifest": MASTER_EXPORT_MANIFEST}
+            if MASTER_EXPORT_MANIFEST
+            else {}
+        ),
+    },
+    "quantification": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["quantification"],
+        **named_artifacts(
+            [*ACTIVITY_BAM_VALIDATIONS.values(), ACTIVITY_MASTER_VALIDATION],
+            "input_validation",
+        ),
+        **{
+            f"unit_bed.{library}": path
+            for library, path in ACTIVITY_UNIT_BEDS.items()
+        },
+        **{
+            f"unit_count.{library}": path
+            for library, path in ACTIVITY_UNIT_COUNTS.items()
+        },
+        **named_artifacts(
+            [
+                *ACTIVITY_LIBRARY_SIGNALS.values(),
+                *ACTIVITY_LIBRARY_SUMMARIES.values(),
+                ACTIVITY_BACKGROUND_BINS,
+                ACTIVITY_TMM_COUNTS,
+                ACTIVITY_TMM_METADATA,
+                ACTIVITY_TMM_FACTORS,
+                ACTIVITY_TMM_RECEIPT,
+                ACTIVITY_CONTEXT_SIGNAL,
+                ACTIVITY_TABLE,
+                ACTIVITY_METRICS,
+                ACTIVITY_PROVENANCE,
+            ],
+            "quantification_artifact",
+        ),
+    },
+    "catalog": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["catalog"],
+        **named_artifacts(
+            [
+                ACTIVITY_TMM_FACTORS,
+                ACTIVITY_TMM_RECEIPT,
+                ACTIVITY_CONTEXT_SIGNAL,
+                ACTIVITY_TABLE,
+                ACTIVITY_METRICS,
+                ACTIVITY_PROVENANCE,
+                ACTIVITY_REGULATORY_WINDOWS,
+                ACTIVITY_REGULATORY_WINDOWS_BED,
+                *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
+                ACTIVITY_REGULATORY_CATALOG,
+                ACTIVITY_REGULATORY_WIDE,
+                *ACTIVITY_REGULATORY_ACTIVE.values(),
+                ACTIVITY_REGULATORY_MIXTURES,
+                ACTIVITY_REGULATORY_SUMMARY,
+                ACTIVITY_REGULATORY_METRICS,
+                ACTIVITY_REGULATORY_PROVENANCE,
+                ACTIVITY_REGULATORY_MIXTURE_PLOT,
+                ACTIVITY_REGULATORY_MIXTURE_BINS,
+                ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+                ACTIVITY_CATALOG_MASTER_BED,
+                *ACTIVITY_CATALOG_CONTEXT_DHS.values(),
+                *ACTIVITY_CATALOG_ACTIVE_BEDS.values(),
+                ACTIVITY_CATALOG_BED_MANIFEST,
+                *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
+                *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
+                *ACTIVITY_CONTEXT_IGV_SESSIONS.values(),
+                ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+            ],
+            "catalog_artifact",
+        ),
+    },
+    "report": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["report"],
+        "report_html": ACTIVITY_REPORT_HTML,
+        "report_pdf": ACTIVITY_REPORT_PDF,
+        "report_metrics": ACTIVITY_REPORT_METRICS,
+    },
+}
+STAGE_CHECKPOINT_PARAMETERS = {
+    "assay": ASSAY,
+    "atac_qpois": config.get("atac_qpois"),
+    "peak_callers": {
+        sample: SAMPLES[sample]["peak_caller"]
+        for sample in TREATMENTS
+    },
+}
 
 STANDARD_FINAL_TARGETS = MASTER_TARGETS
 if OUTPUT_STAGE == "report":
@@ -874,6 +1056,10 @@ elif OUTPUT_STAGE == "qc":
     FINAL_TARGETS = QC_TARGETS
 else:
     FINAL_TARGETS = MASTER_TARGETS
+FINAL_TARGETS = [
+    *FINAL_TARGETS,
+    STAGE_CHECKPOINT_MANIFESTS[OUTPUT_STAGE],
+]
 
 
 include: "rules/common.smk"

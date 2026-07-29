@@ -1,11 +1,14 @@
 import argparse
+import json
 from pathlib import Path
 import sys
 
 import pytest
 
 from short_read_processing.accessions import AcquisitionError
+from short_read_processing.artifacts import sha256_file
 from short_read_processing.cli import read_accession_column
+import run_pipeline
 from run_pipeline import main as run_pipeline_main, rule_threads
 
 
@@ -54,6 +57,90 @@ def test_final_bam_stage_requires_explicit_manifest(monkeypatch, tmp_path):
         run_pipeline_main()
 
     assert error.value.code == 2
+
+
+def test_alignment_boundary_requires_one_reuse_manifest(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "alignment",
+            "--until-stage",
+            "qc",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
+
+
+def test_alignment_checkpoint_supplies_final_bam_manifest(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    final_bams = tmp_path / "final-bams.tsv"
+    final_bams.write_text("manifest\n")
+    checkpoint = tmp_path / "alignment.checkpoint.json"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": "alignment",
+                "source_project": "atlas",
+                "source_run_id": "alignment-v1",
+                "semantic_sha256": "a" * 64,
+                "parameters": {},
+                "artifacts": {
+                    "final_bam_manifest": {
+                        "path": final_bams.name,
+                        "sha256": sha256_file(final_bams),
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+    captured = {}
+
+    def fake_generate_configs(**kwargs):
+        captured.update(kwargs)
+        output = tmp_path / "resolved.yaml"
+        output.write_text("project: atlas\n")
+        return [output]
+
+    monkeypatch.setattr(run_pipeline, "generate_configs", fake_generate_configs)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "alignment",
+            "--checkpoint-manifest",
+            str(checkpoint),
+            "--until-stage",
+            "qc",
+            "--config-only",
+        ],
+    )
+
+    assert run_pipeline_main() == 0
+    assert captured["input_stage"] == "final-bam"
+    assert captured["start_stage"] == "alignment"
+    assert captured["final_bam_manifest_path"] == final_bams.resolve()
 
 
 def test_reuse_stage_rejects_download_fallback_flags(monkeypatch, tmp_path):

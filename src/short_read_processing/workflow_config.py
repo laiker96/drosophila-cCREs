@@ -9,6 +9,7 @@ from typing import Any
 
 from .accessions import AcquisitionError
 from .artifacts import semantic_sha256
+from .stage_checkpoints import LOGICAL_STAGES
 
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -91,31 +92,44 @@ REFERENCE_FIELDS = {
     "effective_genome_size",
     "macs3_genome_size",
 }
-OUTPUT_STAGES = (
-    "trimming",
-    "alignment",
-    "qc",
-    "master",
-    "quantification",
-    "catalog",
-    "report",
-)
+OUTPUT_STAGES = LOGICAL_STAGES
 OUTPUT_STAGES_BY_INPUT = {
     "accessions": {"trimming", "alignment", "qc"},
-    "final-bam": {"alignment", "qc", "master"},
-    "master": {"master"},
+    "trimming": {"trimming", "alignment", "qc"},
+    "alignment": {"alignment", "qc"},
+    "qc": {"qc", "master"},
+    "master": {"master", "quantification", "catalog", "report"},
     "quantification": {"quantification", "catalog", "report"},
+    "catalog": {"catalog", "report"},
+    "report": {"report"},
+    # Backward-compatible artifact-mode name. New commands use alignment or qc.
+    "final-bam": {"alignment", "qc", "master"},
 }
 DEFAULT_OUTPUT_STAGE_BY_INPUT = {
     "accessions": "qc",
-    "final-bam": "master",
+    "trimming": "qc",
+    "alignment": "qc",
+    "qc": "master",
     "master": "master",
     "quantification": "report",
+    "catalog": "report",
+    "report": "report",
+    "final-bam": "master",
 }
 
 
 def wildcard_regex(values: list[str]) -> str:
     return "(?:" + "|".join(re.escape(value) for value in values) + ")" if values else r"(?!)"
+
+
+def named_artifacts(paths: list[str | None], prefix: str) -> dict[str, str]:
+    """Give a deterministic label to each distinct non-empty artifact path."""
+
+    return {
+        f"{prefix}.{index:04d}": path
+        for index, path in enumerate(dict.fromkeys(paths), start=1)
+        if path
+    }
 
 
 def aria2_checksum(source: dict[str, Any]) -> str:
@@ -131,7 +145,7 @@ def workflow_semantic_sha256(config: dict[str, Any]) -> str:
     semantic_input = {
         key: value
         for key, value in config.items()
-        if key not in {"provenance", "output_stage", "report"}
+        if key not in {"provenance", "start_stage", "output_stage", "report"}
     }
     provenance = config.get("provenance", {})
     semantic_input["provenance_inputs"] = {
@@ -212,7 +226,19 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     input_stage = str(config.get("input_stage", "accessions"))
     if input_stage not in {"accessions", "final-bam", "master", "quantification"}:
         raise AcquisitionError(f"Unsupported input_stage: {input_stage!r}")
-    output_stage = validate_stage_selection(input_stage, config.get("output_stage"))
+    start_stage = str(config.get("start_stage", input_stage))
+    output_stage = validate_stage_selection(start_stage, config.get("output_stage"))
+    valid_input_modes = {
+        "accessions": {"accessions", "trimming", "alignment"},
+        "final-bam": {"alignment", "qc", "final-bam"},
+        "master": {"master"},
+        "quantification": {"master", "quantification", "catalog", "report"},
+    }
+    if start_stage not in valid_input_modes[input_stage]:
+        raise AcquisitionError(
+            f"start_stage {start_stage!r} is incompatible with input_stage "
+            f"{input_stage!r}"
+        )
     provenance = config.get("provenance")
     if provenance is not None:
         if not isinstance(provenance, dict):
@@ -614,6 +640,29 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                     raise AcquisitionError(
                         f"Sample {sample_id}: ChIP callpeak must write -B --SPMR bedGraphs"
                     )
+            qc_peak = sample.get("qc_peak")
+            if qc_peak is not None:
+                if start_stage != "qc" or config["assay"] != "atac":
+                    raise AcquisitionError(
+                        f"Sample {sample_id}: qc_peak is valid only for ATAC QC reuse"
+                    )
+                if not isinstance(qc_peak, dict):
+                    raise AcquisitionError(
+                        f"Sample {sample_id}: qc_peak must be a mapping"
+                    )
+                _required(
+                    qc_peak,
+                    {"path", "sha256", "method"},
+                    f"Sample {sample_id} QC peak",
+                )
+                if qc_peak["method"] != peak["command"]:
+                    raise AcquisitionError(
+                        f"Sample {sample_id}: QC peak method differs from peak caller"
+                    )
+                if not re.fullmatch(r"[0-9a-f]{64}", str(qc_peak["sha256"])):
+                    raise AcquisitionError(
+                        f"Sample {sample_id}: QC peak SHA-256 is invalid"
+                    )
 
         if config["assay"].startswith("chip") and sample["role"] == "treatment":
             control = str(sample.get("control") or "")
@@ -679,6 +728,12 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
                 final_bam[key] = str(
                     path if path.is_absolute() else (base / path).resolve()
                 )
+        qc_peak = sample.get("qc_peak")
+        if qc_peak:
+            path = Path(qc_peak["path"])
+            qc_peak["path"] = str(
+                path if path.is_absolute() else (base / path).resolve()
+            )
     external_master = config.get("external_master")
     if external_master:
         for key in (

@@ -1,0 +1,1064 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+% Keep the generated PDF stable across identical builds with pdfTeX.
+\pdfinfoomitdate=1
+\pdftrailerid{}
+\pdfsuppressptexinfo=15
+
+\definecolor{pipelineblue}{HTML}{315E7D}
+\definecolor{lightblue}{HTML}{EDF4F8}
+\definecolor{lightgold}{HTML}{FFF7E6}
+\definecolor{codegray}{HTML}{F4F5F6}
+
+\hypersetup{
+  pdftitle={Drosophila cCRE pipeline: detailed implementation},
+  pdfauthor={drosophila-cCREs project},
+  pdfsubject={ATAC-seq, H3K27ac ChIP-seq, master DHS, and regulatory catalog workflow}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Drosophila cCRE pipeline}
+\fancyhead[R]{Detailed implementation}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{14pt}
+
+\setlist[itemize]{leftmargin=1.6em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=1.8em,itemsep=0.3em,topsep=0.35em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.18}
+
+\lstdefinestyle{pipelinecode}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codegray},
+  frame=single,
+  rulecolor=\color{gray!35},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  xleftmargin=0.3em,
+  xrightmargin=0.3em
+}
+\lstset{style=pipelinecode}
+
+\newcommand{\stage}[1]{\texttt{#1}}
+\newcommand{\filep}[1]{\path{#1}}
+\newcommand{\software}[1]{\textsf{#1}}
+
+\title{\textbf{Drosophila cCRE Pipeline}\\[0.3em]
+\large Detailed implementation and scientific reasoning}
+\author{drosophila-cCREs project}
+\date{Repository documentation revision: 2026-07-28}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the implemented workflow that converts public
+ATAC-seq and ChIP-seq accessions into quality-reviewed biological-library
+BAMs, replicate-supported context peaks, a variable-width summit-aware master
+DNase-hypersensitive-site (DHS) registry, and a context-resolved regulatory
+element catalog.  The downstream catalog combines ATAC accessibility and
+H3K27ac signal using assay-specific background TMM normalization, guarded
+two-component Gaussian mixture models, portable browser tracks, IGV sessions,
+and an integrated checksummed report.  The emphasis is both operational and
+scientific: each section states what the current rules do, why that choice was
+made, and which limitations remain.  This is implementation documentation for
+the live \filep{workflow/Snakefile} and its included rule files; it is not a
+substitute for inspecting the resolved configuration and provenance of a
+particular run.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Purpose and scope}
+
+The pipeline has two related scientific goals:
+
+\begin{enumerate}
+  \item construct a stable atlas coordinate system---the master DHS registry---
+  from reproducible ATAC accessibility evidence across the contexts named in
+  the input table; and
+  \item annotate every master DHS in every context with accessibility,
+  H3K27ac, an activity score, TSS proximity, and a guarded active/inactive
+  interpretation.
+\end{enumerate}
+
+The public interface is accession-first.  Users provide public accessions and
+biological metadata, not raw FASTQ paths.  The canonical launcher is
+\filep{src/run_pipeline.py}; it validates inputs, resolves defaults and
+accession layouts, writes a deterministic YAML configuration, and invokes the
+canonical \filep{workflow/Snakefile}.  Snakemake then owns dependency tracking,
+resource scheduling, rule environments, and restart behavior.
+
+The current workflow includes ATAC-seq processing, TF and histone ChIP-seq
+processing, H3K27ac-based context activity annotation, catalog visualization,
+and integrated reporting.  It does not perform ABC candidate resizing or ABC
+scoring, and it does not integrate Micro-C contacts.  It also does not import
+an external regulatory-element catalog or apply quantile normalization.
+
+A master registry should be derived from the project's own reviewed
+accessibility evidence.  Keeping contact-based enhancer--gene assignment and
+ABC scoring outside this workflow prevents a coordinate-building pipeline from
+silently making a different biological claim about target genes.
+
+\section{The data model}
+
+\subsection{Run, library, context, and assay}
+
+Four identifiers have distinct meanings:
+
+\begin{description}[style=nextline,leftmargin=2.2em]
+  \item[Accession or technical run]
+  One public run, or one run obtained by expanding a public experiment
+  accession.  Technical runs are processed independently through trimming and
+  alignment.
+
+  \item[Biological library]
+  The unit identified by \texttt{library\_id}.  Multiple technical runs may
+  share one library ID.  Their aligned BAMs are merged before duplicate
+  marking so duplicates are defined across the complete biological library.
+
+  \item[Context]
+  The tissue, stage, cell type, or other biological group in the sample-sheet
+  \texttt{context} column.  Distinct ATAC libraries in one context are
+  biological replicates.  The same context label also links accepted ATAC and
+  H3K27ac libraries during activity quantification.
+
+  \item[Assay]
+  One of \texttt{atac}, \texttt{h3k27ac}, \texttt{chip\_tf}, or
+  \texttt{chip\_histone}.  The \texttt{h3k27ac} label resolves to the histone
+  ChIP processing branch but is retained as H3K27ac in the downstream atlas.
+\end{description}
+
+Collapsing these levels would create pseudoreplication or biased weights.  A
+technical lane is not a biological replicate; a library should receive one
+QC decision; and a context estimate should give equal weight to accepted
+biological libraries rather than to the number of sequencing lanes.
+
+\subsection{Canonical sample sheet}
+
+The CSV or TSV input conforms to
+\filep{schemas/sample-sheet.schema.yaml}.  Four columns are required:
+
+\begin{center}
+\begin{tabularx}{0.94\textwidth}{>{\ttfamily}l X}
+\toprule
+\normalfont Column & Meaning \\
+\midrule
+accession & Public run or experiment accession; experiments expand to their runs. \\
+library\_id & Biological library identifier; shared by technical runs only. \\
+assay & Assay branch and its default peak behavior. \\
+context & Replicate-pooling and downstream atlas group. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Optional fields specify treatment/control roles, an explicit
+\texttt{control\_library}, peak caller, MACS3 or HMMRATAC parameters, adapters,
+alignment parameters, filtering parameters, and notes.  ChIP input controls
+are explicit relationships.  A blank control is a valid IP-only experiment
+and causes MACS3 to run without \texttt{-c}; it does not trigger an implicit
+control search.
+
+Genome is a project-level launcher argument (\texttt{dm6} or \texttt{hg38}),
+and sequencing layout is resolved from accession metadata.  Repeated
+per-row genome or raw FASTQ fields are deliberately absent from the public
+contract.
+
+\section{Staged execution and the manual checkpoint}
+
+\subsection{Why there are separate invocations}
+
+The workflow is intentionally not one uninterrupted accession-to-catalog job.
+It is organized around immutable, checksummed artifacts and an explicit human
+review boundary:
+
+\begin{center}
+\fcolorbox{pipelineblue}{lightblue}{%
+\begin{minipage}{0.92\textwidth}
+\textbf{Invocation 1: accessions $\rightarrow$ QC}\\
+download $\rightarrow$ trim $\rightarrow$ align $\rightarrow$ peaks and QC
+$\rightarrow$ pending final-BAM manifest and review table
+
+\vspace{0.35em}
+\centering $\Downarrow$ \quad \textbf{manual pass/fail review} \quad $\Downarrow$
+
+\raggedright\vspace{0.35em}
+\textbf{Invocation 2: reviewed final BAMs $\rightarrow$ master}\\
+validate $\rightarrow$ accepted ATAC replicate/context peaks $\rightarrow$
+master DHS bundle
+
+\vspace{0.35em}
+\textbf{Invocation 3: accepted BAMs + frozen master $\rightarrow$ catalog/report}\\
+validate $\rightarrow$ count $\rightarrow$ normalize $\rightarrow$ annotate
+$\rightarrow$ tracks, IGV sessions, and report
+\end{minipage}}
+\end{center}
+
+There is no interactive pause inside Snakemake.  The user copies the generated
+review table outside the result namespace, records one pass/fail decision for
+every library, and applies those decisions with
+\filep{src/review_final_bam_manifest.py}.  A master run rejects any pending
+ATAC decision.  Quantification similarly requires accepted ATAC and H3K27ac
+artifacts; a rejected row must carry a reason.
+
+An automatic pipeline can calculate metrics but cannot decide whether a
+library is biologically fit for a specific atlas.  Making the review boundary
+an explicit file transformation preserves human judgment without hiding it in
+an interactive process or modifying generated manifests in place.
+
+\subsection{Input and stopping stages}
+
+\begin{longtable}{>{\ttfamily}p{0.18\textwidth} p{0.34\textwidth} p{0.35\textwidth}}
+\toprule
+\normalfont Start & Required starting artifact & Allowed endpoints \\
+\midrule
+\endhead
+accessions & Sample sheet plus resolved, checksummed download manifest &
+\stage{trimming}, \stage{alignment}, or \stage{qc} \\
+trimming & Checksummed trimming checkpoint &
+\stage{trimming}, \stage{alignment}, or \stage{qc} in the source namespace \\
+alignment & Checksummed alignment checkpoint or complete final-BAM manifest &
+\stage{alignment} or \stage{qc} \\
+qc & QC checkpoint plus a reviewed ATAC final-BAM manifest for master construction &
+\stage{qc} or \stage{master} \\
+master & Checksummed master bundle and accepted ATAC/H3K27ac BAM manifests when continuing &
+\stage{master}, \stage{quantification}, \stage{catalog}, or \stage{report} \\
+quantification & Checksummed quantification checkpoint &
+\stage{quantification}, \stage{catalog}, or \stage{report} \\
+catalog & Checksummed catalog checkpoint & \stage{catalog} or \stage{report} \\
+report & Checksummed report checkpoint & \stage{report} validation \\
+\bottomrule
+\end{longtable}
+
+Each endpoint exports
+\filep{provenance/manifests/<stage>.checkpoint.json}.  It records the stage,
+scientific semantic digest, complete peak/refinement parameters where relevant,
+and SHA-256 hashes of the restart artifacts.  Its stage-specific resolved
+configuration snapshot is retained below \filep{provenance/configs/}, so
+advancing the same run does not invalidate an earlier boundary.  Advancing
+\texttt{--until-stage} inside an allowed start mode changes only requested
+targets; it is excluded from the scientific semantic digest.
+
+Strict reuse modes have no upstream fallback.  For example, a quantification
+run cannot silently redownload or realign a missing library.  It first verifies
+the declared files, SHA-256 hashes, genome, BAM/index coherence, coordinate
+compatibility, and filtering contract.
+
+\section{Reference preparation}
+
+For \texttt{dm6} and \texttt{hg38}, reference construction belongs to the
+workflow DAG.  The resolved configuration records canonical FASTA, NCBI
+RefSeq GTF, and Blacklist v2 sources together with MD5 or SHA-256 checksums.
+The workflow:
+
+\begin{enumerate}
+  \item downloads archives with resumable \software{aria2} transfers and
+  integrity checking;
+  \item decompresses the FASTA and blacklist through temporary files followed
+  by atomic replacement;
+  \item builds the \software{samtools faidx} and \software{Bowtie2} indexes;
+  \item derives chromosome sizes in FASTA order;
+  \item extracts one-base TSS records from the annotation; and
+  \item writes the configured autosome list used for background normalization.
+\end{enumerate}
+
+The blacklist is used during final BAM filtering and in the HMMRATAC branch.
+The TSS BED supports ATAC TSS enrichment and regulatory-class annotation.  The
+autosome list excludes sex chromosomes and mitochondrial DNA from the TMM
+background matrix.
+
+Reference identity is part of the computation, not a machine-local
+prerequisite.  Checksummed preparation in the DAG makes alignment, QC,
+normalization, and coordinates traceable to the same assembly and avoids
+silent reuse of a similarly named but different reference.
+
+\section{Acquisition, read QC, and trimming}
+
+\subsection{Checksummed acquisition}
+
+Run and experiment accessions are normalized and experiments are expanded to
+their constituent runs.  Acquisition produces immutable compressed FASTQs and
+a manifest with resolved paths, layout, and checksums.  Resume state is
+preserved, and SRA-derived files are promoted only after conversion and
+compression complete.  The \texttt{--skip-download} path reuses an existing
+manifest after validation.
+
+\subsection{Raw and trimmed read assessment}
+
+Every technical run and mate receives raw \software{FastQC}.  Reads are then
+trimmed with \software{Cutadapt}; defaults are Nextera adapters for ATAC and
+TruSeq adapters for ChIP, quality cutoff 20, minimum retained length 20 bp,
+error rate 0.1, and minimum adapter overlap 3 bp.  Paired-end trimming is
+synchronized.  FastQC is repeated on the trimmed output, and Cutadapt writes a
+JSON record used by MultiQC.
+
+Running QC before and after trimming separates properties of the deposited
+reads from effects introduced by processing.  Keeping technical runs separate
+at this stage reveals lane-specific failures before they are hidden by a
+library merge.
+
+\section{Alignment and biological-library BAM construction}
+
+\subsection{Lane alignment}
+
+Each trimmed technical run is aligned independently with \software{Bowtie2}.
+The default preset is \texttt{--very-sensitive}.  For paired-end data, the
+workflow also uses \texttt{--no-mixed}, \texttt{--no-discordant}, and a default
+maximum fragment length of 2,000 bp.  Read-group IDs identify the technical
+run while the sample field identifies the biological library.
+
+The streamed alignment is converted to BAM, name-sorted, processed with
+\software{samtools fixmate -m}, and coordinate-sorted.  Temporary intermediates
+are checked with \software{samtools quickcheck}.
+
+\subsection{Merge, duplicate marking, and filtering}
+
+All lane BAMs sharing a biological library ID are merged.  Duplicate marking
+is then performed once over the merged library.  The final filter applies:
+
+\begin{itemize}
+  \item minimum MAPQ 30 by default;
+  \item exclusion of unmapped, secondary, QC-failed, and supplementary
+  alignments;
+  \item proper-pair and mapped-mate requirements for paired-end libraries;
+  \item duplicate exclusion when \texttt{remove\_duplicates=true};
+  \item mitochondrial-contig removal by default; and
+  \item removal of alignments overlapping the reference blacklist.
+\end{itemize}
+
+The result is a coordinate-sorted final BAM and BAI.  Flagstat, stats, and
+idxstats summaries are calculated for every biological library.  At the
+\stage{alignment} boundary the workflow exports a checksummed final-BAM
+manifest; newly generated rows have \texttt{qc\_status=pending\_review}.
+
+Duplicate marking before technical-run merging would miss molecules duplicated
+across lanes.  Conversely, merging biological replicates would erase the
+replicate structure required for reproducibility checks.  The chosen order
+therefore matches the experimental unit.
+
+\section{Peak calling}
+
+\subsection{Default paired-end ATAC branch: Tn5/MACS3-qpois}
+
+The default ATAC implementation is explicitly insertion-based:
+
+\begin{enumerate}
+  \item Retain proper pairs with nonzero template length and
+  \(0 < |\mathrm{TLEN}| < 150\) bp by default.  Unmapped, mate-unmapped,
+  secondary, QC-failed, duplicate, and supplementary records are excluded.
+  \item Apply the Tn5 offset with \software{alignmentSieve --ATACshift}.
+  \item Convert both shifted mates to separate one-base insertion records.  A
+  consistency check requires the shifted alignment count to equal the number
+  of insertion records.
+  \item Run \software{MACS3 callpeak} on the BED input with
+  \texttt{-f BED --nomodel --shift -75 --extsize 150 --keep-dup all -B
+  -q 0.10}.  The pileup and local lambda are deliberately unscaled; this
+  branch must not use \texttt{--SPMR}.
+  \item Clip the treatment pileup and local lambda to chromosome bounds and
+  calculate the qpois signal with \software{macs3 bdgcmp -m qpois}.
+  \item Refine candidate peaks over qpois exponents 2 through 325.  Connected
+  components shorter than 50 bp are rejected; components at most 400 bp are
+  retained; wider components are followed to higher exponents so that they can
+  split into narrower subcomponents.  The default merge gap is one base.
+\end{enumerate}
+
+This sequence runs for each accepted biological replicate and again on pooled
+insertions within each context.  The pooled call provides context boundaries
+and signal; the replicate calls provide reproducibility evidence.
+The QC endpoint freezes each refined replicate BED together with the complete
+MACS3 and qpois-refinement parameter mappings.  A QC-to-master invocation
+validates and reuses those lenient replicate calls, while still constructing
+the pooled context calls.  It refuses reuse if the requested q-value, Tn5
+geometry, exponent range, component lengths, merge gap, or caller differs.
+
+Two-ended Tn5 insertions represent cut sites more directly than treating an
+ATAC fragment as a ChIP enrichment interval.  Computing qpois from unscaled
+pileup and lambda preserves MACS3's intended count-scale comparison.
+Progressive refinement constrains the geometry of broad candidates, but it is
+not an additional independent FDR-controlled test; candidate q-values remain
+the statistical starting point.
+
+\subsection{Optional HMMRATAC branch}
+
+HMMRATAC is an explicit alternative for paired-end ATAC only.  Defaults are a
+lower cutoff of 10, upper cutoff of 20, and prescan cutoff of 1.2; the reference
+blacklist is supplied to the caller.  Per-replicate and pooled-context
+HMMRATAC peaks then enter the same replicate-support step used by the qpois
+branch.  A context cannot mix HMMRATAC and qpois parameters.
+
+\subsection{ChIP branches}
+
+ChIP treatment libraries use MACS3 with their explicit control BAM when one is
+declared and without \texttt{-c} for IP-only data.  TF ChIP defaults to narrow
+peaks; histone ChIP, including H3K27ac, defaults to broad peaks.  The default
+q-value is 0.01 and the default broad cutoff is 0.1.  MACS3 format resolves
+from layout unless explicitly constrained.
+
+Both narrow and broad ChIP calls request \texttt{-B --SPMR}, producing
+treatment-pileup and control-lambda bedGraphs in addition to the canonical
+narrowPeak or broadPeak file.  Per-library ChIP CPM BigWigs are not generated
+because no downstream endpoint consumes them.  The SPMR behavior is
+intentionally different from the ATAC qpois branch.
+
+Narrow TF occupancy and broad histone enrichment have different expected
+geometries.  Explicit control relationships prevent accidental cross-context
+matching, while allowing genuinely IP-only public experiments to remain
+representable and auditable.
+
+\section{Quality control and manual acceptance}
+
+The QC endpoint combines general and assay-specific evidence:
+
+\begin{itemize}
+  \item raw/trimmed FastQC and Cutadapt metrics;
+  \item final-BAM flagstat, stats, and idxstats;
+  \item peak count and fraction of reads in peaks (FRiP);
+  \item ATAC TSS profiles over \(\pm2\) kb, derived from temporary Tn5-shifted
+  CPM tracks, and fragment-length histograms;
+  \item ChIP treatment/control fingerprints when a control exists;
+  \item phantompeakqualtools cross-correlation, fragment-shift estimates,
+  NSC, RSC, and quality tags for ChIP treatments; and
+  \item a MultiQC report and one consolidated review row per library.
+\end{itemize}
+
+For paired-end libraries, FRiP uses one valid same-chromosome fragment per read
+pair in the denominator and counts a fragment once if it overlaps any called
+peak.  For single-end libraries, the unit is one filtered read.  Thus FRiP is
+fragment-aware and is not inflated by counting two mates independently.
+
+ATAC TSS enrichment is calculated from the aggregate 4-kb profile as the
+maximum signal in the central \(\pm50\)-bp interval divided by the mean signal
+in the two terminal 100-bp flanks.  The review table also reports the median
+ATAC fragment length, fraction below 150 bp, and fraction from 180--250 bp.
+
+The user edits only \texttt{qc\_decision},
+\texttt{estimated\_fragment\_length\_bp}, and \texttt{notes}.  A failed row
+requires a reason.  Single-end H3K27ac also requires a reviewed positive
+fragment length; the cross-correlation estimate is pre-populated as a
+suggestion rather than accepted silently.
+
+No universal numeric cutoff is safe across all public datasets.  The table
+puts depth, mapping, enrichment, fragment structure, and visual evidence next
+to the decision so inclusion criteria can be documented at library resolution.
+
+\section{Context peak reproducibility}
+
+Accepted ATAC libraries are grouped by the sample-sheet context.  For the
+qpois path, their insertion BEDs are concatenated and a pooled context call is
+made and refined.  For HMMRATAC, accepted BAMs are pooled for the context call.
+The pooled peaks are not accepted merely because they are present in the
+aggregate signal.
+
+For every pooled peak \(P\), each replicate peak set is reduced to an interval
+union and the coverage fraction is calculated:
+
+\[
+  f_r(P) = \frac{|P \cap U_r|}{|P|},
+\]
+
+where \(U_r\) is the union of replicate \(r\)'s peaks.  A replicate supports
+the pooled peak when \(f_r(P) \geq 0.5\) by default.  The peak is retained when
+at least two biological libraries support it.  Both thresholds are launcher
+parameters, and the minimum cannot exceed the accepted replicate count.  The
+support table retains every pooled peak, all per-replicate fractions, the
+supporting library list, and the retain/reject decision.
+
+Pooled data improve sensitivity and define a context-level signal, but pooling
+alone can promote a feature driven by one library.  Requiring substantial
+coverage in multiple independent biological libraries makes reproducibility
+an explicit property of every retained context peak.
+
+\section{Summit-aware master DHS registry}
+
+The master registry is built only from replicate-supported context peaks.  It
+is neither a simple interval union nor a fixed-width resizing operation.
+
+\subsection{Context summits}
+
+For each source peak, the workflow reads the pooled context BigWig and chooses
+the maximum-signal base.  If the maximum occupies more than one plateau, it
+selects the midpoint of the plateau closest to the peak midpoint, with a
+leftmost deterministic tie break.  If no finite signal is available, it uses
+the peak midpoint and records a summit fallback.
+
+\subsection{Cross-context clustering}
+
+Source peaks are processed by chromosome.  A peak can join a cluster only if:
+
+\begin{itemize}
+  \item its context is not already represented in that cluster;
+  \item the complete span of member summits remains at most 150 bp by default;
+  and
+  \item it reciprocally contains a summit with at least one current member:
+  each of the two peak intervals contains the other's summit.
+\end{itemize}
+
+When multiple clusters are eligible, distance to the cluster median summit,
+then interval-envelope width, gives a deterministic choice.  The representative
+summit is the observed member summit closest to the median; ties prefer a
+narrower source peak, then stable context/name order.
+
+Adjacent clusters whose representative summits are less than 50 bp apart are
+merged only when their context sets are disjoint and the combined summit span
+still satisfies the 150-bp limit.  A shared context is evidence that the same
+biological condition resolves two sites, so those sites remain separate.
+
+Each master interval initially spans the envelopes of its members.  If adjacent
+master intervals overlap, their boundary is clipped at the midpoint between
+their representative summits, preserving both summits and yielding sorted,
+non-overlapping, variable-width BED6 intervals.
+
+\subsection{Master outputs}
+
+The bundle contains the master BED, one-base summit BED, full source-peak
+membership table, binary context matrix, and JSON metrics.  The membership
+table records input and clipped coordinates, source summit and signal,
+fallback status, peak method, replicate support, and supporting libraries.  A
+manifest records paths and SHA-256 hashes for the complete bundle.
+
+The summit is a sharper cross-context anchor than a peak edge, while preserving
+source envelopes avoids pretending that every DHS has the same width.
+Reciprocal summit containment reduces accidental joins between nearby broad
+peaks.  The one-peak-per-context constraint and shared-context separation rule
+protect biologically resolved neighboring sites from being collapsed.
+
+\section{Strict artifact reuse and validation}
+
+Final-BAM and master manifests are immutable contracts between phases.  Reuse
+validates file presence, SHA-256, BAM/BAI consistency, genome, coordinate
+compatibility, expected filtering metadata, QC status, and master bundle
+structure before downstream work.  Rejected libraries remain visible in the
+reviewed manifest and exclusion provenance, but they do not enter master or
+activity calculations.
+
+The result namespace \filep{results/<project>/<run_id>} is protected by a
+timestamp-independent scientific semantic digest.  If an existing namespace
+contains a different digest, execution stops and requires a new run ID.
+Stopping stage and report-only inputs are excluded from that digest, so later
+targets can be added without falsely defining a new scientific analysis.
+
+Cross-run reuse is powerful only when identity is proven.  A manifest makes
+the intended artifact set explicit; hashes prevent path-stable content changes;
+and the semantic guard prevents two parameterizations from being written into
+one scientific namespace.
+
+\section{Activity quantification}
+
+\subsection{Assay-specific units}
+
+The activity phase requires at least one accepted ATAC and one accepted
+H3K27ac library for every context, and at least two accepted libraries of each
+assay across the atlas for TMM estimation.
+
+\begin{description}[style=nextline,leftmargin=2.2em]
+  \item[Paired-end ATAC]
+  Retain proper pairs with \(0 < |\mathrm{TLEN}| < 150\), apply Tn5 offsets,
+  and emit both mates as sorted one-base insertion units.
+
+  \item[Paired-end H3K27ac]
+  Retain one positive-TLEN record per proper pair and emit the inferred genomic
+  fragment once.
+
+  \item[Single-end H3K27ac]
+  Convert filtered alignments to BED and extend in the strand direction using
+  the manually reviewed fragment length, clipping to chromosome bounds.
+\end{description}
+
+Each unit BED has a separately checked total count.  This same unit definition
+feeds master-interval counts, 10-kb background counts, H3K27ac summit windows,
+and normalized browser coverage.
+
+ATAC accessibility is naturally measured by insertion events, whereas
+H3K27ac enrichment is naturally measured by immunoprecipitated fragments.
+Using one internally consistent unit per assay prevents mate double-counting
+and keeps tables and browser tracks comparable within an assay.
+
+\subsection{Exact variable-width master counts}
+
+For each library, sorted assay units are intersected with the strict,
+non-overlapping master registry.  Every master DHS receives a raw count and an
+unnormalized CPM/kb value:
+
+\[
+  \mathrm{CPM/kb}_{i\ell} =
+  \frac{10^9 C_{i\ell}}{N_{\ell} W_i},
+\]
+
+where \(C_{i\ell}\) is the raw count for element \(i\) in library \(\ell\),
+\(N_{\ell}\) is the total number of usable assay units, and \(W_i\) is the exact
+master width in bases.  Coordinates, summit, library, assay, context, raw
+count, total units, and CPM/kb are retained together.
+
+\subsection{Assay-specific background TMM}
+
+The reference autosomes are tiled into fixed 10-kb bins, with the terminal bin
+on a chromosome clipped to its length.  Raw assay units are counted in every
+bin.  For ATAC and H3K27ac separately, bins with zero total count across that
+assay are removed and \software{edgeR::calcNormFactors} estimates TMM factors
+using the original total filtered assay-unit counts as library sizes.  The
+implemented parameters are log-ratio trim 0.30, sum trim 0.05, weighting on,
+and \texttt{Acutoff=-1e10}.
+
+For library \(\ell\), the effective library size is
+
+\[
+  E_{\ell}=N_{\ell}F_{\ell},
+\]
+
+where \(F_{\ell}\) is the assay-specific TMM normalization factor.  The
+normalized element signal is
+
+\[
+  S_{i\ell}=\frac{10^9 C_{i\ell}}{E_{\ell}W_i}.
+\]
+
+The factor table records the assay, context, total units, nonzero background
+feature count, factor, effective size, and method.  A software receipt records
+the R and edgeR versions and exact parameters.
+
+Estimating compositional factors on master DHS counts risks using the
+biological signal of interest as the normalization reference.  Fixed
+autosomal background bins provide a broader sampling frame.  Factors remain
+assay-specific because insertion counts and ChIP fragments have different
+generative processes and should never share a scale factor.
+
+\subsection{Context aggregation and combined activity}
+
+Within each context and assay, normalized biological-library values are
+combined by an equal-weight arithmetic mean.  Replicate standard deviations,
+raw sums and means, total-unit sums, library IDs, and library counts remain in
+the output.  This gives every accepted biological library equal weight
+regardless of its number of technical runs.
+
+For context (c) and master DHS (i), the comparative activity score is
+
+\[
+  A_{ic}=\sqrt{\overline{S}^{\,\mathrm{ATAC}}_{ic}
+                    \;\overline{S}^{\,\mathrm{H3K27ac}}_{ic}}.
+\]
+
+This geometric mean is zero when either assay has zero signal and balances two
+positive signals without allowing the numerically larger assay to dominate as
+strongly as an arithmetic sum.
+
+\section{H3K27ac summit-window signal}
+
+Master intervals are variable width, but H3K27ac may be displaced to either
+side of an accessible summit.  The catalog therefore defines three
+non-overlapping nominal 500-bp windows around every representative summit:
+
+\begin{align*}
+  \text{left}   &: [s-750,\ s-250),\\
+  \text{center} &: [s-250,\ s+250),\\
+  \text{right}  &: [s+250,\ s+750).
+\end{align*}
+
+Windows are clipped at chromosome bounds and their actual widths are retained.
+H3K27ac fragments are counted in each window, normalized with the same
+library-specific background-TMM effective sizes, and averaged across
+biological libraries within the context.  The pipeline then selects the
+maximum of the three context means.  It also retains all window-level values
+and the mean over the complete 1.5-kb neighborhood.
+
+A single window centered on the Tn5 summit can miss flanking nucleosomes, while
+one wide window can dilute a localized signal or merge asymmetric patterns.
+The maximum of three fixed local summaries accommodates modest displacement
+without changing the master coordinate or optimizing a different window for
+every library.
+
+\section{Guarded H3K27ac mixture model}
+
+For each context, model fitting uses only master DHSs that are members of that
+context and have positive max-window H3K27ac signal.  Values are transformed
+to \(\log_{10}\) scale.  A deterministic expectation--maximization fit compares
+one Gaussian with a two-Gaussian mixture.  The lower-mean and higher-mean
+components are labeled \texttt{low} and \texttt{high}.
+
+A two-component interpretation is marked supported only when all of the
+following guards pass:
+
+\begin{enumerate}
+  \item at least 200 positive member DHSs;
+  \item \(\mathrm{BIC}_{1}-\mathrm{BIC}_{2} \geq 10\);
+  \item Ashman's \(D\geq2\);
+  \item each component weight is at least 0.10;
+  \item exactly one posterior-probability 0.5 crossing lies between the two
+  component means; and
+  \item the fitted population has nonzero variance.
+\end{enumerate}
+
+If a two-component fit exists, positive member DHSs are assigned using a high
+component posterior threshold of 0.5 even when one of the support guards
+fails.  Those assignments are retained with
+\texttt{mixture\_supported=0},
+\texttt{mixture\_guardrail\_warning=1}, and the exact semicolon-separated
+failure reasons.  Nonmembers are \texttt{inactive\_in\_context}; accessible
+members with zero H3K27ac are
+\texttt{accessible\_no\_h3k27ac\_signal}.
+
+The catalog additionally reports a within-context log-signal z score and
+descriptive z tiers.  These do not replace the mixture assignment.
+
+A two-Gaussian model will return two components even for many unimodal or
+weakly structured distributions.  The guardrails turn model diagnostics into
+explicit evidence requirements.  Retaining unsupported assignments with
+warnings is preferable to silently discarding data or falsely presenting the
+fit as validated.
+
+\section{Regulatory classes and active elements}
+
+The representative summit is compared with the nearest reference TSS on the
+same contig.  Ties retain all tied TSS identifiers.  Classes are descriptive:
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Class & Absolute summit--TSS distance \\
+\midrule
+\texttt{promoter\_associated} & \(\leq250\) bp \\
+\texttt{proximal\_enhancer\_like} & 251--1,000 bp \\
+\texttt{distal\_enhancer\_like} & \(>1{,}000\) bp \\
+\texttt{unclassified\_no\_tss\_on\_contig} & no annotated TSS on contig \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+An active element is a master DHS that is a member of the context and is
+assigned to the high H3K27ac mixture component.  The active definition does
+not require \texttt{mixture\_supported=1}; unsupported fits remain present but
+are visibly flagged in tables, BED names, plots, summaries, and the final
+report.  Continuous ATAC, H3K27ac, posterior probability, and combined
+activity values are retained for analyses that should not use a binary call.
+
+TSS distance provides a reproducible structural annotation, not proof of
+enhancer function or target-gene identity.  Likewise, a high H3K27ac component
+is an encyclopedia-style activity label.  The continuous measurements are the
+appropriate input for later quantitative scoring and uncertainty-aware work.
+
+\section{Catalog tables, tracks, and IGV sessions}
+
+\subsection{Tabular catalog}
+
+The long catalog contains one master-DHS/context row.  It includes master
+coordinates, membership, nearest TSS, regulatory class, normalized ATAC,
+all H3K27ac window summaries, mixture diagnostics and posterior, activity
+state, and the max-window geometric activity.  The wide catalog contains one
+row per master DHS with context-prefixed membership, signal, mixture, warning,
+and activity fields.  Each context also receives a compressed table of high
+component active elements and a regulatory-class/mixture summary.
+
+\subsection{Portable BED and BigWig tracks}
+
+The catalog creates:
+
+\begin{itemize}
+  \item a portable copy of the global master BED;
+  \item a context DHS BED containing master coordinates for context-matrix
+  members, rather than the wider pooled source-peak boundaries;
+  \item an active-element BED9 whose thick one-base interval marks the summit,
+  score is the high-component posterior scaled to 0--1,000, item RGB encodes
+  regulatory class, and name records a mixture warning; and
+  \item one mean ATAC and one mean H3K27ac BigWig for every context.
+\end{itemize}
+
+For each accepted library, basewise coverage is scaled by
+\(10^6/E_{\ell}\), using the same assay-specific background-TMM effective size
+as the tables.  Context tracks are arithmetic means of these scaled library
+tracks.  ATAC BigWigs show Tn5 insertion coverage and H3K27ac BigWigs show
+fragment coverage.  JSON sidecars record libraries, factors, scale values,
+inputs, and output checksums.
+
+\subsection{IGV sessions}
+
+Each context session at
+\filep{activity/catalog/igv/<context>.xml} loads five relative resources:
+the global master registry first, followed by mean ATAC, mean H3K27ac, context
+DHSs, and active elements.  The aggregate
+\filep{activity/catalog/all-contexts.igv.xml} loads the master once and the four
+context-specific tracks for every context.  Relative paths make the bundle
+portable as long as the XML, \filep{bed/}, and \filep{tracks/} remain together.
+
+The standalone \filep{src/build_igv_session.py} builds a compact cross-run view.
+The global master DHS registry is first.  Each context then contributes, in
+order, its background-TMM mean ATAC Tn5-insertion signal, pooled ATAC qpois
+signal, background-TMM mean H3K27ac fragment coverage, context DHSs, and
+active cCREs.  The unscaled, depth-dependent pooled MACS3 pileup remains an
+auditable master-calling result but is intentionally absent from this compact
+comparative session.
+Replicate-level H3K27ac signal, H3K27ac peaks, and intermediate ATAC peak
+evidence are deliberately omitted.
+
+The tabular catalog is the quantitative record; the browser bundle is a
+diagnostic view of the same accepted libraries, units, factors, and coordinates.
+Generating both from shared inputs minimizes the risk that a visually
+attractive track represents a different normalization or sample selection.
+
+\section{Integrated reporting and provenance}
+
+The report endpoint emits deterministic HTML, PDF, and JSON.  Repeated
+\texttt{--report-source-root} arguments freeze a bounded set of upstream
+manifests, resolved configurations, QC metrics, TSS plots, fragment
+histograms, cross-correlation files, MultiQC reports, and master metrics into
+the report configuration.  These sources are checked again by SHA-256 during
+report construction.
+
+The integrated report summarizes input/output inventories, BAM and FRiP QC,
+ATAC TSS and fragment evidence, ChIP cross-correlation, master statistics, TMM
+factors, regulatory classes, mixture fits, exact guardrail warnings, and the
+catalog browser assets.  Its JSON sidecar records every declared source and
+current output hash, including BEDs, mean BigWigs, and all IGV sessions.
+
+\subsection{Reproducibility mechanisms}
+
+\begin{itemize}
+  \item Rule software is isolated in small pinned Conda environments.
+  \item Downloads, reused BAMs, master bundles, report sources, and generated
+  exports are checksummed.
+  \item Resolved configurations preserve derived defaults and provenance.
+  \item Temporary outputs are validated and atomically promoted where
+  practical.
+  \item Deterministic tables use stable ordering; generated gzip files set a
+  fixed modification time; unchanged manifests and provenance files are not
+  replaced merely to refresh timestamps.
+  \item Snakemake targets express completeness and profiles retain
+  \texttt{rerun-incomplete: true}.
+  \item A changed scientific semantic digest requires a new \texttt{run\_id}.
+\end{itemize}
+
+The run-specific \filep{work/<project>/<run_id>/} tree contains reproducible
+intermediates rather than archive products.  Large intermediates---trimmed
+FASTQs after alignment, lane and marked BAMs, shifted or short-fragment BAMs,
+peak-calling insertion BEDs and background-count tables---are declared
+temporary and Snakemake removes them after their last consumer.
+Quantification assay-unit BEDs are retained below
+\filep{activity/quantification/units/}; they are the strict restart contract
+for catalog counting and mean-track construction.  The work directory must remain available
+while downstream products are being constructed.  After successful completion
+it may be removed to clear small files or debris left by interrupted older
+runs.  Per-library ChIP CPM BigWigs are not computed because no downstream
+result consumes them; pooled ATAC pileup/qpois and context-mean catalog
+BigWigs are distinct retained products.  Final replicate-level ATAC peak
+evidence is archived below \filep{results/<project>/<run_id>/atac/replicates/}
+rather than retained under \filep{work/}.
+
+\section{Principal output inventory}
+
+\begin{longtable}{p{0.24\textwidth} p{0.68\textwidth}}
+\toprule
+Group & Principal paths below \filep{results/<project>/<run_id>/} \\
+\midrule
+\endhead
+Alignment &
+\filep{bam/<library>.final.bam[.bai]};
+\filep{qc/alignment/};
+\filep{provenance/manifests/final-bams.tsv} \\
+QC and review &
+\filep{qc/metrics.tsv}, \filep{qc/metrics.json},
+\filep{qc/library-review.tsv}, \filep{qc/multiqc/multiqc_report.html},
+assay-specific files below \filep{qc/tss/}, \filep{qc/fragments/}, and
+\filep{qc/chip/} \\
+Context ATAC &
+\filep{atac/conditions/<context>/peaks/} and
+\filep{atac/conditions/<context>/tracks/} \\
+Master bundle &
+\filep{atac/master/master_dhs.bed},
+\filep{master_dhs_summits.bed},
+\filep{master_dhs_membership.tsv},
+\filep{master_dhs_context_matrix.tsv}, and
+\filep{master_dhs.json} \\
+Quantification &
+\filep{activity/quantification/units/*.bed.gz},
+\filep{activity/quantification/libraries/*.signal.tsv.gz},
+\filep{normalization_factors.tsv}, \filep{context_signal.tsv.gz},
+\filep{master_dhs_activity.tsv.gz}, metrics and provenance JSON \\
+Catalog &
+\filep{activity/catalog/master_elements_long.tsv.gz},
+\filep{master_elements_wide.tsv.gz}, \filep{active/},
+\filep{mixture_models.tsv}, \filep{regulatory_element_summary.tsv}, metrics,
+provenance, and mixture plots \\
+Browser bundle &
+\filep{activity/catalog/bed/}, \filep{activity/catalog/tracks/},
+\filep{activity/catalog/igv/<context>.xml}, and
+\filep{activity/catalog/all-contexts.igv.xml} \\
+Integrated report &
+\filep{activity/report/integrated_qc_report.html},
+\filep{integrated_qc_report.pdf}, and
+\filep{integrated_qc_report.json} \\
+Restart contracts &
+\filep{provenance/manifests/<stage>.checkpoint.json} at every logical endpoint \\
+\bottomrule
+\end{longtable}
+
+\section{Representative commands}
+
+\subsection{Accessions through QC}
+
+\begin{lstlisting}
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --project drosophila-atlas --run-id qc-v1 --genome dm6 \
+  --until-stage qc --cores 16
+\end{lstlisting}
+
+Copy \filep{qc/library-review.tsv} outside the result namespace, fill the final
+review columns, and apply the decisions:
+
+\begin{lstlisting}
+python src/review_final_bam_manifest.py \
+  results/drosophila-atlas/qc-v1/provenance/manifests/final-bams.tsv \
+  --review-table data/reviewed/atlas.library-review.tsv \
+  --output data/reviewed/atlas.reviewed.tsv
+\end{lstlisting}
+
+\subsection{Reviewed ATAC BAMs through master}
+
+\begin{lstlisting}
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage qc \
+  --checkpoint-manifest \
+    results/drosophila-atlas/qc-v1/provenance/manifests/qc.checkpoint.json \
+  --final-bam-manifest data/reviewed/atlas-atac.reviewed.tsv \
+  --project drosophila-atlas --run-id master-v1 --genome dm6 \
+  --until-stage master --cores 16
+\end{lstlisting}
+
+\subsection{Accepted BAMs and master through report}
+
+\begin{lstlisting}
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage master \
+  --master-manifest \
+    results/drosophila-atlas/master-v1/provenance/manifests/master-dhs.tsv \
+  --activity-bam-manifest data/reviewed/atac.accepted.tsv \
+  --activity-bam-manifest data/reviewed/h3k27ac.accepted.tsv \
+  --report-source-root results/drosophila-atlas/master-v1 \
+  --report-source-root results/drosophila-h3k27ac/qc-v1 \
+  --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
+  --until-stage report --cores 16
+\end{lstlisting}
+
+Re-running the same command and run ID resumes valid work.  Use
+\stage{quantification} or \stage{catalog} as an earlier endpoint.  To advance
+later, pass its exported checkpoint as the completed start boundary:
+
+\begin{lstlisting}
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage quantification \
+  --checkpoint-manifest \
+    results/drosophila-atlas/catalog-v1/provenance/manifests/quantification.checkpoint.json \
+  --until-stage report --cores 16
+\end{lstlisting}
+
+\section{Default parameters that affect interpretation}
+
+\begin{longtable}{p{0.34\textwidth} p{0.18\textwidth} p{0.39\textwidth}}
+\toprule
+Parameter & Default & Interpretation \\
+\midrule
+\endhead
+Trim quality / minimum length & 20 / 20 bp & Read-level cleanup before alignment \\
+Bowtie2 preset / paired maximum & very-sensitive / 2,000 bp & Alignment sensitivity and allowed concordant span \\
+MAPQ / duplicate / mitochondrial filtering & 30 / remove / remove & Final biological-library BAM contract \\
+ATAC short-fragment maximum & 150 bp, strict & Requires \(0<|\mathrm{TLEN}|<150\) \\
+ATAC MACS3 q-value & 0.10 & Lenient candidate stage before geometric refinement \\
+qpois exponent range & 2--325 & Progressive signal thresholds \\
+qpois retained width & 50--400 bp & Final refined component geometry \\
+Context replicate support & 2 libraries, 0.5 coverage & Minimum reproducibility of pooled peaks \\
+Master summit span & 150 bp & Complete-linkage limit across context summits \\
+Minimum master summit separation & 50 bp & Close disjoint-context clusters may merge below this distance \\
+TMM background bins & 10 kb autosomal & Composition-factor feature space \\
+H3K27ac windows & three 500-bp windows & Left, center, and right of the master summit \\
+Mixture minimum population & 200 positive members & Small contexts cannot support the bimodality claim \\
+Mixture evidence & \(\Delta\mathrm{BIC}\geq10\), \(D\geq2\), weights \(\geq0.10\) & Required together with unique crossing and nonzero variance \\
+Promoter/proximal boundaries & 250 / 1,000 bp & Absolute summit-to-nearest-TSS distance \\
+\bottomrule
+\end{longtable}
+
+\section{Pinned principal software}
+
+The rule environments pin the principal tools shown below.  The resolved
+Conda environment and report receipts remain the authoritative record for an
+individual run.
+
+\begin{center}
+\begin{tabular}{ll@{\qquad}ll}
+\toprule
+Tool & Version & Tool & Version \\
+\midrule
+Snakemake & 9.23.1 & Bowtie2 & 2.5.5 \\
+samtools & 1.23.1 & bedtools & 2.31.1 \\
+FastQC & 0.12.1 & Cutadapt & 5.2 \\
+MACS3 & 3.0.4 & deepTools & 3.5.6 \\
+MultiQC & 1.35 & phantompeakqualtools & 1.2.2 \\
+R & 4.5.3 & edgeR & 4.8.2 \\
+pyBigWig & 0.3.25 & WeasyPrint & 66.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Interpretive cautions}
+
+\begin{itemize}
+  \item A refined qpois component inherits its candidate call; refinement is
+  not a new independent false-discovery-rate procedure.
+  \item Replicate support is interval coverage of a pooled peak, not a test of
+  identical peak boundaries or identical signal magnitude.
+  \item A master DHS represents compatible accessibility evidence across
+  contexts.  It is not a fixed-width enhancer, a gene assignment, or a claim
+  that the element is active in every context.
+  \item Background TMM assumes that a useful reference composition can be
+  estimated from autosomal bins.  Factor ranges, library QC, and signal
+  distributions should be inspected for strong global or technical shifts.
+  \item A high mixture assignment from an unsupported fit is retained for
+  transparency but must be interpreted with its warning.  The report exposes
+  the exact failed guards.
+  \item TSS-proximity classes are annotation categories.  Distal or proximal
+  labels do not establish enhancer function, and promoter proximity does not
+  prove regulation of the nearest gene.
+  \item Browser tracks are normalized context means intended for inspection;
+  replicate-level tables and standard deviations remain necessary for
+  uncertainty assessment.
+  \item ABC scoring and Micro-C integration require downstream workflows that
+  consume the continuous signals and frozen master coordinates.
+\end{itemize}
+
+\section{Verification of this description}
+
+This document was written against the current sample-sheet schema, launcher,
+configuration validators, \filep{workflow/Snakefile}, all included rule files,
+the master/consensus/activity/catalog implementations, the README, and the
+workflow environment files.  To rebuild the PDF from the repository root:
+
+\begin{lstlisting}
+latexmk -pdf -interaction=nonstopmode -halt-on-error \
+  -output-directory=docs docs/pipeline-description.tex
+\end{lstlisting}
+
+For a scientific run, documentation review is not sufficient verification.
+Validate the sample sheet, inspect the resolved configuration and semantic
+digest, run an appropriate Snakemake dry-run, review library QC decisions, and
+retain the generated manifests and report JSON with the results.
+
+\end{document}

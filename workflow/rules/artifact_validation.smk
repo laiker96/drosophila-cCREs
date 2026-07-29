@@ -24,6 +24,29 @@ if EXTERNAL_BAM_SAMPLES:
             "../scripts/validate_external_bam.py"
 
 
+if EXTERNAL_QC_PEAK_SAMPLES:
+    rule validate_external_qc_peak:
+        input:
+            peak=lambda wc: SAMPLES[wc.sample]["qc_peak"]["path"]
+        output:
+            validation=(
+                f"{RESULT_ROOT}/provenance/external_qc_peaks/"
+                "{sample}.validated.json"
+            )
+        params:
+            expected=lambda wc: SAMPLES[wc.sample]["qc_peak"]
+        wildcard_constraints:
+            sample=EXTERNAL_QC_PEAK_SAMPLE_RE
+        resources:
+            mem_mb=1000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/provenance/external_qc_peaks/{{sample}}.validate.log"
+        script:
+            "../scripts/validate_external_qc_peak.py"
+
+
 if EXTERNAL_MASTER:
     rule validate_external_master:
         input:

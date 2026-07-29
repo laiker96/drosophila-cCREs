@@ -20,7 +20,7 @@ fields:
   library_id:
     type: string
     pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
-    description: Biological library ID. Repeat it to merge technical runs before alignment.
+    description: Biological library ID. Technical runs align separately, then merge before duplicate marking.
   assay:
     type: enum
     values: [atac, h3k27ac, chip_tf, chip_histone]

@@ -56,8 +56,9 @@ names, or sample relationships.
   replace this with a simple interval union or fixed-width resizing. Adjacent
   clusters with representative summits less than 50 bp apart merge only when
   their context sets are disjoint; a shared context is evidence for two sites.
-- H3K27ac integration, ABC candidate resizing/scoring, and Micro-C integration
-  remain outside this processing DAG.
+- H3K27ac integration through context-resolved activity annotation is part of
+  this processing DAG. ABC candidate resizing/scoring and Micro-C integration
+  remain outside it.
 - TF ChIP defaults to narrow MACS3 peaks; histone ChIP defaults to broad peaks.
 - ChIP controls are explicit `control_library` relationships. IP-only ChIP is
   represented by omitting that optional column and runs MACS3 without `-c`.
@@ -72,6 +73,10 @@ and provenance together and call out the behavior change explicitly.
 
 - Keep the orchestration environment at repository-root `.venv`.
 - Set `MAMBA_ROOT_PREFIX="$PWD/.micromamba"` when practical.
+- Set `CONDA_PKGS_DIRS="$PWD/.micromamba/pkgs"` and
+  `CONDA_ENVS_PATH="$PWD/.micromamba/envs"` so package caches and named-prefix
+  resolution remain inside the repository.
+- Set `CONDARC="$PWD/.condarc"` to use the repository's strict channel policy.
 - Keep Snakemake rule environments below `.snakemake/conda` using the local
   profile.
 - Add orchestration dependencies to `environment.yml` only when required by
@@ -140,6 +145,9 @@ suite before handoff:
 
 ```bash
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
+export CONDA_PKGS_DIRS="$PWD/.micromamba/pkgs"
+export CONDA_ENVS_PATH="$PWD/.micromamba/envs"
+export CONDARC="$PWD/.condarc"
 export XDG_CACHE_HOME="$PWD/.cache"
 
 mamba run --prefix "$PWD/.venv" pytest -q

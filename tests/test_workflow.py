@@ -13,6 +13,7 @@ from short_read_processing.accessions import AcquisitionError
 from short_read_processing.configuration import ATAC_QPOIS_DEFAULTS, REFERENCE_SOURCES
 from short_read_processing.workflow_config import (
     guard_result_namespace,
+    validate_stage_selection,
     validate_workflow_config,
     workflow_semantic_sha256,
 )
@@ -97,6 +98,27 @@ def test_output_stage_does_not_change_scientific_semantic_digest():
     config["output_stage"] = "master"
 
     assert workflow_semantic_sha256(config) == trimming
+
+
+@pytest.mark.parametrize(
+    ("start", "stop"),
+    [
+        ("trimming", "alignment"),
+        ("alignment", "qc"),
+        ("qc", "master"),
+        ("master", "quantification"),
+        ("quantification", "catalog"),
+        ("catalog", "report"),
+        ("report", "report"),
+    ],
+)
+def test_each_logical_boundary_can_continue_forward(start, stop):
+    assert validate_stage_selection(start, stop) == stop
+
+
+def test_logical_boundary_cannot_move_backward():
+    with pytest.raises(AcquisitionError, match="Cannot stop"):
+        validate_stage_selection("qc", "alignment")
 
 
 def test_report_sources_do_not_change_scientific_semantic_digest():
@@ -424,6 +446,31 @@ def test_final_bam_dry_run_prunes_all_read_processing_and_alignment(tmp_path):
         assert forbidden not in output
 
 
+def test_qc_to_master_reuses_lenient_replicate_peaks_without_recalling(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    _add_second_replicate(config)
+    _enable_consensus(config)
+    _use_reviewed_final_bams(config, tmp_path)
+    config["start_stage"] = "qc"
+    for sample in config["samples"]:
+        peak = tmp_path / "qc-peaks" / f"{sample['id']}.bed"
+        peak.parent.mkdir(exist_ok=True)
+        peak.write_text("chr1\t10\t100\tpeak\t10\t.\n")
+        sample["qc_peak"] = {
+            "path": str(peak),
+            "sha256": "a" * 64,
+            "method": "callpeak",
+        }
+
+    output = _dry_run(tmp_path, config, "qc-to-master")
+
+    assert "validate_external_qc_peak" in output
+    assert "call_atac_condition_qpois" in output
+    assert "build_atac_master_dhs" in output
+    assert "call_atac_replicate_qpois" not in output
+    assert "refine_atac_replicate_qpois" not in output
+
+
 def test_master_config_rejects_pending_final_bam():
     config = copy.deepcopy(BASE_CONFIG)
     _add_second_replicate(config)
@@ -588,6 +635,7 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "build_catalog_bed_tracks",
         "build_context_mean_bigwig",
         "build_context_igv_session",
+        "build_all_contexts_igv_session",
         "build_activity_background_bins",
         "count_activity_background_library",
         "build_activity_tmm_inputs",
@@ -603,6 +651,7 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "ctx.atac.mean.background_tmm.bw",
         "ctx.h3k27ac.mean.background_tmm.bw",
         "igv/ctx.xml",
+        "all-contexts.igv.xml",
     ):
         assert expected in output
     assert "build_integrated_qc_report" not in output

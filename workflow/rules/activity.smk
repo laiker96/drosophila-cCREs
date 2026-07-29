@@ -54,8 +54,8 @@ if ACTIVITY:
             chrom_sizes=str(REFERENCE["chrom_sizes"]),
             sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh")
         output:
-            bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
-            unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
+            bed=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.bed.gz",
+            unit_count=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.count.txt"
         params:
             maximum=int(ACTIVITY["atac_fragment_maximum"])
         wildcard_constraints:
@@ -104,8 +104,8 @@ if ACTIVITY:
             chrom_sizes=str(REFERENCE["chrom_sizes"]),
             sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh")
         output:
-            bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
-            unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
+            bed=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.bed.gz",
+            unit_count=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.count.txt"
         wildcard_constraints:
             library=ACTIVITY_H3K27AC_PAIRED_LIBRARY_RE
         threads: 4
@@ -143,8 +143,8 @@ if ACTIVITY:
             sorter=str(REPO_ROOT / "src" / "sort_bed_by_reference.sh"),
             implementation=str(REPO_ROOT / "src" / "extend_single_end_fragments.py")
         output:
-            bed=f"{ACTIVITY_WORK}/units/{{library}}.bed.gz",
-            unit_count=f"{ACTIVITY_WORK}/units/{{library}}.count.txt"
+            bed=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.bed.gz",
+            unit_count=f"{ACTIVITY_QUANTIFICATION_ROOT}/units/{{library}}.count.txt"
         params:
             fragment_length=lambda wc: int(
                 ACTIVITY_LIBRARIES[wc.library]["estimated_fragment_length_bp"]
@@ -244,7 +244,7 @@ if ACTIVITY:
             bins=ACTIVITY_BACKGROUND_BINS,
             script=str(REPO_ROOT / "src" / "count_activity_background.sh")
         output:
-            counts=f"{ACTIVITY_WORK}/background_10kb/{{library}}.counts.tsv.gz"
+            counts=temp(f"{ACTIVITY_WORK}/background_10kb/{{library}}.counts.tsv.gz")
         wildcard_constraints:
             library=ACTIVITY_LIBRARY_RE
         threads: 2
@@ -578,6 +578,45 @@ if ACTIVITY:
             "../scripts/build_catalog_igv_session.py"
 
 
+    rule build_all_contexts_igv_session:
+        input:
+            atac=[
+                ACTIVITY_CONTEXT_MEAN_BIGWIGS[(context, "atac")]
+                for context in ACTIVITY_CONTEXTS
+            ],
+            h3k27ac=[
+                ACTIVITY_CONTEXT_MEAN_BIGWIGS[(context, "h3k27ac")]
+                for context in ACTIVITY_CONTEXTS
+            ],
+            context_dhs=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
+            master_dhs=ACTIVITY_CATALOG_MASTER_BED,
+            active_elements=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            implementation=str(REPO_ROOT / "src" / "build_igv_session.py")
+        output:
+            session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION
+        params:
+            contexts=ACTIVITY_CONTEXTS,
+            genome=str(REFERENCE["name"]),
+            atac_paths={
+                context: ACTIVITY_CONTEXT_MEAN_BIGWIGS[(context, "atac")]
+                for context in ACTIVITY_CONTEXTS
+            },
+            h3k27ac_paths={
+                context: ACTIVITY_CONTEXT_MEAN_BIGWIGS[(context, "h3k27ac")]
+                for context in ACTIVITY_CONTEXTS
+            },
+            context_dhs_paths=ACTIVITY_CATALOG_CONTEXT_DHS,
+            active_element_paths=ACTIVITY_CATALOG_ACTIVE_BEDS
+        resources:
+            mem_mb=1000
+        conda:
+            "../envs/reporting.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/catalog/igv/all-contexts.log"
+        script:
+            "../scripts/build_all_contexts_catalog_igv_session.py"
+
+
     rule build_integrated_qc_report:
         input:
             sources=ACTIVITY_REPORT_SOURCE_FILES,
@@ -607,6 +646,7 @@ if ACTIVITY:
                 ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values()
             ),
             igv_sessions=list(ACTIVITY_CONTEXT_IGV_SESSIONS.values()),
+            all_contexts_igv_session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
         output:
             html=ACTIVITY_REPORT_HTML,
@@ -657,6 +697,7 @@ if ACTIVITY:
                     f"igv_session_{context}": path
                     for context, path in ACTIVITY_CONTEXT_IGV_SESSIONS.items()
                 },
+                "igv_session_all_contexts": ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
             }
         resources:
             mem_mb=4000

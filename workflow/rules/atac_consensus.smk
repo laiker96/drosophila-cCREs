@@ -6,8 +6,8 @@ rule pool_atac_condition_insertions:
         beds=atac_condition_insertion_inputs,
         counts=atac_condition_insertion_count_inputs
     output:
-        bed=f"{ATAC_WORK}/conditions/{{condition}}.tn5-insertions.bed.gz",
-        insertion_count=f"{ATAC_WORK}/conditions/{{condition}}.tn5-insertions.count.txt"
+        bed=temp(f"{ATAC_WORK}/conditions/{{condition}}.tn5-insertions.bed.gz"),
+        insertion_count=temp(f"{ATAC_WORK}/conditions/{{condition}}.tn5-insertions.count.txt")
     wildcard_constraints:
         condition=ATAC_QPOIS_CONDITION_RE
     threads: 4
@@ -235,6 +235,7 @@ rule filter_atac_qpois_replicate_support:
             ATAC_REPLICATE_REFINED[sample]
             for sample in ATAC_CONDITIONS[wc.condition].samples
         ],
+        validated=atac_condition_peak_validation_inputs,
         script=str(REPO_ROOT / "src" / "build_atac_consensus.py"),
         implementation=str(REPO_ROOT / "src" / "short_read_processing" / "consensus.py")
     output:
@@ -270,6 +271,7 @@ rule filter_atac_hmmratac_replicate_support:
             ATAC_REPLICATE_HMM_PEAKS[sample]
             for sample in ATAC_CONDITIONS[wc.condition].samples
         ],
+        validated=atac_condition_peak_validation_inputs,
         script=str(REPO_ROOT / "src" / "build_atac_consensus.py"),
         implementation=str(REPO_ROOT / "src" / "short_read_processing" / "consensus.py")
     output:

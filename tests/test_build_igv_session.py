@@ -1,7 +1,13 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from build_igv_session import build_catalog_session, build_session
+import pytest
+
+from build_igv_session import (
+    build_all_contexts_catalog_session,
+    build_catalog_session,
+    build_session,
+)
 
 
 def touch_all(paths):
@@ -10,60 +16,24 @@ def touch_all(paths):
         path.touch()
 
 
-def test_session_contains_final_qpois_consensus_and_chip_tracks(tmp_path: Path):
+def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path):
     atac = tmp_path / "atac"
-    condition = atac / "conditions" / "e5"
-    touch_all(
-        [
-            condition / "tracks/e5.MACS3-pileup.unscaled.bw",
-            condition / "tracks/e5.qpois.bw",
-            condition / "peaks/e5.candidates.narrowPeak",
-            condition / "peaks/e5.qpois-refined.bed",
-            condition / "peaks/e5.replicate-supported.bed",
-        ]
-    )
-    chip = tmp_path / "chip"
-    touch_all(
-        [
-            chip / "tracks/e5_h3k27ac_rep1.CPM.bw",
-            chip / "peaks/e5_h3k27ac_rep1/e5_h3k27ac_rep1_peaks.broadPeak",
-        ]
-    )
-    output = tmp_path / "session.xml"
-
-    counts = build_session(atac, output, "dm6", "All", chip)
-
-    root = ET.parse(output).getroot()
-    resources = root.findall("./Resources/Resource")
-    tracks = root.findall("./Panel/Track")
-    assert counts == (1, 1, 7)
-    assert len(resources) == len(tracks) == 7
-    assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
-    assert [track.attrib["name"] for track in tracks][-2:] == [
-        "e5_h3k27ac_rep1 | ChIP CPM signal",
-        "e5_h3k27ac_rep1 | MACS3 peaks",
-    ]
-
-
-def test_final_session_selects_one_chip_replicate_per_context(tmp_path: Path):
-    atac = tmp_path / "atac"
-    condition = atac / "conditions" / "e5"
-    touch_all(
-        [
-            condition / "tracks/e5.MACS3-pileup.unscaled.bw",
-            condition / "tracks/e5.qpois.bw",
-            condition / "peaks/e5.replicate-supported.bed",
-        ]
-    )
-    chip = tmp_path / "chip"
-    touch_all(
-        [
-            chip / "tracks/e5_h3k27ac_rep1.CPM.bw",
-            chip / "peaks/e5_h3k27ac_rep1/e5_h3k27ac_rep1_peaks.broadPeak",
-            chip / "tracks/e5_h3k27ac_rep2.CPM.bw",
-            chip / "peaks/e5_h3k27ac_rep2/e5_h3k27ac_rep2_peaks.broadPeak",
-        ]
-    )
+    catalog = tmp_path / "catalog"
+    contexts = ["e11", "e5"]
+    paths = [atac / "master/master_dhs.bed"]
+    for context in contexts:
+        paths.extend(
+            [
+                catalog
+                / f"tracks/{context}.atac.mean.background_tmm.bw",
+                atac / f"conditions/{context}/tracks/{context}.qpois.bw",
+                catalog
+                / f"tracks/{context}.h3k27ac.mean.background_tmm.bw",
+                catalog / f"bed/{context}.dhs.bed",
+                catalog / f"bed/{context}.active_elements.bed",
+            ]
+        )
+    touch_all(paths)
     output = tmp_path / "session.xml"
 
     counts = build_session(
@@ -71,23 +41,33 @@ def test_final_session_selects_one_chip_replicate_per_context(tmp_path: Path):
         output,
         "dm6",
         "All",
-        chip,
-        final_atac_only=True,
-        chip_one_per_context=True,
+        catalog_bed_root=catalog / "bed",
     )
 
-    tracks = ET.parse(output).getroot().findall("./Panel/Track")
-    assert counts == (1, 1, 5)
+    root = ET.parse(output).getroot()
+    assert root.attrib["hasGeneTrack"] == "true"
+    assert root.attrib["hasSequenceTrack"] == "false"
+    resources = root.findall("./Resources/Resource")
+    tracks = root.findall("./Panel/Track")
+    assert counts == (2, 11)
+    assert len(resources) == len(tracks) == 11
+    assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
-        "E5 | MACS3 insertion pileup",
-        "E5 | qpois signal",
-        "E5 | replicate-supported peaks",
-        "e5_h3k27ac_rep1 | ChIP CPM signal",
-        "e5_h3k27ac_rep1 | MACS3 peaks",
+        "Master DHS registry",
+        "E11 | mean ATAC Tn5 signal (background-TMM)",
+        "E11 | pooled ATAC qpois signal",
+        "E11 | mean H3K27ac signal (background-TMM)",
+        "E11 | context DHSs",
+        "E11 | active cCREs",
+        "E5 | mean ATAC Tn5 signal (background-TMM)",
+        "E5 | pooled ATAC qpois signal",
+        "E5 | mean H3K27ac signal (background-TMM)",
+        "E5 | context DHSs",
+        "E5 | active cCREs",
     ]
 
 
-def test_session_auto_includes_master_dhs_track(tmp_path: Path):
+def test_session_requires_matching_atac_and_catalog_contexts(tmp_path: Path):
     atac = tmp_path / "atac"
     condition = atac / "conditions" / "e5"
     touch_all(
@@ -95,17 +75,20 @@ def test_session_auto_includes_master_dhs_track(tmp_path: Path):
             atac / "master/master_dhs.bed",
             condition / "tracks/e5.MACS3-pileup.unscaled.bw",
             condition / "tracks/e5.qpois.bw",
-            condition / "peaks/e5.replicate-supported.bed",
+            tmp_path / "catalog/bed/e11.dhs.bed",
+            tmp_path / "catalog/bed/e11.active_elements.bed",
         ]
     )
     output = tmp_path / "session.xml"
 
-    counts = build_session(atac, output, "dm6", "All", final_atac_only=True)
-
-    tracks = ET.parse(output).getroot().findall("./Panel/Track")
-    assert counts == (1, 0, 4)
-    assert tracks[0].attrib["name"] == "Master DHS registry"
-    assert tracks[0].attrib["color"] == "106,27,154"
+    with pytest.raises(ValueError, match="ATAC and catalog contexts differ"):
+        build_session(
+            atac,
+            output,
+            "dm6",
+            "All",
+            catalog_bed_root=tmp_path / "catalog/bed",
+        )
 
 
 def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: Path):
@@ -127,14 +110,92 @@ def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: P
     )
 
     root = ET.parse(output).getroot()
+    assert root.attrib["hasGeneTrack"] == "true"
+    assert root.attrib["hasSequenceTrack"] == "false"
     resources = root.findall("./Resources/Resource")
     tracks = root.findall("./Panel/Track")
     assert count == len(resources) == len(tracks) == 5
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
+        "Master DHS registry",
         "CTX | mean ATAC Tn5 signal (background-TMM)",
         "CTX | mean H3K27ac fragment coverage (background-TMM)",
         "CTX | context DHSs (master coordinates)",
-        "CTX | active regulatory elements",
-        "Master DHS registry",
+        "CTX | active cCREs",
     ]
+
+
+def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path):
+    contexts = ["ctx_a", "ctx_b"]
+    master = tmp_path / "catalog/bed/master_dhs.bed"
+    atac = {
+        context: tmp_path / f"catalog/tracks/{context}.atac.bw"
+        for context in contexts
+    }
+    h3k27ac = {
+        context: tmp_path / f"catalog/tracks/{context}.h3k27ac.bw"
+        for context in contexts
+    }
+    context_dhs = {
+        context: tmp_path / f"catalog/bed/{context}.dhs.bed"
+        for context in contexts
+    }
+    active = {
+        context: tmp_path / f"catalog/bed/{context}.active_elements.bed"
+        for context in contexts
+    }
+    touch_all([master, *atac.values(), *h3k27ac.values(), *context_dhs.values(), *active.values()])
+    output = tmp_path / "catalog/all-contexts.igv.xml"
+
+    count = build_all_contexts_catalog_session(
+        contexts=contexts,
+        genome="dm6",
+        atac_bigwigs=atac,
+        h3k27ac_bigwigs=h3k27ac,
+        context_dhs_beds=context_dhs,
+        master_dhs_bed=master,
+        active_elements_beds=active,
+        output=output,
+    )
+
+    root = ET.parse(output).getroot()
+    assert root.attrib["hasGeneTrack"] == "true"
+    assert root.attrib["hasSequenceTrack"] == "false"
+    resources = root.findall("./Resources/Resource")
+    tracks = root.findall("./Panel/Track")
+    assert count == len(resources) == len(tracks) == 9
+    assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
+    assert [track.attrib["name"] for track in tracks] == [
+        "Master DHS registry",
+        "CTX_A | mean ATAC Tn5 signal (background-TMM)",
+        "CTX_A | mean H3K27ac fragment coverage (background-TMM)",
+        "CTX_A | context DHSs (master coordinates)",
+        "CTX_A | active cCREs",
+        "CTX_B | mean ATAC Tn5 signal (background-TMM)",
+        "CTX_B | mean H3K27ac fragment coverage (background-TMM)",
+        "CTX_B | context DHSs (master coordinates)",
+        "CTX_B | active cCREs",
+    ]
+
+
+def test_all_contexts_catalog_session_requires_complete_context_mappings(tmp_path: Path):
+    with pytest.raises(ValueError, match="ATAC BigWigs"):
+        build_all_contexts_catalog_session(
+            contexts=["ctx_a", "ctx_b"],
+            genome="dm6",
+            atac_bigwigs={"ctx_a": tmp_path / "ctx_a.atac.bw"},
+            h3k27ac_bigwigs={
+                context: tmp_path / f"{context}.h3k27ac.bw"
+                for context in ("ctx_a", "ctx_b")
+            },
+            context_dhs_beds={
+                context: tmp_path / f"{context}.dhs.bed"
+                for context in ("ctx_a", "ctx_b")
+            },
+            master_dhs_bed=tmp_path / "master.bed",
+            active_elements_beds={
+                context: tmp_path / f"{context}.active.bed"
+                for context in ("ctx_a", "ctx_b")
+            },
+            output=tmp_path / "all-contexts.igv.xml",
+        )

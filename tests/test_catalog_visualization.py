@@ -135,6 +135,15 @@ def test_track_factors_and_unionbedg_mean_are_exact(tmp_path):
     )
     assert rows == [("chr1", 0, 10, 1.0), ("chr1", 10, 20, 3.0)]
 
+    single_library_rows = list(
+        mean_unionbedg_rows(
+            ["chr1\t0\t10\t2.5\n"],
+            chromosome_sizes=[("chr1", 20)],
+            library_n=1,
+        )
+    )
+    assert single_library_rows == [("chr1", 0, 10, 2.5)]
+
     with pytest.raises(ValueError, match="unsorted or overlapping"):
         list(
             mean_unionbedg_rows(

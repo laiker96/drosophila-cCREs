@@ -18,8 +18,10 @@ from short_read_processing.cli import (
 from short_read_processing.configuration import (
     generate_activity_config,
     generate_configs,
+    generate_resume_config,
 )
 from short_read_processing.sample_sheet import DEFAULT_SCHEMA, sample_sheet_accessions
+from short_read_processing.stage_checkpoints import read_stage_checkpoint
 from short_read_processing.workflow_config import (
     OUTPUT_STAGES,
     validate_stage_selection,
@@ -77,30 +79,38 @@ def main() -> int:
     parser.add_argument("--snakemake-dry-run", action="store_true")
     parser.add_argument(
         "--from-stage",
-        choices=("accessions", "final-bam", "master", "quantification"),
+        choices=("accessions", *OUTPUT_STAGES, "final-bam"),
         default="accessions",
         help=(
-            "Explicit workflow starting artifact. Reuse modes are strict and "
-            "have no upstream fallback."
+            "Completed logical boundary to reuse. Reuse is strict and has no "
+            "upstream fallback; final-bam remains a compatibility alias."
         ),
     )
     parser.add_argument(
         "--until-stage",
         choices=OUTPUT_STAGES,
         help=(
-            "Stop after this logical stage. Defaults to QC from accessions, master "
-            "from reviewed final BAMs, and report from quantification artifacts."
+            "Stop at this boundary. Defaults to QC from accessions/alignment, "
+            "master from QC/master, and report from quantification/catalog."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-manifest",
+        type=Path,
+        help=(
+            "Checksummed JSON checkpoint exported at --from-stage; required for "
+            "trimming, QC-to-master, quantification, catalog, and report resumes"
         ),
     )
     parser.add_argument(
         "--final-bam-manifest",
         type=Path,
-        help="Complete immutable final-BAM manifest for --from-stage final-bam",
+        help="Complete final-BAM manifest for an alignment or reviewed QC boundary",
     )
     parser.add_argument(
         "--master-manifest",
         type=Path,
-        help="Immutable master-DHS bundle manifest for master or quantification mode",
+        help="Immutable master-DHS bundle manifest for the master boundary",
     )
     parser.add_argument(
         "--activity-bam-manifest",
@@ -146,7 +156,8 @@ def main() -> int:
         parser.error(str(error))
     if args.from_stage == "accessions":
         if (
-            args.final_bam_manifest
+            args.checkpoint_manifest
+            or args.final_bam_manifest
             or args.master_manifest
             or args.activity_bam_manifest
             or args.report_source_root
@@ -166,6 +177,22 @@ def main() -> int:
                 "--manifest, --skip-download, --download-only, and acquisition --dry-run "
                 "are valid only with --from-stage accessions"
             )
+        if args.from_stage == "trimming" and not args.checkpoint_manifest:
+            parser.error("--from-stage trimming requires --checkpoint-manifest")
+        if args.from_stage == "alignment":
+            if bool(args.checkpoint_manifest) == bool(args.final_bam_manifest):
+                parser.error(
+                    "--from-stage alignment requires exactly one of "
+                    "--checkpoint-manifest or --final-bam-manifest"
+                )
+        if args.from_stage == "qc":
+            if not args.checkpoint_manifest:
+                parser.error("--from-stage qc requires --checkpoint-manifest")
+            if output_stage == "master" and not args.final_bam_manifest:
+                parser.error(
+                    "QC-to-master reuse also requires the reviewed "
+                    "--final-bam-manifest"
+                )
         if args.from_stage == "final-bam":
             if not args.final_bam_manifest:
                 parser.error("--from-stage final-bam requires --final-bam-manifest")
@@ -182,23 +209,50 @@ def main() -> int:
                 parser.error(
                     "--from-stage master consumes the frozen master bundle, not BAMs"
                 )
-            if args.activity_bam_manifest:
-                parser.error("activity options require --from-stage quantification")
-            if args.report_source_root:
-                parser.error("report sources require --from-stage quantification")
-        if args.from_stage == "quantification":
-            if not args.master_manifest:
-                parser.error("--from-stage quantification requires --master-manifest")
-            if not args.activity_bam_manifest:
+            if output_stage != "master" and not args.activity_bam_manifest:
                 parser.error(
-                    "--from-stage quantification requires --activity-bam-manifest"
+                    "continuing after master requires --activity-bam-manifest"
+                )
+            if output_stage == "master" and args.activity_bam_manifest:
+                parser.error(
+                    "--activity-bam-manifest is used only when continuing after master"
+                )
+        if args.from_stage == "quantification":
+            legacy_inputs = bool(args.master_manifest or args.activity_bam_manifest)
+            if args.checkpoint_manifest and legacy_inputs:
+                parser.error(
+                    "quantification resume uses either --checkpoint-manifest or the "
+                    "legacy master/activity manifests, not both"
+                )
+            if not args.checkpoint_manifest and (
+                not args.master_manifest or not args.activity_bam_manifest
+            ):
+                parser.error(
+                    "--from-stage quantification requires --checkpoint-manifest; "
+                    "legacy commands require both master and activity BAM manifests"
                 )
             if args.final_bam_manifest:
                 parser.error(
                     "quantification mode uses --activity-bam-manifest"
                 )
+        if args.from_stage in {"catalog", "report"} and not args.checkpoint_manifest:
+            parser.error(
+                f"--from-stage {args.from_stage} requires --checkpoint-manifest"
+            )
 
     sample_sheet = args.sample_sheet.resolve()
+    if args.from_stage == "alignment" and args.checkpoint_manifest:
+        alignment_checkpoint = read_stage_checkpoint(
+            args.checkpoint_manifest.resolve(), expected_stage="alignment"
+        )
+        try:
+            args.final_bam_manifest = Path(
+                alignment_checkpoint["artifacts"]["final_bam_manifest"]["path"]
+            )
+        except KeyError as error:
+            parser.error(
+                "alignment checkpoint does not contain a final_bam_manifest artifact"
+            )
     manifest: Path | None = None
     if args.from_stage == "accessions":
         accessions = sample_sheet_accessions(
@@ -217,18 +271,41 @@ def main() -> int:
         if args.download_only:
             return 0
     else:
-        if args.from_stage == "final-bam":
-            manifests = [args.final_bam_manifest]
-        elif args.from_stage == "master":
-            manifests = [args.master_manifest]
-        else:
-            manifests = [args.master_manifest, *args.activity_bam_manifest]
+        manifests = [
+            artifact
+            for artifact in (
+                args.checkpoint_manifest,
+                args.final_bam_manifest,
+                args.master_manifest,
+                *args.activity_bam_manifest,
+            )
+            if artifact is not None
+        ]
         print(f"Strict reuse-only mode: starting from {args.from_stage}")
         for artifact in manifests:
             print(f"  manifest={artifact.resolve()}")
-        print("FASTQ download, trimming, and alignment fallback are disabled")
+        print("Fallback before the selected checkpoint is disabled")
 
-    if args.from_stage == "quantification":
+    resume_in_place = bool(args.checkpoint_manifest) and (
+        args.from_stage in {"trimming", "quantification", "catalog", "report"}
+        or (args.from_stage == "qc" and output_stage == "qc")
+    )
+    if resume_in_place:
+        configs = [
+            generate_resume_config(
+                checkpoint_manifest_path=args.checkpoint_manifest.resolve(),
+                start_stage=args.from_stage,
+                output_stage=output_stage,
+                sample_sheet_path=sample_sheet,
+                output_dir=args.config_dir.resolve(),
+                path_base=REPO_ROOT,
+            )
+        ]
+    elif (
+        args.from_stage == "master" and output_stage != "master"
+    ) or (
+        args.from_stage == "quantification" and not args.checkpoint_manifest
+    ):
         configs = [
             generate_activity_config(
                 sample_sheet_path=sample_sheet,
@@ -245,6 +322,7 @@ def main() -> int:
                 schema_path=args.schema.resolve(),
                 genome=args.genome,
                 output_stage=output_stage,
+                start_stage=args.from_stage,
                 report_source_roots=[
                     path.resolve() for path in args.report_source_root
                 ],
@@ -264,7 +342,12 @@ def main() -> int:
             genome=args.genome,
             atac_minimum_replicates=args.atac_minimum_replicates,
             atac_overlap_fraction=args.atac_overlap_fraction,
-            input_stage=args.from_stage,
+            input_stage=(
+                "final-bam"
+                if args.from_stage in {"alignment", "qc", "final-bam"}
+                else args.from_stage
+            ),
+            start_stage=args.from_stage,
             output_stage=output_stage,
             final_bam_manifest_path=(
                 args.final_bam_manifest.resolve()
@@ -273,6 +356,11 @@ def main() -> int:
             ),
             master_manifest_path=(
                 args.master_manifest.resolve() if args.master_manifest else None
+            ),
+            qc_checkpoint_manifest_path=(
+                args.checkpoint_manifest.resolve()
+                if args.from_stage == "qc"
+                else None
             ),
         )
     for config_path in configs:

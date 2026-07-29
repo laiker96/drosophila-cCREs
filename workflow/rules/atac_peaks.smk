@@ -39,8 +39,8 @@ rule prepare_atac_tn5_insertions:
         bai=atac_insertion_bai,
         validated=final_bam_validation_input
     output:
-        bed=f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.bed.gz",
-        insertion_count=f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.count.txt"
+        bed=temp(f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.bed.gz"),
+        insertion_count=temp(f"{ATAC_WORK}/replicates/{{sample}}.tn5-insertions.count.txt")
     wildcard_constraints:
         sample=ATAC_QPOIS_RE
     threads: 4
@@ -129,9 +129,9 @@ rule refine_atac_replicate_qpois:
         script=str(REPO_ROOT / "src" / "refine_atac_qpois_peaks.py"),
         implementation=str(REPO_ROOT / "src" / "short_read_processing" / "qpois_refinement.py")
     output:
-        refined=f"{ATAC_WORK}/replicates/{{sample}}/peaks/{{sample}}.qpois-refined.bed",
-        excluded=f"{ATAC_WORK}/replicates/{{sample}}/peaks/{{sample}}.qpois-excluded.bed",
-        stats=f"{ATAC_WORK}/replicates/{{sample}}/peaks/{{sample}}.qpois-refinement.json"
+        refined=f"{ATAC_ROOT}/replicates/{{sample}}/peaks/{{sample}}.qpois-refined.bed",
+        excluded=f"{ATAC_ROOT}/replicates/{{sample}}/peaks/{{sample}}.qpois-excluded.bed",
+        stats=f"{ATAC_ROOT}/replicates/{{sample}}/peaks/{{sample}}.qpois-refinement.json"
     params:
         minimum_exponent=int(ATAC_QPOIS["minimum_exponent"]),
         maximum_exponent=int(ATAC_QPOIS["maximum_exponent"]),
@@ -165,12 +165,12 @@ rule hmmratac_replicate:
         blacklist=str(REFERENCE["blacklist_bed"]),
         validated=final_bam_validation_input
     output:
-        peaks=f"{ATAC_WORK}/replicates/{{sample}}/peaks/{{sample}}.hmmratac.narrowPeak"
+        peaks=f"{ATAC_ROOT}/replicates/{{sample}}/peaks/{{sample}}.hmmratac.narrowPeak"
     params:
         lower=lambda wc: SAMPLES[wc.sample]["peak_caller"]["lower"],
         upper=lambda wc: SAMPLES[wc.sample]["peak_caller"]["upper"],
         prescan=lambda wc: SAMPLES[wc.sample]["peak_caller"]["prescan_cutoff"],
-        outdir=lambda wc: f"{ATAC_WORK}/replicates/{wc.sample}/peaks"
+        outdir=lambda wc: f"{ATAC_ROOT}/replicates/{wc.sample}/peaks"
     wildcard_constraints:
         sample=HMMRATAC_RE
     resources:

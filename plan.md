@@ -164,8 +164,9 @@ The catalog stage writes:
 5. mixture distribution SVG and machine-readable histogram bins;
 6. per-context active-element and context-DHS BED9 tracks plus a copied master
    BED;
-7. background-TMM-normalized mean ATAC and H3K27ac BigWigs and a portable
-   five-track IGV session per context;
+7. background-TMM-normalized mean ATAC and H3K27ac BigWigs, a portable
+   five-track IGV session per context, and one session containing every
+   context;
 8. summary, metrics, and checksummed provenance files.
 
 The continuous normalized ATAC and maximum-window H3K27ac values are retained

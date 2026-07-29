@@ -191,6 +191,14 @@ def atac_condition_validation_inputs(wildcards):
     ]
 
 
+def atac_condition_peak_validation_inputs(wildcards):
+    return [
+        EXTERNAL_QC_PEAK_VALIDATIONS[sample]
+        for sample in ATAC_CONDITIONS[wildcards.condition].samples
+        if sample in EXTERNAL_QC_PEAK_VALIDATIONS
+    ]
+
+
 def atac_consensus_replicate_arguments(wildcards):
     condition = wildcards.condition
     method = ATAC_CONDITION_METHOD[condition]

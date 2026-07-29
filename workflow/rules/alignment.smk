@@ -23,18 +23,20 @@ rule align_lane:
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
+        temporary=$(mktemp -d $(dirname {output.bam:q})/.{wildcards.sample}.{wildcards.lane}.XXXXXX)
+        trap 'rm -rf "$temporary"' EXIT
         bowtie2 {params.preset} {params.layout} -x {params.index:q} {params.reads} \
           --rg-id {wildcards.sample:q}.{wildcards.lane:q} --rg SM:{wildcards.sample:q} \
           -p {params.workers} 2> {log:q} \
-          | samtools view -u -o {output.bam:q}.unsorted.bam - 2>> {log:q}
+          | samtools view -u -o "$temporary/unsorted.bam" - 2>> {log:q}
         samtools sort -n -@ {params.workers} \
-          -o {output.bam:q}.namesort.bam {output.bam:q}.unsorted.bam 2>> {log:q}
+          -o "$temporary/namesort.bam" "$temporary/unsorted.bam" 2>> {log:q}
         samtools fixmate -@ {params.workers} -m \
-          {output.bam:q}.namesort.bam {output.bam:q}.fixmate.bam 2>> {log:q}
+          "$temporary/namesort.bam" "$temporary/fixmate.bam" 2>> {log:q}
         samtools sort -@ {params.workers} \
-          -o {output.bam:q} {output.bam:q}.fixmate.bam 2>> {log:q}
-        rm -f {output.bam:q}.unsorted.bam {output.bam:q}.namesort.bam {output.bam:q}.fixmate.bam
-        samtools quickcheck -v {output.bam:q} 2>> {log:q}
+          -o "$temporary/coordsort.bam" "$temporary/fixmate.bam" 2>> {log:q}
+        samtools quickcheck -v "$temporary/coordsort.bam" 2>> {log:q}
+        mv "$temporary/coordsort.bam" {output.bam:q}
         """
 
 
@@ -42,7 +44,7 @@ rule merge_and_mark_duplicates:
     input:
         bams=sample_lane_bams
     output:
-        bam=f"{WORK_ROOT}/alignment/{{sample}}.marked.bam"
+        bam=temp(f"{WORK_ROOT}/alignment/{{sample}}.marked.bam")
     log:
         f"{RESULT_ROOT}/logs/alignment/{{sample}}.merge-markdup.log"
     params:
@@ -57,12 +59,14 @@ rule merge_and_mark_duplicates:
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
+        temporary=$(mktemp -d $(dirname {output.bam:q})/.{wildcards.sample}.markdup.XXXXXX)
+        trap 'rm -rf "$temporary"' EXIT
         samtools merge -f -@ {params.workers} \
-          -o {output.bam:q}.merged.bam {input.bams:q} > {log:q} 2>&1
+          -o "$temporary/merged.bam" {input.bams:q} > {log:q} 2>&1
         samtools markdup -@ {params.workers} \
-          {output.bam:q}.merged.bam {output.bam:q} >> {log:q} 2>&1
-        rm -f {output.bam:q}.merged.bam
-        samtools quickcheck -v {output.bam:q} 2>> {log:q}
+          "$temporary/merged.bam" "$temporary/marked.bam" >> {log:q} 2>&1
+        samtools quickcheck -v "$temporary/marked.bam" 2>> {log:q}
+        mv "$temporary/marked.bam" {output.bam:q}
         """
 
 

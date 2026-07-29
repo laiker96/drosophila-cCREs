@@ -24,8 +24,16 @@ rule trim_pe:
         r1=lambda wc: lane_input(wc, "r1"),
         r2=lambda wc: lane_input(wc, "r2")
     output:
-        r1=f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R1.fastq.gz",
-        r2=f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R2.fastq.gz",
+        r1=(
+            f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R1.fastq.gz"
+            if OUTPUT_STAGE == "trimming"
+            else temp(f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R1.fastq.gz")
+        ),
+        r2=(
+            f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R2.fastq.gz"
+            if OUTPUT_STAGE == "trimming"
+            else temp(f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_R2.fastq.gz")
+        ),
         json=f"{RESULT_ROOT}/qc/cutadapt/{{sample}}.{{lane}}.json"
     log:
         f"{RESULT_ROOT}/logs/cutadapt/{{sample}}.{{lane}}.log"
@@ -55,7 +63,11 @@ rule trim_se:
     input:
         r1=lambda wc: lane_input(wc, "r1")
     output:
-        r1=f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_SE.fastq.gz",
+        r1=(
+            f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_SE.fastq.gz"
+            if OUTPUT_STAGE == "trimming"
+            else temp(f"{WORK_ROOT}/trimmed/{{sample}}/{{lane}}_SE.fastq.gz")
+        ),
         json=f"{RESULT_ROOT}/qc/cutadapt/{{sample}}.{{lane}}.json"
     log:
         f"{RESULT_ROOT}/logs/cutadapt/{{sample}}.{{lane}}.log"

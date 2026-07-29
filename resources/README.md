@@ -16,9 +16,11 @@ These two reviewed tables are the versioned pipeline inputs. Detailed dataset
 selection and QC metadata belong to the separate atlas-analysis repository and
 are not required by this accession-processing workflow.
 
-Runtime final-BAM and master-bundle manifests contain filesystem paths and
-checksums and therefore belong under the ignored `data/raw/<project>/`
-namespace, not in this versioned resource directory.
+The workflow writes generated final-BAM, master-bundle, and stage-checkpoint
+manifests below `results/<project>/<run_id>/provenance/manifests/`. Human-edited
+review tables and the accepted/rejected final-BAM manifests derived from them
+belong below the ignored `data/reviewed/` namespace. Neither kind belongs in
+this versioned resource directory.
 
 Both tables use the default two-ended Tn5/MACS3-qpois ATAC branch. The
 with-inputs table deliberately substitutes the matched GSE140539 stage-5

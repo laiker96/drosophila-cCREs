@@ -14,37 +14,14 @@ rule resolved_config_provenance:
         "../scripts/write_provenance.py"
 
 
-rule bigwig_cpm:
-    input:
-        bam=lambda wc: FINAL_BAMS[wc.sample],
-        bai=lambda wc: FINAL_BAIS[wc.sample],
-        chrom_sizes=str(REFERENCE["chrom_sizes"]),
-        validated=final_bam_validation_input
-    output:
-        bw=f"{RESULT_ROOT}/tracks/{{sample}}.CPM.bw"
-    wildcard_constraints:
-        sample=CHIP_TREATMENT_RE
-    threads: 6
-    resources:
-        mem_mb=6000
-    conda:
-        "../envs/atac_qc.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/tracks/{{sample}}.bamCoverage.log"
-    shell:
-        "mkdir -p $(dirname {output.bw:q}) $(dirname {log:q}) && "
-        "bamCoverage -b {input.bam:q} -o {output.bw:q} --outFileFormat bigwig "
-        "--normalizeUsing CPM --binSize 10 --numberOfProcessors {threads} > {log:q} 2>&1"
-
-
 rule atac_shift_bam:
     input:
         bam=lambda wc: FINAL_BAMS[wc.sample],
         bai=lambda wc: FINAL_BAIS[wc.sample],
         validated=final_bam_validation_input
     output:
-        bam=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam",
-        bai=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam.bai"
+        bam=temp(f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam"),
+        bai=temp(f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam.bai")
     wildcard_constraints:
         sample=ATAC_RE
     threads: 6
@@ -55,11 +32,20 @@ rule atac_shift_bam:
     log:
         f"{RESULT_ROOT}/logs/tracks/{{sample}}.alignmentSieve.log"
     shell:
-        "mkdir -p $(dirname {output.bam:q}) $(dirname {log:q}) && "
-        "alignmentSieve --ATACshift -b {input.bam:q} -o {output.bam:q}.unsorted "
-        "--numberOfProcessors {threads} > {log:q} 2>&1 && "
-        "samtools sort -@ {threads} -o {output.bam:q} {output.bam:q}.unsorted && "
-        "rm -f {output.bam:q}.unsorted && samtools index -@ {threads} {output.bam:q} {output.bai:q}"
+        r"""
+        mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
+        temporary=$(mktemp -d $(dirname {output.bam:q})/.{wildcards.sample}.shift.XXXXXX)
+        trap 'rm -rf "$temporary"' EXIT
+        alignmentSieve --ATACshift -b {input.bam:q} -o "$temporary/unsorted.bam" \
+          --numberOfProcessors {threads} > {log:q} 2>&1
+        samtools sort -@ {threads} -o "$temporary/shifted.bam" \
+          "$temporary/unsorted.bam" 2>> {log:q}
+        samtools index -@ {threads} "$temporary/shifted.bam" \
+          "$temporary/shifted.bam.bai" 2>> {log:q}
+        samtools quickcheck -v "$temporary/shifted.bam" 2>> {log:q}
+        mv "$temporary/shifted.bam" {output.bam:q}
+        mv "$temporary/shifted.bam.bai" {output.bai:q}
+        """
 
 
 rule atac_shifted_bigwig:
@@ -67,7 +53,7 @@ rule atac_shifted_bigwig:
         bam=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam",
         bai=f"{WORK_ROOT}/atac_shift/{{sample}}.shifted.bam.bai"
     output:
-        bw=f"{RESULT_ROOT}/tracks/{{sample}}.Tn5-shifted.CPM.bw"
+        bw=temp(f"{RESULT_ROOT}/tracks/{{sample}}.Tn5-shifted.CPM.bw")
     wildcard_constraints:
         sample=ATAC_RE
     threads: 6
@@ -88,8 +74,8 @@ rule atac_tss_matrix:
         bw=f"{RESULT_ROOT}/tracks/{{sample}}.Tn5-shifted.CPM.bw",
         tss=str(REFERENCE["tss_bed"])
     output:
-        matrix=f"{RESULT_ROOT}/qc/tss/{{sample}}.matrix.gz",
-        table=f"{RESULT_ROOT}/qc/tss/{{sample}}.matrix.tsv"
+        matrix=temp(f"{RESULT_ROOT}/qc/tss/{{sample}}.matrix.gz"),
+        table=temp(f"{RESULT_ROOT}/qc/tss/{{sample}}.matrix.tsv")
     wildcard_constraints:
         sample=ATAC_RE
     threads: 4

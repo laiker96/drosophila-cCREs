@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -5,8 +6,17 @@ import yaml
 
 from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
 from short_read_processing.artifacts import FINAL_BAM_FILTERING_CONTRACT, sha256_file
-from short_read_processing.configuration import generate_activity_config, generate_configs
+from short_read_processing.configuration import (
+    ATAC_QPOIS_DEFAULTS,
+    generate_activity_config,
+    generate_configs,
+    generate_resume_config,
+)
 from short_read_processing.manifest import write_manifest
+from short_read_processing.workflow_config import (
+    resolve_input_paths,
+    workflow_semantic_sha256,
+)
 
 
 HEADER = "accession\tlibrary_id\tassay\tcontext\trole\tcontrol_library\tpeak_caller"
@@ -537,6 +547,206 @@ def test_pending_final_bams_remain_valid_for_qc_only(tmp_path):
     )[0]
 
     assert yaml.safe_load(output.read_text())["output_stage"] == "qc"
+
+
+def _write_qc_checkpoint(tmp_path: Path, source_config: dict) -> Path:
+    artifacts = {}
+    for sample in source_config["samples"]:
+        peak = tmp_path / "qc-peaks" / f"{sample['id']}.bed"
+        peak.parent.mkdir(exist_ok=True)
+        peak.write_text("chr2L\t10\t80\tpeak\t10\t.\n")
+        artifacts[f"replicate_peak.{sample['id']}"] = {
+            "path": str(peak),
+            "sha256": sha256_file(peak),
+        }
+    checkpoint = tmp_path / "qc.checkpoint.json"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": "qc",
+                "source_project": "test-project",
+                "source_run_id": "qc-v1",
+                "semantic_sha256": source_config["provenance"]["semantic_sha256"],
+                "parameters": {
+                    "assay": "atac",
+                    "atac_qpois": ATAC_QPOIS_DEFAULTS,
+                    "peak_callers": {
+                        sample["id"]: sample["peak_caller"]
+                        for sample in source_config["samples"]
+                    },
+                },
+                "artifacts": artifacts,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return checkpoint
+
+
+def test_qc_checkpoint_reuses_lenient_replicate_peaks_for_master(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path, [("atac_rep1", "eye"), ("atac_rep2", "eye")]
+    )
+    qc_config_path = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "qc-configs",
+        project="test-project",
+        run_id="qc-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        start_stage="alignment",
+        output_stage="qc",
+        final_bam_manifest_path=manifest,
+    )[0]
+    qc_config = yaml.safe_load(qc_config_path.read_text())
+    checkpoint = _write_qc_checkpoint(tmp_path, qc_config)
+
+    master_path = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "master-configs",
+        project="test-project",
+        run_id="master-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        start_stage="qc",
+        output_stage="master",
+        final_bam_manifest_path=manifest,
+        qc_checkpoint_manifest_path=checkpoint,
+    )[0]
+    master = yaml.safe_load(master_path.read_text())
+
+    assert master["start_stage"] == "qc"
+    assert master["atac_qpois"] == ATAC_QPOIS_DEFAULTS
+    assert all(sample["peak_caller"]["qvalue"] == 0.1 for sample in master["samples"])
+    assert all("qc_peak" in sample for sample in master["samples"])
+
+
+def test_qc_checkpoint_rejects_changed_lenient_peak_parameters(tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    manifest = _write_final_bam_manifest(
+        tmp_path, [("atac_rep1", "eye"), ("atac_rep2", "eye")]
+    )
+    source_path = generate_configs(
+        manifest_path=None,
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "qc-configs",
+        project="test-project",
+        run_id="qc-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_fastq_files=True,
+        input_stage="final-bam",
+        start_stage="alignment",
+        output_stage="qc",
+        final_bam_manifest_path=manifest,
+    )[0]
+    source = yaml.safe_load(source_path.read_text())
+    checkpoint = _write_qc_checkpoint(tmp_path, source)
+    payload = json.loads(checkpoint.read_text())
+    payload["parameters"]["peak_callers"]["atac_rep1"]["qvalue"] = 0.01
+    checkpoint.write_text(json.dumps(payload) + "\n")
+
+    with pytest.raises(AcquisitionError, match="peak parameters"):
+        generate_configs(
+            manifest_path=None,
+            sample_sheet_path=sheet,
+            output_dir=tmp_path / "master-configs",
+            project="test-project",
+            run_id="master-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+            require_fastq_files=True,
+            input_stage="final-bam",
+            start_stage="qc",
+            output_stage="master",
+            final_bam_manifest_path=manifest,
+            qc_checkpoint_manifest_path=checkpoint,
+        )
+
+
+def test_checkpoint_resume_restores_original_semantic_paths(tmp_path):
+    plans = [
+        _run_plan(tmp_path / "raw", "SRR100001", "SRR100001"),
+        _run_plan(tmp_path / "raw", "SRR100002", "SRR100002"),
+    ]
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+        "SRR100002\tatac_rep2\tatac\teye\n"
+    )
+    generated = _generate(
+        tmp_path,
+        plans,
+        sheet.read_text(),
+        output_stage="trimming",
+    )[0]
+    source = yaml.safe_load(generated.read_text())
+    recorded_semantic = source["provenance"]["semantic_sha256"]
+    resolve_input_paths(source, tmp_path)
+    resolved = tmp_path / "results" / "resolved_config.json"
+    resolved.parent.mkdir()
+    resolved.write_text(json.dumps(source) + "\n")
+    trimmed = tmp_path / "work" / "trimmed.fastq.gz"
+    trimmed.parent.mkdir()
+    trimmed.write_bytes(b"trimmed")
+    checkpoint = tmp_path / "trimming.checkpoint.json"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": "trimming",
+                "source_project": "test-project",
+                "source_run_id": "baseline",
+                "semantic_sha256": recorded_semantic,
+                "parameters": {},
+                "artifacts": {
+                    "resolved_config": {
+                        "path": str(resolved),
+                        "sha256": sha256_file(resolved),
+                    },
+                    "trimmed_fastq.atac_rep1": {
+                        "path": str(trimmed),
+                        "sha256": sha256_file(trimmed),
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+    resumed_path = generate_resume_config(
+        checkpoint_manifest_path=checkpoint,
+        start_stage="trimming",
+        output_stage="alignment",
+        sample_sheet_path=sheet,
+        output_dir=tmp_path / "resume-configs",
+        path_base=tmp_path,
+    )
+    resumed = yaml.safe_load(resumed_path.read_text())
+
+    assert resumed["start_stage"] == "trimming"
+    assert resumed["output_stage"] == "alignment"
+    assert workflow_semantic_sha256(resumed) == recorded_semantic
 
 
 def test_final_bam_mode_rejects_partial_selected_assay(tmp_path):

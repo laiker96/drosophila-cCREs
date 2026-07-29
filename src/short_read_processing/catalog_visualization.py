@@ -370,17 +370,34 @@ def _coverage_bedgraph(
                 str(chrom_sizes_path),
             ],
             stdin=decompressor.stdout,
-            stdout=output_handle,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         decompressor.stdout.close()
+        assert coverage.stdout is not None
+        sorter = subprocess.Popen(
+            [
+                "sort",
+                "-k1,1",
+                "-k2,2n",
+                "--temporary-directory",
+                str(output_path.parent),
+            ],
+            stdin=coverage.stdout,
+            stdout=output_handle,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        coverage.stdout.close()
         _, coverage_stderr = coverage.communicate()
         _, decompressor_stderr = decompressor.communicate()
-    if decompressor.returncode or coverage.returncode:
+        _, sorter_stderr = sorter.communicate()
+    if decompressor.returncode or coverage.returncode or sorter.returncode:
         raise RuntimeError(
             f"Could not make coverage for {unit_path}: "
             + decompressor_stderr.decode(errors="replace")
             + coverage_stderr.decode(errors="replace")
+            + sorter_stderr.decode(errors="replace")
         )
 
 
@@ -418,7 +435,7 @@ def build_context_mean_bigwig(
         assay=assay,
         context=context,
     )
-    chromosome_sizes = _read_chrom_sizes(chrom_sizes_path)
+    chromosome_sizes = sorted(_read_chrom_sizes(chrom_sizes_path))
     output_bigwig.parent.mkdir(parents=True, exist_ok=True)
     temporary_bigwig: Path | None = None
     try:
@@ -438,24 +455,30 @@ def build_context_mean_bigwig(
                 )
                 bedgraphs.append(bedgraph)
 
-            union = subprocess.Popen(
-                [
-                    "bedtools",
-                    "unionbedg",
-                    "-filler",
-                    "0",
-                    "-i",
-                    *map(str, bedgraphs),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert union.stdout is not None
             try:
                 import pyBigWig
             except ImportError as error:  # pragma: no cover - rule environment owns this
                 raise RuntimeError("pyBigWig is required to write catalog tracks") from error
+
+            union = None
+            if len(bedgraphs) == 1:
+                mean_stream = bedgraphs[0].open(encoding="utf-8")
+            else:
+                union = subprocess.Popen(
+                    [
+                        "bedtools",
+                        "unionbedg",
+                        "-filler",
+                        "0",
+                        "-i",
+                        *map(str, bedgraphs),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                assert union.stdout is not None
+                mean_stream = union.stdout
 
             with tempfile.NamedTemporaryFile(
                 prefix=f".{output_bigwig.name}.",
@@ -473,7 +496,7 @@ def build_context_mean_bigwig(
                 end_buffer: list[int] = []
                 value_buffer: list[float] = []
                 for chrom, start, end, value in mean_unionbedg_rows(
-                    union.stdout,
+                    mean_stream,
                     chromosome_sizes=chromosome_sizes,
                     library_n=len(library_ids),
                 ):
@@ -501,10 +524,11 @@ def build_context_mean_bigwig(
                     )
             finally:
                 bigwig.close()
-                union.stdout.close()
-            union_stderr = union.stderr.read() if union.stderr is not None else ""
-            if union.wait() != 0:
-                raise RuntimeError("bedtools unionbedg failed: " + union_stderr)
+                mean_stream.close()
+            if union is not None:
+                union_stderr = union.stderr.read() if union.stderr is not None else ""
+                if union.wait() != 0:
+                    raise RuntimeError("bedtools unionbedg failed: " + union_stderr)
             _replace_if_changed(temporary_bigwig, output_bigwig)
             temporary_bigwig = None
     finally:

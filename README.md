@@ -12,19 +12,93 @@ The production path has three phases separated by an explicit manual QC gate:
 3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, fit the
    guarded H3K27ac mixtures, and write regulatory-element catalogs.
 
-There is no external-reference or quantile-normalization branch.
+There is no external regulatory-element reference or quantile-normalization
+branch. Strict reuse of a checksummed master-DHS bundle is supported.
 
-## Environment
+## Quick start
 
-Create the repository-local orchestration environment:
+### Install the environment
+
+Prerequisites are a POSIX shell, Git, and a working `mamba` installation. From
+the repository root, create the orchestration environment inside the project:
 
 ```bash
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
+export CONDA_PKGS_DIRS="$PWD/.micromamba/pkgs"
+export CONDA_ENVS_PATH="$PWD/.micromamba/envs"
+export CONDARC="$PWD/.condarc"
+export XDG_CACHE_HOME="$PWD/.cache"
 mamba env create --prefix "$PWD/.venv" --file environment.yml
 ```
 
-Snakemake rule environments are created below `.snakemake/conda` by the local
-profile. Do not create named environments outside the repository.
+Confirm that the launcher is available:
+
+```bash
+mamba run --prefix "$PWD/.venv" python src/run_pipeline.py --help
+```
+
+For the commands below, either activate the environment once:
+
+```bash
+mamba activate "$PWD/.venv"
+```
+
+or keep using `mamba run --prefix "$PWD/.venv"` for each Python command.
+
+The local Snakemake profile creates the pinned rule environments below
+`.snakemake/conda` on first use. That first run therefore needs network access
+and takes longer than a restart. Keep `.venv`, `.micromamba`, `.cache`, and the
+rule environments inside the repository; do not create project environments
+under a shared home-directory prefix.
+
+### Prepare and validate the input table
+
+Create a CSV or TSV with `accession`, `library_id`, `assay`, and `context`
+columns. Then validate it before downloading data:
+
+```bash
+mamba run --prefix "$PWD/.venv" \
+  python src/validate_sample_sheet.py path/to/samples.tsv
+```
+
+The tracked atlas tables under `resources/` are runnable examples. Optional
+control, peak-caller, and processing columns are defined in
+`schemas/sample-sheet.schema.yaml`.
+
+### Run the pipeline
+
+The production path uses three workflow invocations separated by a manual
+review checkpoint. Commands in the remainder of this README assume the
+environment is active.
+
+1. Start from accessions and stop at `qc`. This downloads reads, prepares the
+   reference, processes every library, and writes the QC review table and a
+   `pending_review` final-BAM manifest.
+2. Record pass/fail decisions in a copy of the review table and create a
+   reviewed manifest with `src/review_final_bam_manifest.py`.
+3. Start from the completed `qc` checkpoint plus the reviewed ATAC manifest
+   and stop at `master`. The lenient replicate peak evidence is reused; only
+   context pooling, support filtering, and master construction run downstream.
+4. Start from `master` with the accepted ATAC/H3K27ac manifests. Stop at
+   `quantification`, `catalog`, or `report`.
+
+Use the same `project` and `run_id` to resume an invocation. Use a new `run_id`
+when scientific parameters or selected libraries change. Before a large run,
+add `--snakemake-dry-run` to inspect the planned jobs. `--cores` limits total
+local/cluster cores; `--jobs` limits concurrent cluster jobs. Complete commands
+for each invocation appear in [Phase 1](#phase-1-master-dhs-construction) and
+[Phase 2](#phase-2-quantification-and-catalog).
+
+## Pipeline DAG
+
+The workflow is shown top-to-bottom, with the manual review and immutable
+manifest boundaries separating the three invocations:
+
+![Pipeline DAG showing QC, manual review, master construction, and activity catalog phases](docs/workflow-dag.svg)
+
+The editable graph source is [`docs/workflow-dag.dot`](docs/workflow-dag.dot).
+For the detailed scientific reasoning and equations, see
+[`docs/pipeline-description.pdf`](docs/pipeline-description.pdf).
 
 ## Input table
 
@@ -67,14 +141,42 @@ requested. Advancing `--until-stage` does not change the scientific semantic
 digest. Incomplete outputs are rebuilt because the profiles retain
 `rerun-incomplete: true`.
 
-Cross-run reuse is strict and manifest-based:
+`work/<project>/<run_id>/` contains reproducible intermediates rather than
+archive outputs. Large intermediates (trimmed FASTQs after alignment, lane and
+marked BAMs, shifted/short-fragment BAMs, peak-calling insertion BEDs, and
+background-count tables) are declared temporary and Snakemake removes them
+after their last consumer. Quantification assay-unit BEDs are retained below
+`activity/quantification/units/` because catalog restart and mean-track
+construction require exactly those units.
+Keep `work/` while a run is active; after successful completion it may be
+removed to clear any small files or debris left by an interrupted older run.
+Per-library ChIP CPM BigWigs are not generated because no downstream result
+uses them; pooled ATAC pileup/qpois and context-mean catalog BigWigs remain
+distinct, retained final products. Final replicate-level ATAC peak evidence is
+stored below `results/<project>/<run_id>/atac/replicates/`, not under `work/`.
+
+Every endpoint exports
+`provenance/manifests/<stage>.checkpoint.json`. Checkpoint files record the
+scientific semantic digest, stage parameters, paths, and SHA-256 hashes. Each
+one also points to an immutable
+`provenance/configs/<stage>.resolved_config.json` snapshot, so completing a
+later stage does not invalidate an earlier restart boundary.
+Starting at a completed boundary is strict: missing or changed checkpoint
+artifacts cause an error rather than upstream recomputation.
 
 | `--from-stage` | Required artifact | Allowed stopping points |
 |---|---|---|
 | `accessions` | accession table/download manifest | trimming through QC |
-| `final-bam` | `--final-bam-manifest` | alignment or QC with pending/accepted BAMs; master with a fully reviewed ATAC-only manifest |
-| `master` | `--master-manifest` | validate/export the master bundle |
-| `quantification` | master plus accepted ATAC/H3K27ac BAM manifests | quantification, catalog, or report |
+| `trimming` | trimming `--checkpoint-manifest` | trimming, alignment, or QC in the same run namespace |
+| `alignment` | alignment checkpoint or `--final-bam-manifest` | alignment or QC |
+| `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
+| `master` | `--master-manifest`; accepted BAM manifests when continuing | master, quantification, catalog, or report |
+| `quantification` | quantification checkpoint | quantification, catalog, or report |
+| `catalog` | catalog checkpoint | catalog or report |
+| `report` | report checkpoint | report validation |
+
+`final-bam` remains a compatibility alias for older commands. New commands
+should use `alignment` for BAM-to-QC and `qc` for reviewed QC-to-master reuse.
 
 The workflow automatically exports:
 
@@ -82,6 +184,7 @@ The workflow automatically exports:
 results/<project>/<run_id>/provenance/manifests/final-bams.tsv
 results/<project>/<run_id>/qc/library-review.tsv
 results/<project>/<run_id>/provenance/manifests/master-dhs.tsv
+results/<project>/<run_id>/provenance/manifests/<stage>.checkpoint.json
 ```
 
 Automatically exported new BAMs have `qc_status=pending_review`. The QC endpoint
@@ -123,6 +226,9 @@ median, and fractions below 150 bp and from 180--250 bp. TSS enrichment is the
 maximum aggregate signal in the central +/-50 bp divided by the mean signal in
 the two terminal 100-bp flanks of the +/-2-kb profile. Histone/ChIP rows include
 phantompeakqualtools fragment-shift estimates, NSC, RSC, and quality tag.
+For paired-end data, FRiP counts one valid same-chromosome fragment per read
+pair in the denominator and one fragment overlapping any called peak in the
+numerator. For single-end data, the corresponding unit is one filtered read.
 
 Copy the generated table outside the Snakemake result namespace, then edit only
 the final three review columns. Set `qc_decision` to `pass` or `fail`; a failed
@@ -155,29 +261,37 @@ mode cannot download FASTQs, trim reads, or align again:
 
 ```bash
 python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage final-bam \
+  --from-stage qc \
+  --checkpoint-manifest \
+    results/<qc-project>/qc-v1/provenance/manifests/qc.checkpoint.json \
   --final-bam-manifest data/reviewed/atlas-atac.reviewed.tsv \
   --project drosophila-atlas --run-id master-v1 --genome dm6 \
   --until-stage master --cores 16
 ```
 
-This second run calls/refines peaks for accepted ATAC libraries, pools them
-within each context, applies replicate support, and builds the summit-aware,
-variable-width master registry. Rejected rows remain in the reviewed input
-manifest and are copied into `provenance.excluded_master_libraries` in the
-resolved configuration.
+QC calls the lenient ATAC replicate candidates once with `-q 0.10`, unscaled
+two-ended Tn5 pileup/local lambda, and qpois refinement over exponents 2--325
+with retained components of 50--400 bp. The checkpoint binds those complete
+parameters and checksums the refined replicate BEDs. This second run validates
+and reuses that evidence; it pools accepted libraries within each context,
+calls/refines the pooled context signal, applies replicate support, and builds
+the summit-aware variable-width master registry. A changed peak or refinement
+parameter is rejected rather than silently recomputed under the checkpoint.
+Rejected rows remain in the reviewed manifest and are recorded in
+`provenance.excluded_master_libraries`.
 
 The master is not a simple interval union or fixed-width resize. It preserves
 representative summits, reciprocal-summit clustering, the configured maximum
 summit span, and context membership.
 
-To resume the pre-review QC run, repeat it with the same project/run ID and
-download manifest, for example:
+To regenerate QC directly from already filtered BAMs, start at the completed
+alignment boundary. No FASTQ or alignment fallback is available:
 
 ```bash
 python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage alignment \
+  --final-bam-manifest data/reviewed/atlas.pending-review.tsv \
   --project drosophila-atlas --run-id qc-v1 --genome dm6 \
-  --skip-download --manifest data/raw/download_manifest.tsv \
   --until-stage qc --cores 16
 ```
 
@@ -193,10 +307,11 @@ one or more reviewed final-BAM manifests:
 
 ```bash
 python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
-  --from-stage quantification \
-  --master-manifest data/raw/drosophila-atlas/master-dhs.tsv \
-  --activity-bam-manifest data/raw/drosophila-atlas/atac.accepted.tsv \
-  --activity-bam-manifest data/raw/drosophila-atlas/h3k27ac.accepted.tsv \
+  --from-stage master \
+  --master-manifest \
+    results/drosophila-atlas/master-v1/provenance/manifests/master-dhs.tsv \
+  --activity-bam-manifest data/reviewed/atlas-atac.accepted.tsv \
+  --activity-bam-manifest data/reviewed/atlas-h3k27ac.accepted.tsv \
   --report-source-root results/drosophila-atlas/master-v1 \
   --report-source-root results/drosophila-atlas-h3k27ac/qc-v1 \
   --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
@@ -207,9 +322,18 @@ This mode validates hashes and BAM/reference compatibility before computation.
 It cannot download FASTQs or invoke alignment.
 
 Use `--until-stage quantification` to stop after counting and normalization.
-Re-run the same command with `--until-stage catalog` to reuse those outputs and
-continue with the mixture/catalog stage, or with `--until-stage report` to add
-the final integrated report. Repeated `--report-source-root` values freeze the
+Continue strictly from its exported checkpoint, using the same sample sheet
+and original result namespace:
+
+```bash
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage quantification \
+  --checkpoint-manifest \
+    results/drosophila-atlas/catalog-v1/provenance/manifests/quantification.checkpoint.json \
+  --until-stage report --cores 16
+```
+
+Repeated `--report-source-root` values on the master-boundary command freeze the
 upstream manifests, JSON metrics, TSS profiles, fragment histograms,
 cross-correlation results, and MultiQC locations into the report configuration.
 The master-manifest result root is discovered automatically when possible.
@@ -300,9 +424,32 @@ signals and quantitative catalog share the same library selection and
 normalization, while retaining their assay-specific unit semantics.
 
 Opening `activity/catalog/igv/<context>.xml` loads five relative, portable
-resources: mean ATAC, mean H3K27ac, context DHSs, active elements, and the
-global master-DHS registry. Keep the `bed/`, `tracks/`, and `igv/` directories
-together if the catalog is moved.
+resources: the global master-DHS registry first, followed by mean ATAC, mean
+H3K27ac, context DHSs, and active elements. Opening
+`activity/catalog/all-contexts.igv.xml` loads the master registry once plus
+those four context-specific tracks for every context, so the complete atlas can
+be compared in one session. Keep the session XML, `bed/`, and `tracks/`
+together under `activity/catalog/` if the catalog is moved.
+
+To combine the pooled ATAC evidence and final regulatory-element annotations in
+one compact session, point the standalone builder at the completed master and
+catalog runs:
+
+```bash
+python src/build_igv_session.py results/<project>/<master-run>/atac \
+  --master-bed results/<project>/<master-run>/atac/master/master_dhs.bed \
+  --catalog-bed-root results/<project>/<catalog-run>/activity/catalog/bed \
+  --output results/<project>/igv/pipeline-results.xml --genome dm6
+```
+
+The master registry is the first track. It is followed, for each context, by
+the background-TMM mean ATAC Tn5-insertion signal, pooled ATAC qpois signal,
+background-TMM mean H3K27ac fragment coverage, context DHSs, and active cCREs.
+The raw pooled MACS3 ATAC pileup is deliberately omitted because it is
+unscaled and depth-dependent; it remains an auditable master-calling output.
+Replicate H3K27ac signal, H3K27ac peaks, and intermediate ATAC candidates are
+also omitted. Both mean tracks are read from the catalog's sibling `tracks/`
+directory; use `--catalog-track-root` only when that directory is elsewhere.
 
 ## Outputs
 
@@ -319,6 +466,8 @@ results/<project>/<run_id>/atac/master/master_dhs.json
 Quantification:
 
 ```text
+results/<project>/<run_id>/activity/quantification/units/*.bed.gz
+results/<project>/<run_id>/activity/quantification/units/*.count.txt
 results/<project>/<run_id>/activity/quantification/libraries/*.signal.tsv.gz
 results/<project>/<run_id>/activity/quantification/tmm_input_counts.tsv.gz
 results/<project>/<run_id>/activity/quantification/normalization_factors.tsv
@@ -347,6 +496,7 @@ results/<project>/<run_id>/activity/catalog/tracks/<context>.atac.mean.backgroun
 results/<project>/<run_id>/activity/catalog/tracks/<context>.h3k27ac.mean.background_tmm.bw
 results/<project>/<run_id>/activity/catalog/tracks/<context>.<assay>.mean.background_tmm.json
 results/<project>/<run_id>/activity/catalog/igv/<context>.xml
+results/<project>/<run_id>/activity/catalog/all-contexts.igv.xml
 ```
 
 Integrated report:
@@ -374,6 +524,9 @@ checksums appear in the integrated audit trail.
 
 ```bash
 export MAMBA_ROOT_PREFIX="$PWD/.micromamba"
+export CONDA_PKGS_DIRS="$PWD/.micromamba/pkgs"
+export CONDA_ENVS_PATH="$PWD/.micromamba/envs"
+export CONDARC="$PWD/.condarc"
 export XDG_CACHE_HOME="$PWD/.cache"
 
 mamba run --prefix "$PWD/.venv" pytest -q

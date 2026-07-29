@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a portable IGV session for final ATAC-condition and ChIP outputs."""
+"""Build portable IGV sessions for regulatory-atlas outputs."""
 
 from __future__ import annotations
 
@@ -73,88 +73,89 @@ def build_session(
     output: Path,
     genome: str,
     locus: str,
-    chip_root: Path | None = None,
-    final_atac_only: bool = False,
-    chip_one_per_context: bool = False,
+    *,
     master_bed: Path | None = None,
-) -> tuple[int, int, int]:
+    catalog_bed_root: Path,
+    catalog_track_root: Path | None = None,
+) -> tuple[int, int]:
+    """Build one master-first session with five ordered tracks per context."""
+
     conditions_root = atac_root / "conditions"
     conditions = sorted(path for path in conditions_root.iterdir() if path.is_dir())
     if not conditions:
         raise ValueError(f"No ATAC condition outputs found under {conditions_root}")
+    catalog_track_root = catalog_track_root or catalog_bed_root.parent / "tracks"
+    context_beds = {
+        path.name.removesuffix(".dhs.bed"): path
+        for path in catalog_bed_root.glob("*.dhs.bed")
+    }
+    condition_names = {path.name for path in conditions}
+    if set(context_beds) != condition_names:
+        missing_catalog = sorted(condition_names - set(context_beds))
+        missing_atac = sorted(set(context_beds) - condition_names)
+        details = []
+        if missing_catalog:
+            details.append("missing catalog contexts: " + ", ".join(missing_catalog))
+        if missing_atac:
+            details.append("missing ATAC conditions: " + ", ".join(missing_atac))
+        raise ValueError("ATAC and catalog contexts differ; " + "; ".join(details))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     session = ET.Element(
         "Session",
         genome=genome,
         hasGeneTrack="true",
-        hasSequenceTrack="true",
+        hasSequenceTrack="false",
         locus=locus,
         version="3",
     )
     resources = ET.SubElement(session, "Resources")
-    panel = ET.SubElement(session, "Panel", name="ATAC conditions and ChIP")
-    track_count = 0
+    panel = ET.SubElement(session, "Panel", name="Context regulatory atlas")
     if master_bed is None:
-        candidate = atac_root / "master" / "master_dhs.bed"
-        master_bed = candidate if candidate.is_file() else None
-    if master_bed is not None:
-        _require([master_bed])
-        add_track(
-            resources,
-            panel,
-            path=master_bed,
-            output=output,
-            name="Master DHS registry",
-            color="106,27,154",
-            signal=False,
-        )
-        track_count += 1
+        master_bed = atac_root / "master" / "master_dhs.bed"
+    _require([master_bed])
+    add_track(
+        resources,
+        panel,
+        path=master_bed,
+        output=output,
+        name="Master DHS registry",
+        color="106,27,154",
+        signal=False,
+    )
+    track_count = 1
     for condition_root in conditions:
         condition = condition_root.name
         label = condition.upper()
-        peaks = condition_root / "peaks"
         tracks = condition_root / "tracks"
-        consensus = peaks / f"{condition}.replicate-supported.bed"
-        qpois = tracks / f"{condition}.qpois.bw"
-        if qpois.is_file():
-            inputs = [
-                tracks / f"{condition}.MACS3-pileup.unscaled.bw",
-                qpois,
-                consensus,
-            ]
-            if not final_atac_only:
-                inputs[2:2] = [
-                    peaks / f"{condition}.candidates.narrowPeak",
-                    peaks / f"{condition}.qpois-refined.bed",
-                ]
-            _require(inputs)
-            specifications = [
-                (inputs[0], f"{label} | MACS3 insertion pileup", "31,120,180", True),
-                (inputs[1], f"{label} | qpois signal", "117,112,179", True),
-            ]
-            if not final_atac_only:
-                specifications.extend(
-                    [
-                        (inputs[2], f"{label} | lenient candidates", "105,105,105", False),
-                        (inputs[3], f"{label} | qpois-refined peaks", "230,85,13", False),
-                    ]
-                )
-            specifications.append(
-                (consensus, f"{label} | replicate-supported peaks", "0,145,130", False)
-            )
-        else:
-            inputs = [
-                tracks / f"{condition}.CPM.bw",
-                peaks / f"{condition}.hmmratac.narrowPeak",
-                consensus,
-            ]
-            _require(inputs)
-            specifications = (
-                (inputs[0], f"{label} | pooled CPM signal", "31,120,180", True),
-                (inputs[1], f"{label} | pooled HMMRATAC peaks", "117,112,179", False),
-                (inputs[2], f"{label} | replicate-supported peaks", "0,145,130", False),
-            )
+        context_dhs = context_beds[condition]
+        inputs = [
+            catalog_track_root
+            / f"{condition}.atac.mean.background_tmm.bw",
+            tracks / f"{condition}.qpois.bw",
+            catalog_track_root
+            / f"{condition}.h3k27ac.mean.background_tmm.bw",
+            context_dhs,
+            catalog_bed_root / f"{condition}.active_elements.bed",
+        ]
+        _require(inputs)
+        specifications = (
+            (
+                inputs[0],
+                f"{label} | mean ATAC Tn5 signal (background-TMM)",
+                "31,120,180",
+                True,
+            ),
+            (inputs[1], f"{label} | pooled ATAC qpois signal", "117,112,179", True),
+            (
+                inputs[2],
+                f"{label} | mean H3K27ac signal (background-TMM)",
+                "221,126,32",
+                True,
+            ),
+            (inputs[3], f"{label} | context DHSs", "0,145,130", False),
+            (inputs[4], f"{label} | active cCREs", "202,61,52", False),
+        )
         for path, name, color, signal in specifications:
             add_track(
                 resources,
@@ -167,40 +168,8 @@ def build_session(
             )
             track_count += 1
 
-    chip_samples = 0
-    if chip_root is not None:
-        bigwigs = sorted((chip_root / "tracks").glob("*.CPM.bw"))
-        if chip_one_per_context:
-            selected: dict[str, Path] = {}
-            for bigwig in bigwigs:
-                sample = bigwig.name.removesuffix(".CPM.bw")
-                context = sample.split("_", 1)[0]
-                selected.setdefault(context, bigwig)
-            bigwigs = [selected[context] for context in sorted(selected)]
-        for bigwig in bigwigs:
-            sample = bigwig.name.removesuffix(".CPM.bw")
-            peak_dir = chip_root / "peaks" / sample
-            peaks = list(peak_dir.glob(f"{sample}_peaks.*Peak"))
-            if len(peaks) != 1:
-                raise FileNotFoundError(f"Expected one MACS3 peak file for {sample}")
-            for path, name, color, signal in (
-                (bigwig, f"{sample} | ChIP CPM signal", "221,126,32", True),
-                (peaks[0], f"{sample} | MACS3 peaks", "202,61,52", False),
-            ):
-                add_track(
-                    resources,
-                    panel,
-                    path=path,
-                    output=output,
-                    name=name,
-                    color=color,
-                    signal=signal,
-                )
-                track_count += 1
-            chip_samples += 1
-
     _write_xml_if_changed(session, output)
-    return len(conditions), chip_samples, track_count
+    return len(conditions), track_count
 
 
 def build_catalog_session(
@@ -229,7 +198,7 @@ def build_catalog_session(
         "Session",
         genome=genome,
         hasGeneTrack="true",
-        hasSequenceTrack="true",
+        hasSequenceTrack="false",
         locus=locus,
         version="3",
     )
@@ -237,6 +206,12 @@ def build_catalog_session(
     panel = ET.SubElement(session, "Panel", name=f"{context} regulatory atlas")
     label = context.upper()
     specifications = [
+        (
+            master_dhs_bed,
+            "Master DHS registry",
+            "106,27,154",
+            False,
+        ),
         (
             atac_bigwig,
             f"{label} | mean ATAC Tn5 signal (background-TMM)",
@@ -257,14 +232,8 @@ def build_catalog_session(
         ),
         (
             active_elements_bed,
-            f"{label} | active regulatory elements",
+            f"{label} | active cCREs",
             "202,61,52",
-            False,
-        ),
-        (
-            master_dhs_bed,
-            "Master DHS registry",
-            "106,27,154",
             False,
         ),
     ]
@@ -282,10 +251,104 @@ def build_catalog_session(
     return len(specifications)
 
 
+def build_all_contexts_catalog_session(
+    *,
+    contexts: list[str],
+    genome: str,
+    atac_bigwigs: dict[str, Path],
+    h3k27ac_bigwigs: dict[str, Path],
+    context_dhs_beds: dict[str, Path],
+    master_dhs_bed: Path,
+    active_elements_beds: dict[str, Path],
+    output: Path,
+    locus: str = "All",
+) -> int:
+    """Build one portable IGV session containing every catalog context."""
+
+    if not contexts or len(contexts) != len(set(contexts)):
+        raise ValueError("IGV catalog contexts must be non-empty and unique")
+    mappings = {
+        "ATAC BigWigs": atac_bigwigs,
+        "H3K27ac BigWigs": h3k27ac_bigwigs,
+        "context DHS BEDs": context_dhs_beds,
+        "active-element BEDs": active_elements_beds,
+    }
+    expected = set(contexts)
+    for label, paths in mappings.items():
+        if set(paths) != expected:
+            raise ValueError(f"{label} must cover exactly the IGV catalog contexts")
+    _require(
+        [
+            master_dhs_bed,
+            *(path for paths in mappings.values() for path in paths.values()),
+        ]
+    )
+
+    session = ET.Element(
+        "Session",
+        genome=genome,
+        hasGeneTrack="true",
+        hasSequenceTrack="false",
+        locus=locus,
+        version="3",
+    )
+    resources = ET.SubElement(session, "Resources")
+    panel = ET.SubElement(session, "Panel", name="All-context regulatory atlas")
+    add_track(
+        resources,
+        panel,
+        path=master_dhs_bed,
+        output=output,
+        name="Master DHS registry",
+        color="106,27,154",
+        signal=False,
+    )
+    track_count = 1
+    for context in contexts:
+        label = context.upper()
+        for path, name, color, signal in (
+            (
+                atac_bigwigs[context],
+                f"{label} | mean ATAC Tn5 signal (background-TMM)",
+                "31,120,180",
+                True,
+            ),
+            (
+                h3k27ac_bigwigs[context],
+                f"{label} | mean H3K27ac fragment coverage (background-TMM)",
+                "221,126,32",
+                True,
+            ),
+            (
+                context_dhs_beds[context],
+                f"{label} | context DHSs (master coordinates)",
+                "0,145,130",
+                False,
+            ),
+            (
+                active_elements_beds[context],
+                f"{label} | active cCREs",
+                "202,61,52",
+                False,
+            ),
+        ):
+            add_track(
+                resources,
+                panel,
+                path=path,
+                output=output,
+                name=name,
+                color=color,
+                signal=signal,
+            )
+            track_count += 1
+    _write_xml_if_changed(session, output)
+    return track_count
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("atac_root", type=Path, help="Run's results/.../atac directory")
-    parser.add_argument("--chip-root", type=Path, help="Optional ChIP run result root")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--genome", default="dm6")
     parser.add_argument("--locus", default="All")
@@ -295,29 +358,31 @@ def main() -> int:
         help="Master DHS BED; defaults to ATAC_ROOT/master/master_dhs.bed when present",
     )
     parser.add_argument(
-        "--final-atac-only",
-        action="store_true",
-        help="Include only pooled signal and replicate-supported ATAC peaks",
+        "--catalog-bed-root",
+        type=Path,
+        required=True,
+        help="activity/catalog/bed directory with all context and active BEDs",
     )
     parser.add_argument(
-        "--chip-one-per-context",
-        action="store_true",
-        help="Include only the first sorted ChIP replicate for each context",
+        "--catalog-track-root",
+        type=Path,
+        help="Directory with mean H3K27ac BigWigs; defaults to BED_ROOT/../tracks",
     )
     args = parser.parse_args()
-    condition_n, chip_n, track_n = build_session(
+    condition_n, track_n = build_session(
         args.atac_root.resolve(),
         args.output.resolve(),
         args.genome,
         args.locus,
-        args.chip_root.resolve() if args.chip_root else None,
-        args.final_atac_only,
-        args.chip_one_per_context,
-        args.master_bed.resolve() if args.master_bed else None,
+        master_bed=args.master_bed.resolve() if args.master_bed else None,
+        catalog_bed_root=args.catalog_bed_root.resolve(),
+        catalog_track_root=(
+            args.catalog_track_root.resolve() if args.catalog_track_root else None
+        ),
     )
     print(
-        f"Wrote {condition_n} ATAC conditions, {chip_n} ChIP samples, "
-        f"and {track_n} tracks to {args.output.resolve()}"
+        f"Wrote {condition_n} contexts and {track_n} tracks to "
+        f"{args.output.resolve()}"
     )
     return 0
 
