@@ -36,8 +36,7 @@ names, or sample relationships.
 
 ## Scientific invariants
 
-- ATAC defaults to the two-ended Tn5/MACS3-qpois branch. HMMRATAC is an
-  explicit alternative and is invalid for single-end data.
+- ATAC uses the two-ended Tn5/MACS3-qpois branch.
 - Paired-end ATAC qpois retains proper pairs with `0 < abs(TLEN) < 150`, applies
   Tn5 offsets, and converts both mates to one-base insertion records. MACS3 uses
   `-f BED --nomodel --shift -75 --extsize 150 --keep-dup all -B -q 0.10`.

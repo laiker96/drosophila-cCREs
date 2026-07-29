@@ -155,79 +155,6 @@ rule atac_condition_qpois_bigwig:
         "--chrom-sizes {input.chrom_sizes:q} --output {output.bigwig:q} > {log:q} 2>&1"
 
 
-rule merge_atac_condition_bams:
-    input:
-        bams=atac_condition_bam_inputs,
-        validated=atac_condition_validation_inputs
-    output:
-        bam=temp(f"{ATAC_WORK}/conditions/{{condition}}.pooled.bam"),
-        bai=temp(f"{ATAC_WORK}/conditions/{{condition}}.pooled.bam.bai")
-    wildcard_constraints:
-        condition=ATAC_HMMRATAC_CONDITION_RE
-    threads: 6
-    resources:
-        mem_mb=8000
-    conda:
-        "../envs/alignment.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/atac/conditions/{{condition}}.merge-bams.log"
-    shell:
-        "mkdir -p $(dirname {output.bam:q}) $(dirname {log:q}) && "
-        "samtools merge -f -@ {threads} -o {output.bam:q}.tmp {input.bams:q} > {log:q} 2>&1 && "
-        "samtools quickcheck -v {output.bam:q}.tmp 2>> {log:q} && "
-        "samtools index -@ {threads} {output.bam:q}.tmp {output.bai:q}.tmp 2>> {log:q} && "
-        "mv {output.bam:q}.tmp {output.bam:q} && mv {output.bai:q}.tmp {output.bai:q}"
-
-
-rule hmmratac_condition:
-    input:
-        bam=lambda wc: ATAC_CONDITION_HMM_BAMS[wc.condition],
-        bai=lambda wc: ATAC_CONDITION_HMM_BAIS[wc.condition],
-        blacklist=str(REFERENCE["blacklist_bed"])
-    output:
-        peaks=f"{ATAC_ROOT}/conditions/{{condition}}/peaks/{{condition}}.hmmratac.narrowPeak"
-    params:
-        lower=lambda wc: atac_condition_peak_config(wc.condition)["lower"],
-        upper=lambda wc: atac_condition_peak_config(wc.condition)["upper"],
-        prescan=lambda wc: atac_condition_peak_config(wc.condition)["prescan_cutoff"],
-        outdir=lambda wc: f"{ATAC_ROOT}/conditions/{wc.condition}/peaks"
-    wildcard_constraints:
-        condition=ATAC_HMMRATAC_CONDITION_RE
-    resources:
-        mem_mb=12000
-    conda:
-        "../envs/peaks.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/atac/conditions/{{condition}}.hmmratac.log"
-    shell:
-        "mkdir -p {params.outdir:q} $(dirname {log:q}) && "
-        "macs3 hmmratac -i {input.bam:q} -f BAMPE -n {wildcards.condition:q} "
-        "--outdir {params.outdir:q} -l {params.lower} -u {params.upper} "
-        "-c {params.prescan} -e {input.blacklist:q} > {log:q} 2>&1 && "
-        "mv {params.outdir:q}/{wildcards.condition}_accessible_regions.narrowPeak {output.peaks:q}"
-
-
-rule atac_hmmratac_condition_bigwig:
-    input:
-        bam=lambda wc: ATAC_CONDITION_HMM_BAMS[wc.condition],
-        bai=lambda wc: ATAC_CONDITION_HMM_BAIS[wc.condition]
-    output:
-        bigwig=f"{ATAC_ROOT}/conditions/{{condition}}/tracks/{{condition}}.CPM.bw"
-    wildcard_constraints:
-        condition=ATAC_HMMRATAC_CONDITION_RE
-    threads: 6
-    resources:
-        mem_mb=6000
-    conda:
-        "../envs/atac_qc.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/atac/conditions/{{condition}}.CPM-bigwig.log"
-    shell:
-        "mkdir -p $(dirname {output.bigwig:q}) $(dirname {log:q}) && "
-        "bamCoverage -b {input.bam:q} -o {output.bigwig:q} --outFileFormat bigwig "
-        "--normalizeUsing CPM --binSize 10 --numberOfProcessors {threads} > {log:q} 2>&1"
-
-
 rule filter_atac_qpois_replicate_support:
     input:
         pooled=lambda wc: ATAC_CONDITION_REFINED[wc.condition],
@@ -256,50 +183,12 @@ rule filter_atac_qpois_replicate_support:
         f"{RESULT_ROOT}/logs/atac/conditions/{{condition}}.replicate-support.log"
     shell:
         "mkdir -p $(dirname {output.bed:q}) $(dirname {log:q}) && "
-        "python {input.script:q} --condition-id {wildcards.condition:q} --peak-method qpois "
+        "python {input.script:q} --condition-id {wildcards.condition:q} "
         "--pooled-peaks {input.pooled:q} {params.replicates} "
         "--minimum-replicates {params.minimum_replicates} "
         "--overlap-fraction {params.overlap_fraction} "
         "--output-bed {output.bed:q} --support-tsv {output.support:q} "
         "--stats-json {output.stats:q} > {log:q} 2>&1"
-
-
-rule filter_atac_hmmratac_replicate_support:
-    input:
-        pooled=lambda wc: ATAC_CONDITION_HMM_PEAKS[wc.condition],
-        replicates=lambda wc: [
-            ATAC_REPLICATE_HMM_PEAKS[sample]
-            for sample in ATAC_CONDITIONS[wc.condition].samples
-        ],
-        validated=atac_condition_peak_validation_inputs,
-        script=str(REPO_ROOT / "src" / "build_atac_consensus.py"),
-        implementation=str(REPO_ROOT / "src" / "short_read_processing" / "consensus.py")
-    output:
-        bed=f"{ATAC_ROOT}/conditions/{{condition}}/peaks/{{condition}}.replicate-supported.bed",
-        support=f"{ATAC_ROOT}/conditions/{{condition}}/peaks/{{condition}}.replicate-support.tsv",
-        stats=f"{ATAC_ROOT}/conditions/{{condition}}/peaks/{{condition}}.replicate-support.json"
-    params:
-        replicates=atac_consensus_replicate_arguments,
-        minimum_replicates=int(ATAC_CONSENSUS.get("minimum_replicates", 2)),
-        overlap_fraction=float(ATAC_CONSENSUS.get("replicate_overlap_fraction", 0.5))
-    wildcard_constraints:
-        condition=ATAC_HMMRATAC_CONDITION_RE
-    resources:
-        mem_mb=4000
-    conda:
-        "../envs/atac_qc.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/atac/conditions/{{condition}}.replicate-support.log"
-    shell:
-        "mkdir -p $(dirname {output.bed:q}) $(dirname {log:q}) && "
-        "python {input.script:q} --condition-id {wildcards.condition:q} --peak-method hmmratac "
-        "--pooled-peaks {input.pooled:q} {params.replicates} "
-        "--minimum-replicates {params.minimum_replicates} "
-        "--overlap-fraction {params.overlap_fraction} "
-        "--output-bed {output.bed:q} --support-tsv {output.support:q} "
-        "--stats-json {output.stats:q} > {log:q} 2>&1"
-
-
 if ATAC_MASTER_BUILD_ENABLED:
     rule build_atac_master_dhs:
         input:

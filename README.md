@@ -112,8 +112,10 @@ The public input is a CSV or TSV conforming to
 | `assay` | `atac`, `h3k27ac`, or another supported ChIP assay |
 | `context` | Tissue, stage, or cell type |
 
-Optional control and peak-caller columns are documented in the schema. The two
-reviewed dm6 atlas inputs are `resources/atlas_samples_ip_only.tsv` and
+Optional control and MACS3 parameter columns are documented in the schema.
+ATAC peak calling is fixed to the two-ended Tn5/MACS3-qpois method;
+`peak_caller`, when supplied, must be `callpeak`. The two reviewed dm6 atlas
+inputs are `resources/atlas_samples_ip_only.tsv` and
 `resources/atlas_samples_with_inputs.tsv`.
 
 Each distinct ATAC `context` becomes a replicate-pooling group. Consequently,

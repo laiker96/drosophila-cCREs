@@ -7,7 +7,7 @@ environment directory.
 
 - `read_qc.yaml`: raw/trimmed FASTQ QC and adapter trimming
 - `alignment.yaml`: short-read alignment and BAM filtering
-- `peaks.yaml`: MACS3 callpeak, bdgcmp/qpois, and HMMRATAC
+- `peaks.yaml`: MACS3 callpeak and bdgcmp/qpois
 - `atac_qc.yaml`: Tn5 insertion preparation, qpois refinement, BigWigs, and ATAC QC
 - `chip_qc.yaml`: R-based ChIP cross-correlation QC only
 - `reporting.yaml`: MultiQC aggregation

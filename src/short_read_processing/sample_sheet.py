@@ -24,7 +24,6 @@ MACS3_FIELDS = {
     "macs3_shift",
     "macs3_extsize",
 }
-HMMRATAC_FIELDS = {"hmmratac_lower", "hmmratac_upper", "hmmratac_prescan_cutoff"}
 
 
 def delimiter_for(path: Path, sample: str) -> str:
@@ -130,57 +129,38 @@ def _resolve_defaults(row: dict[str, Any], schema: dict[str, Any], *, line: int)
             row.get(name) is None
             and "defaults_by_assay" in spec
             and name not in MACS3_FIELDS
-            and name not in HMMRATAC_FIELDS
         ):
             row[name] = spec["defaults_by_assay"].get(assay)
         if (
             row.get(name) is None
             and "default" in spec
             and name not in MACS3_FIELDS
-            and name not in HMMRATAC_FIELDS
         ):
             row[name] = spec["default"]
 
-    caller = row["peak_caller"]
-    if caller == "hmmratac":
-        supplied_macs = [name for name in MACS3_FIELDS if row.get(name) is not None]
-        if supplied_macs:
+    for name in MACS3_FIELDS:
+        if row.get(name) is None and "defaults_by_assay" in fields[name]:
+            row[name] = fields[name]["defaults_by_assay"].get(assay)
+        if row.get(name) is None and "default" in fields[name]:
+            row[name] = fields[name]["default"]
+    if not row["macs3_broad"]:
+        if "macs3_broad_cutoff" in supplied:
             raise AcquisitionError(
-                f"Line {line}: MACS3 columns are not valid with HMMRATAC: "
-                + ", ".join(sorted(supplied_macs))
+                f"Line {line}: macs3_broad_cutoff requires macs3_broad=true"
             )
-        for name in HMMRATAC_FIELDS:
-            row[name] = fields[name].get("default") if row.get(name) is None else row[name]
-    else:
-        supplied_hmm = [name for name in HMMRATAC_FIELDS if row.get(name) is not None]
-        if supplied_hmm:
+        row["macs3_broad_cutoff"] = None
+    if row["macs3_shift"] is not None or row["macs3_extsize"] is not None:
+        if assay != "atac" and row["macs3_format"] != "BAM":
             raise AcquisitionError(
-                f"Line {line}: HMMRATAC columns are not valid with MACS3 callpeak: "
-                + ", ".join(sorted(supplied_hmm))
+                f"Line {line}: ChIP macs3_shift/extsize requires macs3_format=BAM"
             )
-        for name in MACS3_FIELDS:
-            if row.get(name) is None and "defaults_by_assay" in fields[name]:
-                row[name] = fields[name]["defaults_by_assay"].get(assay)
-            if row.get(name) is None and "default" in fields[name]:
-                row[name] = fields[name]["default"]
-        if not row["macs3_broad"]:
-            if "macs3_broad_cutoff" in supplied:
-                raise AcquisitionError(
-                    f"Line {line}: macs3_broad_cutoff requires macs3_broad=true"
-                )
-            row["macs3_broad_cutoff"] = None
-        if row["macs3_shift"] is not None or row["macs3_extsize"] is not None:
-            if assay != "atac" and row["macs3_format"] != "BAM":
-                raise AcquisitionError(
-                    f"Line {line}: ChIP macs3_shift/extsize requires macs3_format=BAM"
-                )
-            if row["macs3_extsize"] is None:
-                raise AcquisitionError(f"Line {line}: macs3_shift requires macs3_extsize")
-            if "macs3_nomodel" in supplied and not row["macs3_nomodel"]:
-                raise AcquisitionError(
-                    f"Line {line}: macs3_shift/extsize conflicts with macs3_nomodel=false"
-                )
-            row["macs3_nomodel"] = True
+        if row["macs3_extsize"] is None:
+            raise AcquisitionError(f"Line {line}: macs3_shift requires macs3_extsize")
+        if "macs3_nomodel" in supplied and not row["macs3_nomodel"]:
+            raise AcquisitionError(
+                f"Line {line}: macs3_shift/extsize conflicts with macs3_nomodel=false"
+            )
+        row["macs3_nomodel"] = True
 
     if row["adapter_preset"] == "custom" and not row.get("adapter_fasta"):
         raise AcquisitionError(f"Line {line}: adapter_preset=custom requires adapter_fasta")

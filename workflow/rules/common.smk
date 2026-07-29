@@ -176,21 +176,6 @@ def atac_condition_insertion_count_inputs(wildcards):
     ]
 
 
-def atac_condition_bam_inputs(wildcards):
-    return [
-        FINAL_BAMS[sample]
-        for sample in ATAC_CONDITIONS[wildcards.condition].samples
-    ]
-
-
-def atac_condition_validation_inputs(wildcards):
-    return [
-        EXTERNAL_BAM_VALIDATIONS[sample]
-        for sample in ATAC_CONDITIONS[wildcards.condition].samples
-        if sample in EXTERNAL_BAM_VALIDATIONS
-    ]
-
-
 def atac_condition_peak_validation_inputs(wildcards):
     return [
         EXTERNAL_QC_PEAK_VALIDATIONS[sample]
@@ -201,10 +186,10 @@ def atac_condition_peak_validation_inputs(wildcards):
 
 def atac_consensus_replicate_arguments(wildcards):
     condition = wildcards.condition
-    method = ATAC_CONDITION_METHOD[condition]
-    paths = ATAC_REPLICATE_REFINED if method == "qpois" else ATAC_REPLICATE_HMM_PEAKS
     return " ".join(
-        "--replicate {}".format(shlex.quote(f"{sample}={paths[sample]}"))
+        "--replicate {}".format(
+            shlex.quote(f"{sample}={ATAC_REPLICATE_REFINED[sample]}")
+        )
         for sample in ATAC_CONDITIONS[condition].samples
     )
 

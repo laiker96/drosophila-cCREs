@@ -67,7 +67,7 @@
 \title{\textbf{Drosophila cCRE Pipeline}\\[0.3em]
 \large Detailed implementation and scientific reasoning}
 \author{drosophila-cCREs project}
-\date{Repository documentation revision: 2026-07-28}
+\date{Repository documentation revision: 2026-07-29}
 
 \begin{document}
 
@@ -176,7 +176,7 @@ context & Replicate-pooling and downstream atlas group. \\
 \end{center}
 
 Optional fields specify treatment/control roles, an explicit
-\texttt{control\_library}, peak caller, MACS3 or HMMRATAC parameters, adapters,
+\texttt{control\_library}, MACS3 peak-calling parameters, adapters,
 alignment parameters, filtering parameters, and notes.  ChIP input controls
 are explicit relationships.  A blank control is a valid IP-only experiment
 and causes MACS3 to run without \texttt{-c}; it does not trigger an implicit
@@ -285,8 +285,8 @@ The workflow:
   \item writes the configured autosome list used for background normalization.
 \end{enumerate}
 
-The blacklist is used during final BAM filtering and in the HMMRATAC branch.
-The TSS BED supports ATAC TSS enrichment and regulatory-class annotation.  The
+The blacklist is used during final BAM filtering.  The TSS BED supports ATAC
+TSS enrichment and regulatory-class annotation.  The
 autosome list excludes sex chromosomes and mitochondrial DNA from the TMM
 background matrix.
 
@@ -392,7 +392,7 @@ The QC endpoint freezes each refined replicate BED together with the complete
 MACS3 and qpois-refinement parameter mappings.  A QC-to-master invocation
 validates and reuses those lenient replicate calls, while still constructing
 the pooled context calls.  It refuses reuse if the requested q-value, Tn5
-geometry, exponent range, component lengths, merge gap, or caller differs.
+geometry, exponent range, component lengths, or merge gap differs.
 
 Two-ended Tn5 insertions represent cut sites more directly than treating an
 ATAC fragment as a ChIP enrichment interval.  Computing qpois from unscaled
@@ -400,14 +400,6 @@ pileup and lambda preserves MACS3's intended count-scale comparison.
 Progressive refinement constrains the geometry of broad candidates, but it is
 not an additional independent FDR-controlled test; candidate q-values remain
 the statistical starting point.
-
-\subsection{Optional HMMRATAC branch}
-
-HMMRATAC is an explicit alternative for paired-end ATAC only.  Defaults are a
-lower cutoff of 10, upper cutoff of 20, and prescan cutoff of 1.2; the reference
-blacklist is supplied to the caller.  Per-replicate and pooled-context
-HMMRATAC peaks then enter the same replicate-support step used by the qpois
-branch.  A context cannot mix HMMRATAC and qpois parameters.
 
 \subsection{ChIP branches}
 
@@ -466,11 +458,10 @@ to the decision so inclusion criteria can be documented at library resolution.
 
 \section{Context peak reproducibility}
 
-Accepted ATAC libraries are grouped by the sample-sheet context.  For the
-qpois path, their insertion BEDs are concatenated and a pooled context call is
-made and refined.  For HMMRATAC, accepted BAMs are pooled for the context call.
-The pooled peaks are not accepted merely because they are present in the
-aggregate signal.
+Accepted ATAC libraries are grouped by the sample-sheet context.  Their
+insertion BEDs are concatenated and a pooled qpois context call is made and
+refined.  The pooled peaks are not accepted merely because they are present in
+the aggregate signal.
 
 For every pooled peak \(P\), each replicate peak set is reduced to an interval
 union and the coverage fraction is calculated:

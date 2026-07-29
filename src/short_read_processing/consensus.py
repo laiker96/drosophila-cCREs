@@ -179,7 +179,6 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
 def build_condition_consensus(
     *,
     condition_id: str,
-    peak_method: str,
     pooled_peaks: Path,
     replicate_peaks: dict[str, Path],
     output_bed: Path,
@@ -194,8 +193,6 @@ def build_condition_consensus(
         raise ValueError("minimum_replicates is inconsistent with replicate inputs")
     if not 0 < overlap_fraction <= 1:
         raise ValueError("overlap_fraction must be in (0, 1]")
-    if peak_method not in {"qpois", "hmmratac"}:
-        raise ValueError(f"Unsupported ATAC peak method: {peak_method}")
 
     pooled = read_peaks(pooled_peaks)
     replicate_names = list(replicate_peaks)
@@ -241,7 +238,7 @@ def build_condition_consensus(
                 f"{peak.chrom}\t{peak.start}\t{peak.end}\t{peak.name}\t"
                 f"{peak.score}\t{peak.strand}\t{condition_id}\t{support_n}\t"
                 f"{len(replicate_names)}\t{support_fraction:.6g}\t"
-                f"{','.join(supporting)}\t{peak_method}\n"
+                f"{','.join(supporting)}\tqpois\n"
             )
         bed_handle.close()
         support_handle.close()
@@ -258,7 +255,7 @@ def build_condition_consensus(
     metrics: dict[str, Any] = {
         "status": "ok" if retained_count else "no_replicate_supported_peaks",
         "condition_id": condition_id,
-        "peak_method": peak_method,
+        "peak_method": "qpois",
         "pooled_peaks": len(pooled),
         "retained_replicate_supported_peaks": retained_count,
         "replicate_n": len(replicate_names),

@@ -19,7 +19,6 @@ def replicate(value: str) -> tuple[str, Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--condition-id", required=True)
-    parser.add_argument("--peak-method", choices=("qpois", "hmmratac"), required=True)
     parser.add_argument("--pooled-peaks", type=Path, required=True)
     parser.add_argument("--replicate", action="append", type=replicate, required=True)
     parser.add_argument("--minimum-replicates", type=int, default=2)
@@ -33,7 +32,6 @@ def main() -> int:
         parser.error("--replicate sample IDs must be unique")
     metrics = build_condition_consensus(
         condition_id=args.condition_id,
-        peak_method=args.peak_method,
         pooled_peaks=args.pooled_peaks,
         replicate_peaks=replicates,
         output_bed=args.output_bed,

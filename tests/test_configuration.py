@@ -303,13 +303,13 @@ def test_atac_context_requires_two_biological_libraries(tmp_path):
         _generate(tmp_path, [plan], sheet)
 
 
-def test_explicit_hmmratac_rejects_single_end_atac(tmp_path):
-    plan = _run_plan(tmp_path / "raw", "SRR100001", "SRR100001", layout="SINGLE")
+def test_removed_hmmratac_peak_caller_is_rejected(tmp_path):
+    plan = _run_plan(tmp_path / "raw", "SRR100001", "SRR100001")
     sheet = (
         HEADER
         + "\nSRR100001\tatac_rep1\tatac\teye\ttreatment\t\thmmratac\n"
     )
-    with pytest.raises(AcquisitionError, match="requires paired-end"):
+    with pytest.raises(AcquisitionError, match="peak_caller must be one of callpeak"):
         _generate(tmp_path, [plan], sheet)
 
 

@@ -1,4 +1,4 @@
-"""Per-replicate ATAC qpois and optional HMMRATAC peak calling."""
+"""Per-replicate ATAC qpois peak calling."""
 
 
 rule filter_atac_short_fragments:
@@ -156,32 +156,3 @@ rule refine_atac_replicate_qpois:
         "--minimum-length {params.minimum_length} "
         "--maximum-length {params.maximum_length} "
         "--merge-gap {params.merge_gap} > {log:q} 2>&1"
-
-
-rule hmmratac_replicate:
-    input:
-        bam=lambda wc: FINAL_BAMS[wc.sample],
-        bai=lambda wc: FINAL_BAIS[wc.sample],
-        blacklist=str(REFERENCE["blacklist_bed"]),
-        validated=final_bam_validation_input
-    output:
-        peaks=f"{ATAC_ROOT}/replicates/{{sample}}/peaks/{{sample}}.hmmratac.narrowPeak"
-    params:
-        lower=lambda wc: SAMPLES[wc.sample]["peak_caller"]["lower"],
-        upper=lambda wc: SAMPLES[wc.sample]["peak_caller"]["upper"],
-        prescan=lambda wc: SAMPLES[wc.sample]["peak_caller"]["prescan_cutoff"],
-        outdir=lambda wc: f"{ATAC_ROOT}/replicates/{wc.sample}/peaks"
-    wildcard_constraints:
-        sample=HMMRATAC_RE
-    resources:
-        mem_mb=12000
-    conda:
-        "../envs/peaks.yaml"
-    log:
-        f"{RESULT_ROOT}/logs/atac/replicates/{{sample}}.hmmratac.log"
-    shell:
-        "mkdir -p {params.outdir:q} $(dirname {log:q}) && "
-        "macs3 hmmratac -i {input.bam:q} -f BAMPE -n {wildcards.sample:q} "
-        "--outdir {params.outdir:q} -l {params.lower} -u {params.upper} "
-        "-c {params.prescan} -e {input.blacklist:q} > {log:q} 2>&1 && "
-        "mv {params.outdir:q}/{wildcards.sample}_accessible_regions.narrowPeak {output.peaks:q}"

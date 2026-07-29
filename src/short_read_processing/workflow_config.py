@@ -609,37 +609,33 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
 
         if sample["role"] == "treatment":
             peak = sample.get("peak_caller")
-            if not isinstance(peak, dict) or peak.get("command") not in {"callpeak", "hmmratac"}:
-                raise AcquisitionError(f"Sample {sample_id}: treatment requires a peak caller")
-            if peak["command"] == "hmmratac":
-                if config["assay"] != "atac" or sample["layout"] != "paired":
-                    raise AcquisitionError(
-                        f"Sample {sample_id}: HMMRATAC requires paired-end ATAC-seq"
-                    )
-            else:
-                _required(
-                    peak,
-                    {"format", "qvalue", "broad", "nomodel", "write_bedgraph", "spmr"},
-                    f"Sample {sample_id} callpeak",
+            if not isinstance(peak, dict) or peak.get("command") != "callpeak":
+                raise AcquisitionError(
+                    f"Sample {sample_id}: treatment peak caller must use callpeak"
                 )
-                if config["assay"] == "atac":
-                    if (
-                        peak.get("mode") != "tn5_qpois"
-                        or peak["format"] != "BED"
-                        or peak["broad"]
-                        or not peak["nomodel"]
-                        or not peak["write_bedgraph"]
-                        or peak["spmr"]
-                        or peak.get("shift") is None
-                        or peak.get("extsize") is None
-                    ):
-                        raise AcquisitionError(
-                            f"Sample {sample_id}: invalid two-ended Tn5 qpois configuration"
-                        )
-                elif not peak["write_bedgraph"] or not peak["spmr"]:
+            _required(
+                peak,
+                {"format", "qvalue", "broad", "nomodel", "write_bedgraph", "spmr"},
+                f"Sample {sample_id} callpeak",
+            )
+            if config["assay"] == "atac":
+                if (
+                    peak.get("mode") != "tn5_qpois"
+                    or peak["format"] != "BED"
+                    or peak["broad"]
+                    or not peak["nomodel"]
+                    or not peak["write_bedgraph"]
+                    or peak["spmr"]
+                    or peak.get("shift") is None
+                    or peak.get("extsize") is None
+                ):
                     raise AcquisitionError(
-                        f"Sample {sample_id}: ChIP callpeak must write -B --SPMR bedGraphs"
+                        f"Sample {sample_id}: invalid two-ended Tn5 qpois configuration"
                     )
+            elif not peak["write_bedgraph"] or not peak["spmr"]:
+                raise AcquisitionError(
+                    f"Sample {sample_id}: ChIP callpeak must write -B --SPMR bedGraphs"
+                )
             qc_peak = sample.get("qc_peak")
             if qc_peak is not None:
                 if start_stage != "qc" or config["assay"] != "atac":

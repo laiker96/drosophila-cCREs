@@ -60,18 +60,9 @@ CHIP_CONTROLLED_TREATMENTS = [
     sample for sample in CHIP_TREATMENTS if SAMPLES[sample].get("control")
 ]
 ATAC_SAMPLES = TREATMENTS if ASSAY == "atac" else []
-ATAC_QPOIS_SAMPLES = [
-    sample
-    for sample in ATAC_SAMPLES
-    if SAMPLES[sample]["peak_caller"]["command"] == "callpeak"
-]
+ATAC_QPOIS_SAMPLES = list(ATAC_SAMPLES)
 ATAC_QPOIS_PE_SAMPLES = [
     sample for sample in ATAC_QPOIS_SAMPLES if SAMPLES[sample]["layout"] == "paired"
-]
-HMMRATAC_SAMPLES = [
-    sample
-    for sample in ATAC_SAMPLES
-    if SAMPLES[sample]["peak_caller"]["command"] == "hmmratac"
 ]
 
 ATAC_QPOIS = config.get(
@@ -104,48 +95,22 @@ ATAC_CONDITION_SPECS = (
     else []
 )
 ATAC_CONDITIONS = {spec.condition_id: spec for spec in ATAC_CONDITION_SPECS}
-ATAC_CONDITION_METHOD = {}
 for condition, specification in ATAC_CONDITIONS.items():
-    methods = {
-        SAMPLES[sample]["peak_caller"]["command"] for sample in specification.samples
-    }
     layouts = {SAMPLES[sample]["layout"] for sample in specification.samples}
-    if len(methods) != 1 or len(layouts) != 1:
-        raise ValueError(f"ATAC condition {condition} mixes peak callers or layouts")
-    method = methods.pop()
-    if method == "callpeak":
-        parameters = {
-            (
-                SAMPLES[sample]["peak_caller"]["qvalue"],
-                SAMPLES[sample]["peak_caller"]["shift"],
-                SAMPLES[sample]["peak_caller"]["extsize"],
-            )
-            for sample in specification.samples
-        }
-        if len(parameters) != 1:
-            raise ValueError(f"ATAC condition {condition} mixes MACS3 parameters")
-        ATAC_CONDITION_METHOD[condition] = "qpois"
-    else:
-        parameters = {
-            (
-                SAMPLES[sample]["peak_caller"]["lower"],
-                SAMPLES[sample]["peak_caller"]["upper"],
-                SAMPLES[sample]["peak_caller"]["prescan_cutoff"],
-            )
-            for sample in specification.samples
-        }
-        if len(parameters) != 1:
-            raise ValueError(f"ATAC condition {condition} mixes HMMRATAC parameters")
-        ATAC_CONDITION_METHOD[condition] = "hmmratac"
+    if len(layouts) != 1:
+        raise ValueError(f"ATAC condition {condition} mixes read layouts")
+    parameters = {
+        (
+            SAMPLES[sample]["peak_caller"]["qvalue"],
+            SAMPLES[sample]["peak_caller"]["shift"],
+            SAMPLES[sample]["peak_caller"]["extsize"],
+        )
+        for sample in specification.samples
+    }
+    if len(parameters) != 1:
+        raise ValueError(f"ATAC condition {condition} mixes MACS3 parameters")
 ATAC_CONDITION_IDS = list(ATAC_CONDITIONS)
-ATAC_QPOIS_CONDITIONS = [
-    condition for condition in ATAC_CONDITION_IDS if ATAC_CONDITION_METHOD[condition] == "qpois"
-]
-ATAC_HMMRATAC_CONDITIONS = [
-    condition
-    for condition in ATAC_CONDITION_IDS
-    if ATAC_CONDITION_METHOD[condition] == "hmmratac"
-]
+ATAC_QPOIS_CONDITIONS = list(ATAC_CONDITION_IDS)
 
 SAMPLE_RE = wildcard_regex(SAMPLE_IDS)
 BUILD_SAMPLE_RE = wildcard_regex(BUILD_SAMPLE_IDS)
@@ -154,10 +119,8 @@ EXTERNAL_QC_PEAK_SAMPLE_RE = wildcard_regex(EXTERNAL_QC_PEAK_SAMPLES)
 ATAC_RE = wildcard_regex(ATAC_SAMPLES)
 ATAC_QPOIS_RE = wildcard_regex(ATAC_QPOIS_SAMPLES)
 ATAC_QPOIS_PE_RE = wildcard_regex(ATAC_QPOIS_PE_SAMPLES)
-HMMRATAC_RE = wildcard_regex(HMMRATAC_SAMPLES)
 ATAC_CONDITION_RE = wildcard_regex(ATAC_CONDITION_IDS)
 ATAC_QPOIS_CONDITION_RE = wildcard_regex(ATAC_QPOIS_CONDITIONS)
-ATAC_HMMRATAC_CONDITION_RE = wildcard_regex(ATAC_HMMRATAC_CONDITIONS)
 CHIP_TREATMENT_RE = wildcard_regex(CHIP_TREATMENTS)
 CHIP_CONTROLLED_TREATMENT_RE = wildcard_regex(CHIP_CONTROLLED_TREATMENTS)
 
@@ -292,14 +255,6 @@ ATAC_REPLICATE_STATS = {
     sample: f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.qpois-refinement.json"
     for sample in ATAC_QPOIS_SAMPLES
 }
-ATAC_REPLICATE_HMM_PEAKS = {
-    sample: (
-        str(SAMPLES[sample]["qc_peak"]["path"])
-        if sample in EXTERNAL_QC_PEAK_SAMPLES
-        else f"{ATAC_ROOT}/replicates/{sample}/peaks/{sample}.hmmratac.narrowPeak"
-    )
-    for sample in HMMRATAC_SAMPLES
-}
 EXTERNAL_QC_PEAK_VALIDATIONS = {
     sample: f"{RESULT_ROOT}/provenance/external_qc_peaks/{sample}.validated.json"
     for sample in EXTERNAL_QC_PEAK_SAMPLES
@@ -349,22 +304,6 @@ ATAC_CONDITION_QPOIS_BW = {
     condition: f"{ATAC_ROOT}/conditions/{condition}/tracks/{condition}.qpois.bw"
     for condition in ATAC_QPOIS_CONDITIONS
 }
-ATAC_CONDITION_HMM_BAMS = {
-    condition: f"{ATAC_WORK}/conditions/{condition}.pooled.bam"
-    for condition in ATAC_HMMRATAC_CONDITIONS
-}
-ATAC_CONDITION_HMM_BAIS = {
-    condition: ATAC_CONDITION_HMM_BAMS[condition] + ".bai"
-    for condition in ATAC_HMMRATAC_CONDITIONS
-}
-ATAC_CONDITION_HMM_PEAKS = {
-    condition: f"{ATAC_ROOT}/conditions/{condition}/peaks/{condition}.hmmratac.narrowPeak"
-    for condition in ATAC_HMMRATAC_CONDITIONS
-}
-ATAC_CONDITION_HMM_BIGWIGS = {
-    condition: f"{ATAC_ROOT}/conditions/{condition}/tracks/{condition}.CPM.bw"
-    for condition in ATAC_HMMRATAC_CONDITIONS
-}
 ATAC_CONDITION_CONSENSUS = {
     condition: f"{ATAC_ROOT}/conditions/{condition}/peaks/{condition}.replicate-supported.bed"
     for condition in ATAC_CONDITION_IDS
@@ -377,14 +316,7 @@ ATAC_CONDITION_STATS = {
     condition: f"{ATAC_ROOT}/conditions/{condition}/peaks/{condition}.replicate-support.json"
     for condition in ATAC_CONDITION_IDS
 }
-ATAC_CONDITION_SIGNAL_BW = {
-    condition: (
-        ATAC_CONDITION_PILEUP_BW[condition]
-        if ATAC_CONDITION_METHOD[condition] == "qpois"
-        else ATAC_CONDITION_HMM_BIGWIGS[condition]
-    )
-    for condition in ATAC_CONDITION_IDS
-}
+ATAC_CONDITION_SIGNAL_BW = dict(ATAC_CONDITION_PILEUP_BW)
 ATAC_MASTER_ROOT = f"{ATAC_ROOT}/master"
 ATAC_MASTER_BED = (
     str(EXTERNAL_MASTER["master_bed"])
@@ -749,7 +681,6 @@ CHIP_PEAKS = {
 PEAKS = {
     **CHIP_PEAKS,
     **ATAC_REPLICATE_REFINED,
-    **ATAC_REPLICATE_HMM_PEAKS,
 }
 CALLPEAK_BEDGRAPHS = [
     path
@@ -866,8 +797,6 @@ MASTER_TARGETS = (
     + list(ATAC_CONDITION_REFINEMENT_STATS.values())
     + list(ATAC_CONDITION_PILEUP_BW.values())
     + list(ATAC_CONDITION_QPOIS_BW.values())
-    + list(ATAC_CONDITION_HMM_PEAKS.values())
-    + list(ATAC_CONDITION_HMM_BIGWIGS.values())
     + list(ATAC_CONDITION_CONSENSUS.values())
     + list(ATAC_CONDITION_SUPPORT.values())
     + list(ATAC_CONDITION_STATS.values())

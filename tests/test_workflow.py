@@ -40,15 +40,6 @@ def _chip_callpeak(*, broad=False):
     return config
 
 
-def _hmmratac():
-    return {
-        "command": "hmmratac",
-        "lower": 10,
-        "upper": 20,
-        "prescan_cutoff": 1.2,
-    }
-
-
 def _dry_run(tmp_path: Path, config: dict, name: str = "workflow") -> str:
     config["output_dir"] = str(tmp_path / "results")
     config_path = tmp_path / f"{name}.yaml"
@@ -166,14 +157,12 @@ def test_workflow_config_rejects_stale_semantic_digest():
 
 @pytest.mark.parametrize(
     "branch",
-    ["atac_qpois", "atac_hmmratac", "atac_se", "chip_tf", "chip_histone", "chip_histone_ip_only"],
+    ["atac_qpois", "atac_se", "chip_tf", "chip_histone", "chip_histone_ip_only"],
 )
 def test_workflow_branches_dry_run(tmp_path, branch):
     config = copy.deepcopy(BASE_CONFIG)
     treatment = config["samples"][0]
-    if branch == "atac_hmmratac":
-        treatment["peak_caller"] = _hmmratac()
-    elif branch == "atac_se":
+    if branch == "atac_se":
         treatment["layout"] = "single"
         treatment.pop("r2")
     elif branch.startswith("chip"):
@@ -199,10 +188,6 @@ def test_workflow_branches_dry_run(tmp_path, branch):
         assert "refine_atac_replicate_qpois" in output
     if branch == "atac_se":
         assert "filter_atac_short_fragments" not in output
-    if branch == "atac_hmmratac":
-        assert "hmmratac_replicate" in output
-        assert ".hmmratac.narrowPeak" in output
-        assert "call_atac_replicate_qpois" not in output
     if branch == "chip_histone_ip_only":
         assert "callpeak_broad" in output
         assert "chip_fingerprint" not in output
@@ -225,6 +210,13 @@ def test_workflow_config_rejects_scaled_atac_qpois_signal():
     config = copy.deepcopy(BASE_CONFIG)
     config["samples"][0]["peak_caller"]["spmr"] = True
     with pytest.raises(AcquisitionError, match="invalid two-ended Tn5 qpois"):
+        validate_workflow_config(config)
+
+
+def test_workflow_config_rejects_removed_hmmratac_caller():
+    config = copy.deepcopy(BASE_CONFIG)
+    config["samples"][0]["peak_caller"] = {"command": "hmmratac"}
+    with pytest.raises(AcquisitionError, match="peak caller must use callpeak"):
         validate_workflow_config(config)
 
 
@@ -327,22 +319,6 @@ def test_output_stage_prunes_downstream_rules(tmp_path, stage, required, forbidd
         assert rule in output
     for rule in forbidden:
         assert rule not in output
-
-
-def test_hmmratac_condition_consensus_dry_run(tmp_path):
-    config = copy.deepcopy(BASE_CONFIG)
-    config["samples"][0]["peak_caller"] = _hmmratac()
-    _add_second_replicate(config)
-    _enable_consensus(config)
-    _use_reviewed_final_bams(config, tmp_path)
-
-    output = _dry_run(tmp_path, config, "hmmratac-consensus")
-
-    assert "merge_atac_condition_bams" in output
-    assert "hmmratac_condition" in output
-    assert "filter_atac_hmmratac_replicate_support" in output
-    assert "build_atac_master_dhs" in output
-    assert "call_atac_condition_qpois" not in output
 
 
 def test_workflow_config_rejects_negative_master_summit_distance():

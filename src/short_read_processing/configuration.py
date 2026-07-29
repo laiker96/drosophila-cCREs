@@ -171,21 +171,6 @@ def _reference_config(genome: str, reference_root: Path, path_base: Path) -> dic
 
 def _peak_config(row: dict[str, Any], layout: str) -> dict[str, object]:
     assay = str(row["assay"])
-    caller = str(row["peak_caller"])
-    if caller == "hmmratac":
-        if assay != "atac":
-            raise AcquisitionError("HMMRATAC is only valid for ATAC-seq")
-        if layout != "paired":
-            raise AcquisitionError(
-                f"Library {row['library_id']}: HMMRATAC requires paired-end ATAC-seq; "
-                "set peak_caller=callpeak for single-end data"
-            )
-        return {
-            "command": "hmmratac",
-            "lower": row["hmmratac_lower"],
-            "upper": row["hmmratac_upper"],
-            "prescan_cutoff": row["hmmratac_prescan_cutoff"],
-        }
 
     if assay == "atac":
         if row["macs3_broad"]:
@@ -698,17 +683,13 @@ def generate_configs(
                 minimum_replicates=atac_minimum_replicates,
             )
             for condition in conditions:
-                methods = {
-                    str(item_by_id[sample]["peak_caller"]["command"])
-                    for sample in condition.samples
-                }
                 layouts = {
                     str(item_by_id[sample]["layout"])
                     for sample in condition.samples
                 }
-                if len(methods) != 1 or len(layouts) != 1:
+                if len(layouts) != 1:
                     raise AcquisitionError(
-                        f"ATAC condition {condition.condition_id} mixes peak callers or layouts"
+                        f"ATAC condition {condition.condition_id} mixes read layouts"
                     )
             if not 0 < atac_overlap_fraction <= 1:
                 raise AcquisitionError("ATAC overlap fraction must be in (0, 1]")
