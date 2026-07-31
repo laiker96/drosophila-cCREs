@@ -722,6 +722,11 @@ CONTACT_OBSERVED_CONTEXTS = [
     for context in CONTACT_CONTEXTS
     if CONTACT_CONTEXT_BY_ID[context]["strategy"] == "observed"
 ]
+CONTACT_POWERLAW_CONTEXTS = [
+    context
+    for context in CONTACT_CONTEXTS
+    if CONTACT_CONTEXT_BY_ID[context]["strategy"] == "powerlaw"
+]
 CONTACT_LINK_ROOT = f"{ACTIVITY_ROOT}/links"
 CONTACT_NORMALIZED_ROOT = f"{CONTACT_LINK_ROOT}/contacts"
 CONTACT_WORK_ROOT = f"{ACTIVITY_WORK}/contacts"
@@ -752,6 +757,34 @@ CONTACT_LINK_CONTEXT_GENES = {
     )
     for context in CONTACT_CONTEXTS
 }
+CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.active_contact_enhancer_gene_candidates.tsv.gz"
+    )
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.active_contact_enhancer_gene_candidates.metrics.json"
+    )
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.active_distance_enhancer_gene_candidates.tsv.gz"
+    )
+    for context in CONTACT_POWERLAW_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.active_distance_enhancer_gene_candidates.metrics.json"
+    )
+    for context in CONTACT_POWERLAW_CONTEXTS
+}
 CONTACT_LINK_CONTEXT_METRICS = {
     context: f"{CONTACT_LINK_ROOT}/contexts/{context}.metrics.json"
     for context in CONTACT_CONTEXTS
@@ -769,6 +802,10 @@ CONTACT_LINK_TARGETS = (
         *CONTACT_LINK_CONTEXT_NODES.values(),
         *CONTACT_LINK_CONTEXT_EDGES.values(),
         *CONTACT_LINK_CONTEXT_GENES.values(),
+        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
+        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
+        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
+        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
         *CONTACT_LINK_CONTEXT_METRICS.values(),
         CONTACT_LINK_METRICS,
         CONTACT_LINK_PROVENANCE,
@@ -1092,6 +1129,10 @@ STAGE_CHECKPOINT_ARTIFACTS = {
                 *CONTACT_LINK_CONTEXT_NODES.values(),
                 *CONTACT_LINK_CONTEXT_EDGES.values(),
                 *CONTACT_LINK_CONTEXT_GENES.values(),
+                *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
+                *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
+                *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
+                *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
                 *CONTACT_LINK_CONTEXT_METRICS.values(),
                 CONTACT_LINK_METRICS,
                 CONTACT_LINK_PROVENANCE,

@@ -121,6 +121,8 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
                 "powerlaw_context_count": 0,
                 "element_promoter_edge_count": 250,
                 "element_gene_candidate_count": 200,
+                "active_contact_enhancer_gene_candidate_count": 50,
+                "active_distance_enhancer_gene_candidate_count": 0,
                 "contexts": {
                     "ctx": {
                         "contact_strategy": "observed",
@@ -130,6 +132,8 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
                         "active_promoter_count": 20,
                         "element_promoter_edge_count": 250,
                         "element_gene_candidate_count": 200,
+                        "active_contact_enhancer_gene_candidate_count": 50,
+                        "active_distance_enhancer_gene_candidate_count": 0,
                     }
                 },
             }
@@ -220,6 +224,7 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
     assert result["mixture_warning_count"] == 1
     assert result["contact_links"]["observed_context_count"] == 1
     assert "Context contact links and candidate genes" in output_html.read_text()
+    assert "Focused distance candidates" in output_html.read_text()
     assert "insufficient_positive_members" in output_html.read_text()
     assert first_hashes == tuple(
         sha256_file(path) for path in (output_html, output_pdf, output_metrics)

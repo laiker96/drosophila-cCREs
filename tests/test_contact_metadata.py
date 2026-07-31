@@ -44,8 +44,10 @@ def test_default_contact_config_models_exactly_two_contexts(tmp_path):
     assert [
         row["id"] for row in config["contexts"] if row["strategy"] == "powerlaw"
     ] == ["e13", "hid"]
-    assert config["normalization"] == "merge_counts_then_ice_v1"
+    assert config["normalization"] == "merge_counts_then_ice_retry_v2"
     assert config["maximum_distance_bp"] == 1_000_000
+    assert config["candidate_element_posterior_threshold"] == 0.5
+    assert config["candidate_observed_over_expected_threshold"] == 1.0
     assert len(config["source_manifest_sha256"]) == 64
 
 

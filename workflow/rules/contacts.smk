@@ -185,13 +185,70 @@ if CONTACTS:
             "../scripts/build_context_contact_links.py"
 
 
+    rule build_active_contact_enhancer_gene_candidates:
+        input:
+            nodes=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nodes.tsv.gz",
+            edges=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.element_promoter_edges.tsv.gz"
+        output:
+            candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_contact_enhancer_gene_candidates.tsv.gz",
+            metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_contact_enhancer_gene_candidates.metrics.json"
+        params:
+            element_posterior_threshold=float(
+                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
+            ),
+            observed_over_expected_threshold=float(
+                CONTACTS.get("candidate_observed_over_expected_threshold", 1.0)
+            )
+        wildcard_constraints:
+            context=wildcard_regex(CONTACT_CONTEXTS)
+        threads: 1
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/contacts.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/links/{{context}}.active-contact-candidates.log"
+        script:
+            "../scripts/build_active_contact_enhancer_gene_candidates.py"
+
+
+    rule build_active_distance_enhancer_gene_candidates:
+        input:
+            nodes=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nodes.tsv.gz",
+            edges=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.element_promoter_edges.tsv.gz"
+        output:
+            candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_distance_enhancer_gene_candidates.tsv.gz",
+            metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.active_distance_enhancer_gene_candidates.metrics.json"
+        params:
+            element_posterior_threshold=float(
+                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
+            )
+        wildcard_constraints:
+            context=wildcard_regex(CONTACT_POWERLAW_CONTEXTS)
+        threads: 1
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/contacts.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/links/{{context}}.active-distance-candidates.log"
+        script:
+            "../scripts/build_active_distance_enhancer_gene_candidates.py"
+
+
     rule aggregate_contact_links:
         input:
             manifest=CONTACT_SOURCE_MANIFEST,
             promoter_metrics=CONTACT_PROMOTER_METRICS,
             contact_metrics=list(CONTACT_NORMALIZED_METRICS.values()),
             powerlaw=CONTACT_POWERLAW,
-            context_metrics=list(CONTACT_LINK_CONTEXT_METRICS.values())
+            context_metrics=list(CONTACT_LINK_CONTEXT_METRICS.values()),
+            candidate_metrics=list(
+                CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values()
+            ),
+            distance_candidate_metrics=list(
+                CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values()
+            )
         output:
             metrics=CONTACT_LINK_METRICS,
             provenance=CONTACT_LINK_PROVENANCE

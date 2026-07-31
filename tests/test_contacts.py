@@ -8,6 +8,7 @@ import pytest
 import numpy as np
 
 from short_read_processing.contacts import (
+    balance_cooler_with_retry,
     select_source_resolution,
     standardize_context,
     valid_balanced_diagonal,
@@ -42,6 +43,40 @@ def test_valid_balanced_diagonal_keeps_true_zeros_but_excludes_masked_bins():
 def test_valid_balanced_diagonal_rejects_nonpositive_offsets():
     with pytest.raises(ValueError, match="positive"):
         valid_balanced_diagonal(np.eye(2), np.ones(2), 0)
+
+
+def test_balance_retries_nonconverged_matrix(monkeypatch):
+    calls = []
+
+    class FakeCooler:
+        @staticmethod
+        def balance_cooler(matrix, **kwargs):
+            calls.append((matrix, kwargs))
+            converged = len(calls) == 2
+            return np.ones(3), {
+                "converged": converged,
+                "var": 1e-6 if converged else 1e-3,
+            }
+
+    monkeypatch.setattr(
+        "short_read_processing.contacts._cooler", lambda: FakeCooler
+    )
+
+    weights, stats, attempts = balance_cooler_with_retry("matrix")
+
+    assert weights.tolist() == [1.0, 1.0, 1.0]
+    assert stats["converged"] is True
+    assert [call[1]["max_iters"] for call in calls] == [200, 2_000]
+    assert all(call[1]["store"] is True for call in calls)
+    assert [attempt["converged"] for attempt in attempts] == [False, True]
+
+
+def test_contact_environment_pins_atlas_compatible_pandas():
+    environment = (
+        Path(__file__).resolve().parents[1] / "workflow" / "envs" / "contacts.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "pandas=2.2" in environment
 
 
 def test_standardize_context_merges_counts_before_balancing(tmp_path):

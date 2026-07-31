@@ -78,7 +78,9 @@ digraph workflow {
     contacts [label="Versioned dm6 contact sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
     normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
     decay [label="Context contact decay +\natlas-wide power-law model", fillcolor="#d8eeea"];
-    links [label="Element--promoter graph +\nranked gene candidates\nlinks checkpoint", fillcolor="#c7e5df"];
+    links [label="Element--promoter graph +\ncomplete gene candidates", fillcolor="#c7e5df"];
+    focused [label="Enhancer posterior + contact O/E filter\nobserved-contact candidates", fillcolor="#b9ddd6"];
+    distancefocused [label="Enhancer posterior + active promoter\ndistance-ranked candidates\nnearest-TSS baselines", fillcolor="#b9ddd6"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
 
@@ -96,10 +98,13 @@ digraph workflow {
     tmm -> browser;
     catalog -> browser;
     contacts -> normalizecontacts -> decay -> links;
+    links -> focused;
+    links -> distancefocused;
     catalog -> links;
     catalogbundle -> links [style=dashed, label="restart"];
     browser -> report;
-    links -> report;
+    focused -> report;
+    distancefocused -> report;
     sources -> report [style=dashed];
     {rank=same; exact; background; windows;}
     {rank=same; browser; contacts; sources; catalogbundle;}

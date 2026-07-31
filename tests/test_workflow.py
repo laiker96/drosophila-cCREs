@@ -720,7 +720,9 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         "maximum_distance_bp": 1_000_000,
         "pseudocount_fraction": 0.01,
         "promoter_posterior_threshold": 0.5,
-        "normalization": "merge_counts_then_ice_v1",
+        "candidate_element_posterior_threshold": 0.5,
+        "candidate_observed_over_expected_threshold": 1.0,
+        "normalization": "merge_counts_then_ice_retry_v2",
         "promoter_activity": "overlapping_master_dhs_max_v1",
         "link_score": "contact_weight_x_promoter_activity_posterior_v1",
         "contexts": [
@@ -751,13 +753,44 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         "fit_contact_powerlaw",
         "build_contact_promoters",
         "build_context_contact_links",
+        "build_active_contact_enhancer_gene_candidates",
+        "build_active_distance_enhancer_gene_candidates",
         "aggregate_contact_links",
         "observed.element_promoter_edges.tsv.gz",
         "modelled.element_gene_candidates.tsv.gz",
+        "observed.active_contact_enhancer_gene_candidates.tsv.gz",
+        "modelled.active_contact_enhancer_gene_candidates.tsv.gz",
+        "observed.active_contact_enhancer_gene_candidates.metrics.json",
+        "modelled.active_distance_enhancer_gene_candidates.tsv.gz",
+        "modelled.active_distance_enhancer_gene_candidates.metrics.json",
         "links.checkpoint.json",
     ):
         assert expected in output
+    assert "observed.active_distance_enhancer_gene_candidates.tsv.gz" not in output
     assert "build_integrated_qc_report" not in output
+
+    legacy_config = copy.deepcopy(config)
+    legacy_config["contacts"].pop("candidate_element_posterior_threshold")
+    legacy_config["contacts"].pop(
+        "candidate_observed_over_expected_threshold"
+    )
+    validate_workflow_config(legacy_config)
+
+    invalid_posterior = copy.deepcopy(config)
+    invalid_posterior["contacts"]["candidate_element_posterior_threshold"] = 1.1
+    with pytest.raises(
+        AcquisitionError, match="Candidate element posterior threshold"
+    ):
+        validate_workflow_config(invalid_posterior)
+
+    invalid_enrichment = copy.deepcopy(config)
+    invalid_enrichment["contacts"][
+        "candidate_observed_over_expected_threshold"
+    ] = -0.1
+    with pytest.raises(
+        AcquisitionError, match="Candidate observed/expected threshold"
+    ):
+        validate_workflow_config(invalid_enrichment)
 
     imported_paths = {}
     for field in ("catalog", "metrics", "provenance", "resolved_config", "manifest"):

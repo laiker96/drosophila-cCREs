@@ -604,8 +604,20 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Contact pseudocount fraction must be in [0, 1]")
         if not 0 <= float(contacts["promoter_posterior_threshold"]) <= 1:
             raise AcquisitionError("Promoter posterior threshold must be in [0, 1]")
+        if not 0 <= float(
+            contacts.get("candidate_element_posterior_threshold", 0.5)
+        ) <= 1:
+            raise AcquisitionError(
+                "Candidate element posterior threshold must be in [0, 1]"
+            )
+        if float(
+            contacts.get("candidate_observed_over_expected_threshold", 1.0)
+        ) < 0:
+            raise AcquisitionError(
+                "Candidate observed/expected threshold cannot be negative"
+            )
         expected_methods = {
-            "normalization": "merge_counts_then_ice_v1",
+            "normalization": "merge_counts_then_ice_retry_v2",
             "promoter_activity": "overlapping_master_dhs_max_v1",
             "link_score": "contact_weight_x_promoter_activity_posterior_v1",
         }

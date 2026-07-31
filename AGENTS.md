@@ -59,14 +59,23 @@ names, or sample relationships.
   this processing DAG. For the canonical nine-context dm6 atlas, contact-map
   normalization and context-specific element--promoter candidate links are
   also part of the DAG; ABC candidate resizing/scoring remains outside it.
-- Contact replicates are coarsened only by exact integer count summation,
-  merged as raw counts, and ICE-balanced once per context. The seven observed
+- Contact replicates are coarsened only by exact integer count summation and
+  merged as raw counts before ICE balancing. Balancing starts with a
+  200-iteration limit and restarts from uniform weights with a 2,000-iteration
+  limit only if the first attempt does not converge. The seven observed
   contexts retain assay/match caveats; `e13` and `hid` use an explicitly
   labeled atlas-wide distance model rather than a substituted contact map.
 - Contact links connect context-member master DHSs to distinct GTF gene/TSS
   promoters within 1 Mb. Candidate scores combine contact weight with promoter
   ATAC/H3K27ac activity and are rankings, not calibrated probabilities or
-  causal target assignments.
+  causal target assignments. The focused enhancer--gene table retains only
+  proximal/distal enhancer-like elements with H3K27ac posterior at least 0.5
+  and observed promoter edges with observed/expected contact at least 1 before
+  gene collapse; its distance-modeled contexts are header-only. Distance-only
+  contexts additionally receive a separate active-promoter distance projection
+  whose observed contact and observed/expected fields remain blank.
+  It is derived downstream from completed node/edge tables and must not trigger
+  contact normalization or exhaustive link reconstruction when backfilled.
 - TF ChIP defaults to narrow MACS3 peaks; histone ChIP defaults to broad peaks.
 - ChIP controls are explicit `control_library` relationships. IP-only ChIP is
   represented by omitting that optional column and runs MACS3 without `-c`.

@@ -72,7 +72,9 @@ control, peak-caller, and processing columns are defined in
 
 The production path uses three workflow invocations separated by a manual
 review checkpoint. Commands in the remainder of this README assume the
-environment is active.
+environment is active. The accession table is the starting input for the
+complete production path, but the required human QC decision means it is not
+run as one uninterrupted command.
 
 1. Start from accessions and stop at `qc`. This downloads reads, prepares the
    reference, processes every library, and writes the QC review table and a
@@ -403,11 +405,13 @@ inside the original run namespace.
 Contact files download to `data/raw/contacts/`. For each observed context, the
 workflow selects a stored resolution that exactly divides the target
 resolution, coarsens by summing raw counts when needed, sums replicate count
-matrices, and performs one ICE balancing pass on the merged matrix. It never
-averages pre-balanced replicates or approximately rebins incompatible
-resolutions. GEO contact downloads use one resumable connection because its
-supplementary-file server rejects parallel range requests. When an upstream
-checksum is published it is checked during the
+matrices, and ICE-balances the merged matrix. The first attempt permits 200
+iterations. A matrix that has not converged is restarted from uniform weights
+with a 2,000-iteration limit, and both attempts are recorded in its metrics.
+The workflow never averages pre-balanced replicates or approximately rebins
+incompatible resolutions. GEO contact downloads use one resumable connection
+because its supplementary-file server rejects parallel range requests. When
+an upstream checksum is published it is checked during the
 resumable download; every downloaded source and normalized matrix receives a
 recorded SHA-256 in the result provenance. Converted and coarsened copies under
 `work/` are removed after the balanced context matrix is written successfully.
@@ -439,6 +443,34 @@ It is a prioritization score, not a calibrated probability or causal claim.
 The element--gene table collapses alternative promoters per gene and reports
 candidate, active-candidate, contact-only, and nearest-gene ranks so users can
 compare the sources of evidence rather than accepting one fixed target call.
+The additional
+`<context>.active_contact_enhancer_gene_candidates.tsv.gz` table is a focused
+projection for observed-contact contexts. It first retains proximal or distal
+enhancer-like DHSs whose element H3K27ac high-component posterior is at least
+0.5, then retains promoter edges whose observed/expected contact is at least
+1, and only then collapses alternative promoters to genes and recomputes the
+within-enhancer ranks. Promoter activity columns are preserved but are not an
+additional selection criterion. The table is header-only for `e13` and `hid`
+because their distance model has no observed/expected measurement. A separate
+downstream rule streams the completed node and promoter-edge tables to create
+this projection. Adding or rebuilding the focused table therefore does not
+download contacts, rebalance matrices, refit decay, or regenerate the
+exhaustive graph.
+
+The two distance-only contexts additionally produce
+`<context>.active_distance_enhancer_gene_candidates.tsv.gz`. This table keeps
+the same enhancer posterior threshold, requires the target promoter to be
+active in that context, and ranks the retained genes by the existing
+`power-law contact weight × promoter activity score`. `is_primary_candidate`
+marks rank 1. Repeated baseline columns report the closest active promoter TSS
+and the closest annotated promoter TSS, including ties, so a nearest-TSS
+assignment can be compared with the activity-weighted ranking. Every row has
+`evidence_type=distance_model_active_promoter`; observed contact and
+observed/expected fields remain blank. Eligible enhancers without an active
+promoter inside the 1-Mb graph window have no row and are counted in the JSON
+metrics sidecar. These files are generated only for `e13` and `hid`, directly
+from their completed node and edge tables.
+
 The edge table is intentionally normalized: coordinates, transcript IDs, and
 element annotations live in the node table rather than being repeated on every
 edge. `source_node_id` and `target_node_id` join the two files.
@@ -512,6 +544,12 @@ The long and wide tables also retain the absolute summit-to-nearest-TSS
 distance and the blacklist overlap annotations. Users can therefore choose a
 posterior threshold, a TSS-distance definition, and a blacklist-overlap policy
 for each downstream analysis rather than accepting a fixed enhancer list.
+
+When the links stage imports a legacy catalog that predates
+`blacklist_overlap`, it preserves that catalog and assigns a dummy value of
+zero to the link-layer element records. Each context metrics file records this
+as `blacklist_overlap_annotation=legacy_catalog_default_zero`; this value means
+unknown/not annotated, not evidence that the element was checked and cleared.
 
 For example, this writes context-member, distal candidates with posterior at
 least 0.9 and no blacklist overlap while discovering columns from the header:
@@ -643,6 +681,10 @@ results/<project>/<run_id>/activity/links/promoters.metrics.json
 results/<project>/<run_id>/activity/links/contexts/<context>.nodes.tsv.gz
 results/<project>/<run_id>/activity/links/contexts/<context>.element_promoter_edges.tsv.gz
 results/<project>/<run_id>/activity/links/contexts/<context>.element_gene_candidates.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<context>.active_contact_enhancer_gene_candidates.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<context>.active_contact_enhancer_gene_candidates.metrics.json
+results/<project>/<run_id>/activity/links/contexts/<distance-context>.active_distance_enhancer_gene_candidates.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<distance-context>.active_distance_enhancer_gene_candidates.metrics.json
 results/<project>/<run_id>/activity/links/contexts/<context>.metrics.json
 results/<project>/<run_id>/activity/links/contact_graph_metrics.json
 results/<project>/<run_id>/activity/links/contact_graph_provenance.json

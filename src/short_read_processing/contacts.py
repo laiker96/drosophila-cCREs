@@ -169,6 +169,37 @@ def _prepare_source(
     return prepared, selected
 
 
+def balance_cooler_with_retry(
+    matrix: Any,
+) -> tuple[np.ndarray, dict[str, Any], list[dict[str, Any]]]:
+    """ICE-balance once, retrying from scratch with a higher limit if needed."""
+
+    cooler = _cooler()
+    attempts: list[dict[str, Any]] = []
+    for iteration_limit in (200, 2_000):
+        weights, balance_stats = cooler.balance_cooler(
+            matrix,
+            ignore_diags=2,
+            mad_max=5,
+            min_nnz=10,
+            tol=1e-5,
+            max_iters=iteration_limit,
+            chunksize=10_000_000,
+            store=True,
+        )
+        variance = float(balance_stats.get("var", math.nan))
+        attempts.append(
+            {
+                "iteration_limit": iteration_limit,
+                "converged": bool(balance_stats.get("converged", False)),
+                "final_variance": variance if math.isfinite(variance) else None,
+            }
+        )
+        if attempts[-1]["converged"]:
+            break
+    return weights, balance_stats, attempts
+
+
 def standardize_context(
     *,
     context: str,
@@ -226,16 +257,7 @@ def standardize_context(
             columns=["count"],
         )
         matrix = cooler.Cooler(str(temporary))
-        weights, balance_stats = cooler.balance_cooler(
-            matrix,
-            ignore_diags=2,
-            mad_max=5,
-            min_nnz=10,
-            tol=1e-5,
-            max_iters=200,
-            chunksize=10_000_000,
-            store=True,
-        )
+        weights, balance_stats, balance_attempts = balance_cooler_with_retry(matrix)
         if not np.isfinite(weights).any():
             raise ValueError(f"Balancing produced no finite weights for {context}")
         information = dict(matrix.info)
@@ -267,6 +289,8 @@ def standardize_context(
         "pixels": int(information["nnz"]),
         "finite_weight_fraction": float(np.isfinite(weights).mean()),
         "balance_converged": bool(balance_stats.get("converged", False)),
+        "balance_retry_used": len(balance_attempts) > 1,
+        "balance_attempts": balance_attempts,
         "caveats": sorted({row["caveat"] for row in rows if row["caveat"]}),
         "intermediate_cleanup": "converted and coarsened work copies removed after success",
     }

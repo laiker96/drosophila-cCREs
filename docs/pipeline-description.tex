@@ -876,6 +876,14 @@ generation, and IGV-session generation are not placed in this DAG.  This makes
 the catalog a downstream artifact boundary without assigning the current BAM
 filtering contract to older alignments that were never processed under it.
 
+Some legacy catalogs predate the \texttt{blacklist\_overlap} column.  The link
+stage does not rewrite those catalogs; it supplies zero as a link-layer dummy
+value so that their graph tables retain the current schema.  The
+\texttt{blacklist\_overlap\_annotation} field in each context metrics file
+labels this case as \texttt{legacy\_catalog\_default\_zero}.  The dummy means
+that overlap is unknown, not that the element was checked against the blacklist
+and found clear.
+
 \subsection{Context mapping and source acquisition}
 
 The link stage is enabled automatically only when the activity configuration
@@ -919,15 +927,18 @@ exactly divides the configured target.  Single-resolution Coolers and converted
 HiCExplorer H5 matrices must satisfy the same divisibility rule.  Coarsening
 sums raw pixel counts; approximate coordinate remapping is rejected.  Within a
 context, prepared replicate matrices are then summed by pixel and one ICE
-balancing pass is applied to the merged count matrix.  This order gives each
-read pair one contribution before normalization and avoids averaging
-independently balanced matrices with incompatible scales or masks.
+normalization is applied to the merged count matrix.  The first attempt has a
+200-iteration limit.  If it does not converge, the calculation restarts from
+uniform weights with a 2,000-iteration limit.  This order gives each read pair
+one contribution before normalization and avoids averaging independently
+balanced matrices with incompatible scales or masks.
 
 The retained result is
 \filep{activity/links/contacts/<context>.balanced.cool}.  Its JSON sidecar
 records source IDs and hashes, original and target resolutions, replicate
-count, matrix dimensions, the finite-weight fraction, convergence status, and
-biological caveats.  Conversion and coarsening copies under
+count, matrix dimensions, the finite-weight fraction, both balancing attempts
+when a retry was needed, final convergence status, and biological caveats.
+Conversion and coarsening copies under
 \filep{work/<project>/<run_id>/activity/contacts/} are reproducible
 intermediates and are removed after a successful normalized matrix is written;
 the downloaded source and balanced result are never modified in place.
@@ -1016,10 +1027,44 @@ and promoter-activity measurements, and four within-element ranks: combined
 candidate score, active-promoter candidate score, contact-only weight, and
 nearest-gene distance.  These parallel ranks expose why a gene is prioritized.
 
-The three graph products per context are
+The focused
+\filep{<context>.active_contact_enhancer_gene_candidates.tsv.gz} projection is
+constructed from the promoter edges before gene collapse.  It retains only
+proximal- or distal-enhancer-like DHSs with element H3K27ac high-component
+posterior at least 0.5 and only edges with observed/expected contact at least
+1.  Alternative promoters are then collapsed and ranks are recomputed within
+the retained genes for that enhancer.  Promoter activity remains an explicit
+annotation rather than an additional hidden filter.  The output contains only
+its header for \texttt{e13} and \texttt{hid}, because a distance prior does not
+provide an observed/expected measurement.  This projection is a separate rule
+whose only scientific inputs are the completed node and promoter-edge tables.
+It can therefore be added to a completed links run without downloading or
+normalizing contacts, refitting decay, or querying the contact matrices again.
+Its JSON sidecar records both input hashes, the two thresholds, retained
+element and gene counts, and the output hash.
+
+For the distance-only contexts, a second focused projection is written as
+\filep{<context>.active\_distance\_enhancer\_gene\_candidates.tsv.gz}.  It
+uses the same enhancer posterior threshold, retains only promoters marked
+active in that context, collapses alternative promoters to genes, and ranks
+them by $E_{\mathrm{atlas}}(d)P_p$.  The rank-1 row is marked as the primary
+distance candidate.  Each row also reports the closest active promoter TSS and
+the closest annotated promoter TSS, including ties, which makes the simple
+nearest-TSS baseline visible beside the activity-weighted distance ranking.
+Observed contact and observed/expected fields remain blank, and
+\texttt{evidence\_type=distance\_model\_active\_promoter} prevents these rows
+from being interpreted as measured contacts.  An eligible enhancer with no
+active promoter inside 1 Mb has no candidate row and is counted in the metrics
+sidecar.  Only \texttt{e13} and \texttt{hid} receive this product.  Like the
+observed-contact projection, it streams completed node and edge tables without
+repeating contact normalization or graph construction.
+
+The graph products per context are
 \filep{contexts/<context>.nodes.tsv.gz},
 \filep{<context>.element_promoter_edges.tsv.gz}, and
-\filep{<context>.element_gene_candidates.tsv.gz} below
+\filep{<context>.element_gene_candidates.tsv.gz}, together with the focused
+active-contact enhancer--gene table and, for distance-only contexts, the
+active-distance table below
 \filep{activity/links/}.  They represent candidate relationships.  ICE values,
 the 1% pseudocount, promoter posterior, and distance model do not yield a
 calibrated interaction probability, and a high rank is not proof of regulation.
@@ -1117,7 +1162,10 @@ Contact links &
 \filep{activity/links/contacts/*.balanced.cool},
 \filep{contacts/dm6_powerlaw.json}, \filep{promoters.tsv.gz},
 \filep{contexts/*.nodes.tsv.gz}, \filep{*.element_promoter_edges.tsv.gz},
-\filep{*.element_gene_candidates.tsv.gz}, metrics, and provenance JSON \\
+\filep{*.element_gene_candidates.tsv.gz},
+\filep{*.active_contact_enhancer_gene_candidates.tsv.gz}, and the
+distance-context \filep{*.active_distance_enhancer_gene_candidates.tsv.gz}
+with metrics sidecars, aggregate metrics, and provenance JSON \\
 Integrated report &
 \filep{activity/report/integrated_qc_report.html},
 \filep{integrated_qc_report.pdf}, and
@@ -1238,6 +1286,9 @@ Contact promoter window & 500 bp & Centered on each distinct dm6 GTF gene/TSS no
 Maximum link distance & 1 Mb & Same-chromosome element summit to promoter TSS \\
 Observed contact pseudocount & 1\% of fitted expectation & Finite weak weight for a zero matrix pixel \\
 Promoter active posterior & 0.5 & Requires an overlapping context-member DHS and H3K27ac high-component posterior \\
+Focused enhancer posterior & 0.5 & Element-level threshold for both focused gene tables \\
+Focused observed/expected contact & 1.0 & Applied to observed promoter edges before gene collapse \\
+Focused distance promoter activity & Active & Required for distance-only gene candidates \\
 \bottomrule
 \end{longtable}
 
@@ -1259,7 +1310,8 @@ MACS3 & 3.0.4 & deepTools & 3.5.6 \\
 MultiQC & 1.35 & phantompeakqualtools & 1.2.2 \\
 R & 4.5.3 & edgeR & 4.8.2 \\
 pyBigWig & 0.3.25 & WeasyPrint & 66.0 \\
-Cooler & 0.10.4 & HiCExplorer & 3.7.6 \\
+pandas & 2.2 & Cooler & 0.10.4 \\
+HiCExplorer & 3.7.6 & HiCMatrix & 17.2 \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -509,14 +509,16 @@ def build_integrated_qc_report(
                 values["active_promoter_count"],
                 values["element_promoter_edge_count"],
                 values["element_gene_candidate_count"],
+                values.get("active_contact_enhancer_gene_candidate_count", 0),
+                values.get("active_distance_enhancer_gene_candidate_count", 0),
             ]
             for context, values in sorted(contact_metrics["contexts"].items())
         ]
         contact_section = f"""
 <section class="stage"><h2>6. Context contact links and candidate genes</h2>
-{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count'))])}
-<p>Observed contexts use the merged, ICE-balanced contact matrix. Contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity.</p>
-{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates'], contact_rows, compact=True)}
+{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count')), ('Focused observed-contact candidates', contact_metrics.get('active_contact_enhancer_gene_candidate_count')), ('Focused distance candidates', contact_metrics.get('active_distance_enhancer_gene_candidate_count'))])}
+<p>Observed contexts use the merged, ICE-balanced contact matrix. Contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity. Focused distance tables require an active promoter and report nearest-active and nearest-annotated TSS baselines without assigning an observed/expected value.</p>
+{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates', 'Focused observed', 'Focused distance'], contact_rows, compact=True)}
 </section>
 """
 

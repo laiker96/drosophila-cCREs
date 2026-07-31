@@ -9,6 +9,7 @@ import csv
 from dataclasses import dataclass
 import gzip
 import io
+from itertools import groupby
 import json
 import math
 import os
@@ -104,6 +105,22 @@ GENE_FIELDS = (
     "contact_gene_rank",
     "nearest_gene_rank",
 )
+
+DISTANCE_MODEL_GENE_FIELDS = GENE_FIELDS + (
+    "evidence_type",
+    "is_primary_candidate",
+    "nearest_active_tss_gene_ids",
+    "nearest_active_tss_gene_names",
+    "nearest_active_tss_distance_bp",
+    "nearest_tss_gene_ids",
+    "nearest_tss_gene_names",
+    "nearest_tss_distance_bp",
+)
+
+ENHANCER_REGULATORY_CLASSES = {
+    "proximal_enhancer_like",
+    "distal_enhancer_like",
+}
 
 NODE_FIELDS = (
     "context",
@@ -380,7 +397,7 @@ def read_promoters(path: Path) -> list[Promoter]:
     return promoters
 
 
-def read_context_elements(path: Path, context: str) -> list[Element]:
+def read_context_elements(path: Path, context: str) -> tuple[list[Element], bool]:
     required = {
         "master_dhs_id",
         "chrom",
@@ -394,15 +411,16 @@ def read_context_elements(path: Path, context: str) -> list[Element]:
         "mixture_high_posterior_probability",
         "activity_state",
         "combined_activity_max_500",
-        "blacklist_overlap",
     }
     elements = []
     seen: set[str] = set()
     with _open_text(path) as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        missing = required - set(reader.fieldnames or ())
+        fieldnames = set(reader.fieldnames or ())
+        missing = required - fieldnames
         if missing:
             raise ValueError(f"{path} lacks catalog fields: {sorted(missing)}")
+        blacklist_overlap_defaulted = "blacklist_overlap" not in fieldnames
         for row in reader:
             if row["context"] != context or row["context_membership"] != "1":
                 continue
@@ -424,12 +442,16 @@ def read_context_elements(path: Path, context: str) -> list[Element]:
                     atac_signal=float(row["atac_normalized_cpm_per_kb"]),
                     h3k27ac_posterior=posterior,
                     combined_activity=float(row["combined_activity_max_500"]),
-                    blacklist_overlap=int(row["blacklist_overlap"]),
+                    blacklist_overlap=(
+                        0
+                        if blacklist_overlap_defaulted
+                        else int(row["blacklist_overlap"])
+                    ),
                 )
             )
     if not elements:
         raise ValueError(f"No context-member elements for {context} in {path}")
-    return elements
+    return elements, blacklist_overlap_defaulted
 
 
 def promoter_activities(
@@ -618,7 +640,7 @@ def _element_gene_rows(
                 row["promoter_id"],
             ),
         )
-        active_rows = [row for row in rows if row["promoter_active"] == 1]
+        active_rows = [row for row in rows if str(row["promoter_active"]) == "1"]
         best_active = (
             max(
                 active_rows,
@@ -720,6 +742,343 @@ def _element_gene_rows(
     return sorted(result, key=lambda row: int(row["candidate_gene_rank"]))
 
 
+def _active_contact_enhancer_gene_rows(
+    element: Element,
+    edge_rows: list[dict[str, Any]],
+    *,
+    element_posterior_threshold: float,
+    observed_over_expected_threshold: float,
+) -> list[dict[str, Any]]:
+    """Project threshold-qualified observed enhancer contacts to genes."""
+
+    if (
+        element.regulatory_class not in ENHANCER_REGULATORY_CLASSES
+        or element.h3k27ac_posterior is None
+        or element.h3k27ac_posterior < element_posterior_threshold
+    ):
+        return []
+    qualifying_edges = [
+        row
+        for row in edge_rows
+        if row["observed_over_expected"] != ""
+        and float(row["observed_over_expected"])
+        >= observed_over_expected_threshold
+    ]
+    return _element_gene_rows(element, qualifying_edges)
+
+
+def _focused_candidate_elements(
+    *,
+    context: str,
+    nodes_path: Path,
+    element_posterior_threshold: float,
+) -> tuple[dict[str, Element], set[str], int]:
+    """Read threshold-qualified enhancer nodes for a focused projection."""
+
+    elements: dict[str, Element] = {}
+    all_element_ids: set[str] = set()
+    element_node_count = 0
+    with _open_text(nodes_path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = set(NODE_FIELDS) - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"{nodes_path} lacks node fields: {sorted(missing)}")
+        for row in reader:
+            if row["context"] != context:
+                raise ValueError(
+                    f"{nodes_path} contains context {row['context']!r}, "
+                    f"expected {context!r}"
+                )
+            if row["node_type"] != "element":
+                continue
+            element_node_count += 1
+            master_dhs_id = row["master_dhs_id"]
+            if master_dhs_id in all_element_ids:
+                raise ValueError(f"{nodes_path} repeats element {master_dhs_id}")
+            all_element_ids.add(master_dhs_id)
+            posterior = (
+                float(row["h3k27ac_posterior"])
+                if row["h3k27ac_posterior"]
+                else None
+            )
+            element = Element(
+                master_dhs_id=master_dhs_id,
+                chrom=row["chrom"],
+                start=int(row["start"]),
+                end=int(row["end"]),
+                summit=int(row["anchor"]),
+                regulatory_class=row["regulatory_class"],
+                activity_state="",
+                atac_signal=float(row["atac_signal"]),
+                h3k27ac_posterior=posterior,
+                combined_activity=float(row["combined_activity"]),
+                blacklist_overlap=int(row["blacklist_overlap"]),
+            )
+            if (
+                element.regulatory_class in ENHANCER_REGULATORY_CLASSES
+                and posterior is not None
+                and posterior >= element_posterior_threshold
+            ):
+                elements[element.master_dhs_id] = element
+    return elements, all_element_ids, element_node_count
+
+
+def build_active_contact_enhancer_gene_candidates(
+    *,
+    context: str,
+    nodes_path: Path,
+    edges_path: Path,
+    element_posterior_threshold: float,
+    observed_over_expected_threshold: float,
+    output: Path,
+    metrics_output: Path,
+) -> dict[str, Any]:
+    """Derive the focused enhancer--gene table from completed graph tables."""
+
+    if not 0 <= element_posterior_threshold <= 1:
+        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
+    if observed_over_expected_threshold < 0:
+        raise ValueError("Candidate observed/expected threshold cannot be negative")
+
+    elements, all_element_ids, element_node_count = _focused_candidate_elements(
+        context=context,
+        nodes_path=nodes_path,
+        element_posterior_threshold=element_posterior_threshold,
+    )
+
+    candidate_count = 0
+    candidate_element_ids: set[str] = set()
+
+    def candidate_rows():
+        nonlocal candidate_count
+        seen: set[str] = set()
+        with _open_text(edges_path) as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            missing = set(EDGE_FIELDS) - set(reader.fieldnames or ())
+            if missing:
+                raise ValueError(f"{edges_path} lacks edge fields: {sorted(missing)}")
+            for master_dhs_id, grouped_rows in groupby(
+                reader, key=lambda row: row["master_dhs_id"]
+            ):
+                if master_dhs_id in seen:
+                    raise ValueError(
+                        f"{edges_path} has non-contiguous edges for {master_dhs_id}"
+                    )
+                seen.add(master_dhs_id)
+                edge_rows = list(grouped_rows)
+                if any(row["context"] != context for row in edge_rows):
+                    raise ValueError(
+                        f"{edges_path} contains an edge outside context {context!r}"
+                    )
+                if master_dhs_id not in all_element_ids:
+                    raise ValueError(
+                        f"{edges_path} references unknown element {master_dhs_id}"
+                    )
+                element = elements.get(master_dhs_id)
+                if element is None:
+                    continue
+                rows = _active_contact_enhancer_gene_rows(
+                    element,
+                    edge_rows,
+                    element_posterior_threshold=element_posterior_threshold,
+                    observed_over_expected_threshold=(
+                        observed_over_expected_threshold
+                    ),
+                )
+                if rows:
+                    candidate_element_ids.add(master_dhs_id)
+                candidate_count += len(rows)
+                yield from rows
+
+    _atomic_tsv(output, GENE_FIELDS, candidate_rows())
+    metrics = {
+        "schema_version": 1,
+        "context": context,
+        "method": "active_contact_enhancer_gene_candidates_v1",
+        "element_posterior_threshold": element_posterior_threshold,
+        "observed_over_expected_threshold": observed_over_expected_threshold,
+        "selection": (
+            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
+            ">= element threshold and observed_over_expected >= contact threshold"
+        ),
+        "element_node_count": element_node_count,
+        "qualifying_element_count": len(elements),
+        "element_with_candidate_count": len(candidate_element_ids),
+        "active_contact_enhancer_gene_candidate_count": candidate_count,
+        "inputs": {
+            "nodes": {"path": str(nodes_path), "sha256": sha256_file(nodes_path)},
+            "element_promoter_edges": {
+                "path": str(edges_path),
+                "sha256": sha256_file(edges_path),
+            },
+        },
+        "output": {"path": str(output), "sha256": sha256_file(output)},
+    }
+    write_json_atomic(metrics_output, metrics)
+    return metrics
+
+
+def _nearest_tss_summary(
+    edge_rows: list[dict[str, Any]],
+) -> tuple[str, str, str]:
+    if not edge_rows:
+        return "", "", ""
+    minimum_distance = min(int(row["distance_bp"]) for row in edge_rows)
+    nearest = sorted(
+        {
+            (row["gene_id"], row["gene_name"])
+            for row in edge_rows
+            if int(row["distance_bp"]) == minimum_distance
+        }
+    )
+    return (
+        ";".join(gene_id for gene_id, _gene_name in nearest),
+        ";".join(gene_name for _gene_id, gene_name in nearest),
+        str(minimum_distance),
+    )
+
+
+def _active_distance_enhancer_gene_rows(
+    element: Element,
+    edge_rows: list[dict[str, Any]],
+    *,
+    element_posterior_threshold: float,
+) -> list[dict[str, Any]]:
+    """Project active-promoter distance-model edges to ranked genes."""
+
+    if (
+        element.regulatory_class not in ENHANCER_REGULATORY_CLASSES
+        or element.h3k27ac_posterior is None
+        or element.h3k27ac_posterior < element_posterior_threshold
+    ):
+        return []
+    if any(row["contact_strategy"] != "powerlaw" for row in edge_rows):
+        raise ValueError("Distance candidates require powerlaw contact edges")
+    if any(
+        row["observed_balanced_contact"] != ""
+        or row["observed_over_expected"] != ""
+        for row in edge_rows
+    ):
+        raise ValueError("Distance candidates cannot contain observed contact values")
+
+    active_edges = [row for row in edge_rows if str(row["promoter_active"]) == "1"]
+    nearest_active = _nearest_tss_summary(active_edges)
+    nearest_all = _nearest_tss_summary(edge_rows)
+    rows = _element_gene_rows(element, active_edges)
+    for row in rows:
+        row.update(
+            {
+                "evidence_type": "distance_model_active_promoter",
+                "is_primary_candidate": int(row["candidate_gene_rank"] == 1),
+                "nearest_active_tss_gene_ids": nearest_active[0],
+                "nearest_active_tss_gene_names": nearest_active[1],
+                "nearest_active_tss_distance_bp": nearest_active[2],
+                "nearest_tss_gene_ids": nearest_all[0],
+                "nearest_tss_gene_names": nearest_all[1],
+                "nearest_tss_distance_bp": nearest_all[2],
+            }
+        )
+    return rows
+
+
+def build_active_distance_enhancer_gene_candidates(
+    *,
+    context: str,
+    nodes_path: Path,
+    edges_path: Path,
+    element_posterior_threshold: float,
+    output: Path,
+    metrics_output: Path,
+) -> dict[str, Any]:
+    """Derive ranked active-promoter candidates for a distance-only context."""
+
+    if not 0 <= element_posterior_threshold <= 1:
+        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
+    elements, all_element_ids, element_node_count = _focused_candidate_elements(
+        context=context,
+        nodes_path=nodes_path,
+        element_posterior_threshold=element_posterior_threshold,
+    )
+
+    candidate_count = 0
+    candidate_element_ids: set[str] = set()
+
+    def candidate_rows():
+        nonlocal candidate_count
+        seen: set[str] = set()
+        with _open_text(edges_path) as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            missing = set(EDGE_FIELDS) - set(reader.fieldnames or ())
+            if missing:
+                raise ValueError(f"{edges_path} lacks edge fields: {sorted(missing)}")
+            for master_dhs_id, grouped_rows in groupby(
+                reader, key=lambda row: row["master_dhs_id"]
+            ):
+                if master_dhs_id in seen:
+                    raise ValueError(
+                        f"{edges_path} has non-contiguous edges for {master_dhs_id}"
+                    )
+                seen.add(master_dhs_id)
+                edge_rows = list(grouped_rows)
+                if any(row["context"] != context for row in edge_rows):
+                    raise ValueError(
+                        f"{edges_path} contains an edge outside context {context!r}"
+                    )
+                if master_dhs_id not in all_element_ids:
+                    raise ValueError(
+                        f"{edges_path} references unknown element {master_dhs_id}"
+                    )
+                element = elements.get(master_dhs_id)
+                if element is None:
+                    continue
+                rows = _active_distance_enhancer_gene_rows(
+                    element,
+                    edge_rows,
+                    element_posterior_threshold=element_posterior_threshold,
+                )
+                if rows:
+                    candidate_element_ids.add(master_dhs_id)
+                candidate_count += len(rows)
+                yield from rows
+
+    _atomic_tsv(output, DISTANCE_MODEL_GENE_FIELDS, candidate_rows())
+    metrics = {
+        "schema_version": 1,
+        "context": context,
+        "method": "active_distance_enhancer_gene_candidates_v1",
+        "evidence_type": "distance_model_active_promoter",
+        "element_posterior_threshold": element_posterior_threshold,
+        "promoter_activity_required": True,
+        "selection": (
+            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
+            ">= element threshold and promoter_active = 1"
+        ),
+        "ranking": "powerlaw contact weight * promoter activity score",
+        "nearest_tss_baselines": (
+            "closest active promoter TSS and closest annotated promoter TSS "
+            "within the upstream maximum-distance window"
+        ),
+        "observed_contact_values": "not_applicable",
+        "element_node_count": element_node_count,
+        "qualifying_element_count": len(elements),
+        "element_with_candidate_count": len(candidate_element_ids),
+        "qualifying_element_without_active_promoter_count": (
+            len(elements) - len(candidate_element_ids)
+        ),
+        "active_distance_enhancer_gene_candidate_count": candidate_count,
+        "inputs": {
+            "nodes": {"path": str(nodes_path), "sha256": sha256_file(nodes_path)},
+            "element_promoter_edges": {
+                "path": str(edges_path),
+                "sha256": sha256_file(edges_path),
+            },
+        },
+        "output": {"path": str(output), "sha256": sha256_file(output)},
+    }
+    write_json_atomic(metrics_output, metrics)
+    return metrics
+
+
 def build_context_links(
     *,
     context: str,
@@ -748,7 +1107,9 @@ def build_context_links(
     if not 0 <= pseudocount_fraction <= 1 or not 0 <= posterior_threshold <= 1:
         raise ValueError("Contact pseudocount and posterior threshold must be in [0, 1]")
     promoters = read_promoters(promoters_path)
-    elements = read_context_elements(context_elements, context)
+    elements, blacklist_overlap_defaulted = read_context_elements(
+        context_elements, context
+    )
     activities = promoter_activities(promoters, elements, posterior_threshold)
     with powerlaw_path.open(encoding="utf-8") as handle:
         powerlaw = json.load(handle)
@@ -912,7 +1273,7 @@ def build_context_links(
             for row in gene_rows:
                 yield "gene", row
 
-    # Stream the expensive pair construction once into two atomic outputs.
+    # Stream the expensive pair construction once into both atomic outputs.
     edges_output.parent.mkdir(parents=True, exist_ok=True)
     genes_output.parent.mkdir(parents=True, exist_ok=True)
     edge_descriptor, edge_temporary_name = tempfile.mkstemp(
@@ -964,6 +1325,11 @@ def build_context_links(
         "maximum_distance_bp": maximum_distance,
         "pseudocount_fraction": pseudocount_fraction,
         "promoter_posterior_threshold": posterior_threshold,
+        "blacklist_overlap_annotation": (
+            "legacy_catalog_default_zero"
+            if blacklist_overlap_defaulted
+            else "catalog"
+        ),
         "promoter_activity_method": "maximum over context-member master DHSs "
         "overlapping the fixed promoter window",
         "link_score": "contact_weight * maximum over overlapping DHSs of "
@@ -1018,6 +1384,8 @@ def build_context_links(
 def aggregate_link_metrics(
     *,
     context_metric_paths: list[Path],
+    candidate_metric_paths: list[Path],
+    distance_candidate_metric_paths: list[Path],
     source_manifest: Path,
     promoter_metrics: Path,
     contact_metrics: list[Path],
@@ -1030,6 +1398,35 @@ def aggregate_link_metrics(
         with path.open(encoding="utf-8") as handle:
             contexts.append(json.load(handle))
     contexts.sort(key=lambda row: row["context"])
+    candidate_metrics = []
+    for path in candidate_metric_paths:
+        with path.open(encoding="utf-8") as handle:
+            candidate_metrics.append(json.load(handle))
+    candidates_by_context = {
+        row["context"]: row for row in candidate_metrics
+    }
+    if len(candidates_by_context) != len(candidate_metrics):
+        raise ValueError("Focused candidate metrics repeat a context")
+    if set(candidates_by_context) != {row["context"] for row in contexts}:
+        raise ValueError("Focused candidate metrics do not match graph contexts")
+    distance_candidate_metrics = []
+    for path in distance_candidate_metric_paths:
+        with path.open(encoding="utf-8") as handle:
+            distance_candidate_metrics.append(json.load(handle))
+    distance_candidates_by_context = {
+        row["context"]: row for row in distance_candidate_metrics
+    }
+    if len(distance_candidates_by_context) != len(distance_candidate_metrics):
+        raise ValueError("Distance candidate metrics repeat a context")
+    powerlaw_contexts = {
+        row["context"]
+        for row in contexts
+        if row["contact_strategy"] == "powerlaw"
+    }
+    if set(distance_candidates_by_context) != powerlaw_contexts:
+        raise ValueError(
+            "Distance candidate metrics do not match powerlaw graph contexts"
+        )
     metrics = {
         "schema_version": 1,
         "context_count": len(contexts),
@@ -1044,6 +1441,14 @@ def aggregate_link_metrics(
         ),
         "element_gene_candidate_count": sum(
             int(row["element_gene_candidate_count"]) for row in contexts
+        ),
+        "active_contact_enhancer_gene_candidate_count": sum(
+            int(row["active_contact_enhancer_gene_candidate_count"])
+            for row in candidate_metrics
+        ),
+        "active_distance_enhancer_gene_candidate_count": sum(
+            int(row["active_distance_enhancer_gene_candidate_count"])
+            for row in distance_candidate_metrics
         ),
         "contexts": {
             row["context"]: {
@@ -1060,11 +1465,31 @@ def aggregate_link_metrics(
                     "element_gene_candidate_count",
                 )
             }
+            | {
+                "active_contact_enhancer_gene_candidate_count": (
+                    candidates_by_context[row["context"]][
+                        "active_contact_enhancer_gene_candidate_count"
+                    ]
+                ),
+                "active_distance_enhancer_gene_candidate_count": (
+                    distance_candidates_by_context.get(row["context"], {}).get(
+                        "active_distance_enhancer_gene_candidate_count", 0
+                    )
+                ),
+            }
             for row in contexts
         },
     }
     write_json_atomic(output_metrics, metrics)
-    inputs = [source_manifest, promoter_metrics, powerlaw, *contact_metrics, *context_metric_paths]
+    inputs = [
+        source_manifest,
+        promoter_metrics,
+        powerlaw,
+        *contact_metrics,
+        *context_metric_paths,
+        *candidate_metric_paths,
+        *distance_candidate_metric_paths,
+    ]
     provenance = {
         "schema_version": 1,
         "method": "context_contact_graph_v1",

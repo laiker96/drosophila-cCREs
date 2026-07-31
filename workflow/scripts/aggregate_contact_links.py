@@ -7,6 +7,12 @@ from short_read_processing.contact_links import aggregate_link_metrics
 
 metrics, _provenance = aggregate_link_metrics(
     context_metric_paths=[Path(str(path)) for path in snakemake.input.context_metrics],
+    candidate_metric_paths=[
+        Path(str(path)) for path in snakemake.input.candidate_metrics
+    ],
+    distance_candidate_metric_paths=[
+        Path(str(path)) for path in snakemake.input.distance_candidate_metrics
+    ],
     source_manifest=Path(str(snakemake.input.manifest)),
     promoter_metrics=Path(str(snakemake.input.promoter_metrics)),
     contact_metrics=[Path(str(path)) for path in snakemake.input.contact_metrics],
