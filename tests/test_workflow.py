@@ -758,3 +758,10 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
     ):
         assert expected in output
     assert "build_integrated_qc_report" not in output
+
+
+def test_contact_downloads_use_geo_compatible_single_connections():
+    rules = (REPO_ROOT / "workflow" / "rules" / "contacts.smk").read_text()
+
+    assert rules.count("--max-connection-per-server=1 --split=1") == 3
+    assert "--max-connection-per-server=8 --split=8" not in rules

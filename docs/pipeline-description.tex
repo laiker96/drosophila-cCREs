@@ -888,7 +888,8 @@ The observed matrices are resumably downloaded to
 when one is published.  Empty checksum cells mean that no source checksum was
 claimed, not that integrity is ignored: the computed SHA-256 of every source
 file is frozen in the normalization metrics and final provenance.  Source
-matrices are immutable inputs.
+matrices are immutable inputs.  GEO supplementary files use one connection;
+its server rejects the parallel range requests used by the general downloader.
 
 \subsection{Resolution harmonization and balancing}
 

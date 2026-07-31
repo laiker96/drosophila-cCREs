@@ -377,7 +377,9 @@ workflow selects a stored resolution that exactly divides the target
 resolution, coarsens by summing raw counts when needed, sums replicate count
 matrices, and performs one ICE balancing pass on the merged matrix. It never
 averages pre-balanced replicates or approximately rebins incompatible
-resolutions. When an upstream checksum is published it is checked during the
+resolutions. GEO contact downloads use one resumable connection because its
+supplementary-file server rejects parallel range requests. When an upstream
+checksum is published it is checked during the
 resumable download; every downloaded source and normalized matrix receives a
 recorded SHA-256 in the result provenance. Converted and coarsened copies under
 `work/` are removed after the balanced context matrix is written successfully.
