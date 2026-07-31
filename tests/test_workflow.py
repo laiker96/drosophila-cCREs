@@ -759,6 +759,43 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         assert expected in output
     assert "build_integrated_qc_report" not in output
 
+    imported_paths = {}
+    for field in ("catalog", "metrics", "provenance", "resolved_config", "manifest"):
+        path = tmp_path / f"imported-{field}"
+        path.write_bytes(field.encode())
+        imported_paths[field] = path
+    config.pop("activity")
+    config["input_stage"] = "catalog"
+    config["start_stage"] = "catalog"
+    config["run_id"] = "contact-import"
+    config["catalog_import"] = {
+        "schema_version": 1,
+        "manifest": str(imported_paths["manifest"]),
+        "manifest_sha256": sha256_file(imported_paths["manifest"]),
+        "genome": "dm6",
+        "method": "catalog-v1",
+        "contexts": ["observed", "modelled"],
+        "source_project": "atlas",
+        "source_run_id": "catalog-v1",
+        "source_semantic_sha256": "a" * 64,
+        "source_sample_sheet_sha256": "b" * 64,
+        **{
+            key: value
+            for field in ("catalog", "metrics", "provenance", "resolved_config")
+            for key, value in (
+                (field, str(imported_paths[field])),
+                (f"{field}_sha256", sha256_file(imported_paths[field])),
+            )
+        },
+    }
+
+    imported_output = _dry_run(tmp_path, config, "contact-links-import")
+
+    assert "build_context_contact_links" in imported_output
+    assert str(imported_paths["catalog"]) in imported_output
+    assert "build_regulatory_element_catalog" not in imported_output
+    assert "build_catalog_bed_tracks" not in imported_output
+
 
 def test_contact_downloads_use_geo_compatible_single_connections():
     rules = (REPO_ROOT / "workflow" / "rules" / "contacts.smk").read_text()

@@ -46,6 +46,21 @@ MASTER_REQUIRED_COLUMNS = {
     *MASTER_FILE_FIELDS,
     *(f"{field}_sha256" for field in MASTER_FILE_FIELDS),
 }
+CATALOG_FILE_FIELDS = (
+    "catalog",
+    "metrics",
+    "provenance",
+    "resolved_config",
+)
+CATALOG_REQUIRED_COLUMNS = {
+    "genome",
+    "method",
+    "contexts",
+    "source_project",
+    "source_run_id",
+    *CATALOG_FILE_FIELDS,
+    *(f"{field}_sha256" for field in CATALOG_FILE_FIELDS),
+}
 
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -237,4 +252,96 @@ def read_master_manifest(
         )
     if len({result[field] for field in MASTER_FILE_FIELDS}) != len(MASTER_FILE_FIELDS):
         raise AcquisitionError("Master manifest artifact paths must be distinct")
+    return result
+
+
+def read_catalog_manifest(
+    path: Path,
+    *,
+    require_files: bool = True,
+) -> dict[str, Any]:
+    """Read and verify one immutable context-resolved catalog bundle."""
+
+    path = path.resolve()
+    columns, rows = read_delimited_rows(path)
+    _require_columns(path, columns, CATALOG_REQUIRED_COLUMNS)
+    if len(rows) != 1:
+        raise AcquisitionError(f"Catalog manifest {path} must contain exactly one data row")
+    raw = rows[0]
+    contexts = [item.strip() for item in raw["contexts"].split(",") if item.strip()]
+    if (
+        not contexts
+        or len(contexts) != len(set(contexts))
+        or any(not SAFE_ID_RE.fullmatch(item) for item in contexts)
+    ):
+        raise AcquisitionError("Catalog manifest contexts must be safe and unique")
+    result: dict[str, Any] = {
+        "genome": _safe_id(raw["genome"], field="genome", line=2),
+        "method": _safe_id(raw["method"], field="method", line=2),
+        "contexts": contexts,
+        "source_project": _safe_id(
+            raw["source_project"], field="source_project", line=2
+        ),
+        "source_run_id": _safe_id(
+            raw["source_run_id"], field="source_run_id", line=2
+        ),
+    }
+    for field in CATALOG_FILE_FIELDS:
+        artifact = _artifact_path(raw[field], manifest=path, field=field, line=2)
+        digest = _sha256(
+            raw[f"{field}_sha256"], field=f"{field}_sha256", line=2
+        )
+        if require_files:
+            if not artifact.is_file():
+                raise AcquisitionError(f"Catalog artifact does not exist: {artifact}")
+            if sha256_file(artifact) != digest:
+                raise AcquisitionError(f"Catalog artifact SHA-256 mismatch: {artifact}")
+        result[field] = str(artifact)
+        result[f"{field}_sha256"] = digest
+    if len({result[field] for field in CATALOG_FILE_FIELDS}) != len(
+        CATALOG_FILE_FIELDS
+    ):
+        raise AcquisitionError("Catalog manifest artifact paths must be distinct")
+
+    if require_files:
+        try:
+            metrics = json.loads(Path(result["metrics"]).read_text(encoding="utf-8"))
+            provenance = json.loads(
+                Path(result["provenance"]).read_text(encoding="utf-8")
+            )
+            resolved = json.loads(
+                Path(result["resolved_config"]).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as error:
+            raise AcquisitionError(f"Cannot read catalog metadata: {error}") from error
+        if (
+            metrics.get("catalog_sha256") != result["catalog_sha256"]
+            or metrics.get("method") != result["method"]
+            or int(metrics.get("context_count", -1)) != len(contexts)
+        ):
+            raise AcquisitionError("Catalog metrics disagree with the manifest")
+        if (
+            provenance.get("outputs", {}).get("catalog", {}).get("sha256")
+            != result["catalog_sha256"]
+        ):
+            raise AcquisitionError("Catalog provenance disagrees with the manifest")
+        if (
+            resolved.get("project") != result["source_project"]
+            or resolved.get("run_id") != result["source_run_id"]
+            or resolved.get("reference", {}).get("name") != result["genome"]
+            or resolved.get("activity", {}).get("contexts") != contexts
+        ):
+            raise AcquisitionError("Catalog resolved configuration disagrees with the manifest")
+        semantic = resolved.get("provenance", {}).get("semantic_sha256")
+        if not isinstance(semantic, str) or not SHA256_RE.fullmatch(semantic):
+            raise AcquisitionError("Catalog source semantic SHA-256 is invalid")
+        result["source_semantic_sha256"] = semantic
+        sample_sheet_sha256 = resolved.get("provenance", {}).get(
+            "sample_sheet_sha256"
+        )
+        if not isinstance(sample_sheet_sha256, str) or not SHA256_RE.fullmatch(
+            sample_sheet_sha256
+        ):
+            raise AcquisitionError("Catalog source sample-sheet SHA-256 is invalid")
+        result["source_sample_sheet_sha256"] = sample_sheet_sha256
     return result

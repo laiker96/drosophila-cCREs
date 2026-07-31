@@ -180,7 +180,7 @@ artifacts cause an error rather than upstream recomputation.
 | `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
 | `master` | `--master-manifest`; accepted BAM manifests when continuing | master, quantification, catalog, links, or report |
 | `quantification` | quantification checkpoint | quantification, catalog, links, or report |
-| `catalog` | catalog checkpoint | catalog, links, or report |
+| `catalog` | catalog checkpoint, or `--catalog-manifest` for an immutable external catalog | catalog, links, or report from a checkpoint; links only from a catalog manifest |
 | `links` | links checkpoint | links or report |
 | `report` | report checkpoint | report validation |
 
@@ -372,6 +372,34 @@ the seven observed maps. A partial or non-dm6 catalog does not silently inherit
 this atlas mapping and cannot select the `links` endpoint without an explicit,
 valid contact configuration.
 
+A completed catalog can enter the link stage without revalidating or relabeling
+its historical BAMs. First export a one-row bundle manifest, then start a new
+result namespace from that catalog:
+
+```bash
+python src/create_catalog_manifest.py \
+  results/drosophila-atlas/catalog-from-reviewed-v1 \
+  --output data/reviewed/atlas-catalog.reviewed.tsv
+
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage catalog --until-stage links \
+  --catalog-manifest data/reviewed/atlas-catalog.reviewed.tsv \
+  --project drosophila-atlas --run-id contact-links-from-catalog-v1 \
+  --genome dm6 --cores 8 \
+  --snakemake-arg=--resources \
+  --snakemake-arg=mem_mb=16000 \
+  --snakemake-arg=contact_download_slots=2
+```
+
+The manifest binds the long catalog, catalog metrics, catalog provenance, and
+the source resolved configuration by SHA-256. It also records the exact context
+order and source semantic digest. The supplied accession table must hash to the
+same table recorded by the source catalog. This path consumes the existing
+context rows directly, writes only contact/link products in the new run, and
+does not schedule quantification, catalog reconstruction, BigWigs, or IGV
+sessions. A catalog checkpoint remains the appropriate input when continuing
+inside the original run namespace.
+
 Contact files download to `data/raw/contacts/`. For each observed context, the
 workflow selects a stored resolution that exactly divides the target
 resolution, coarsens by summing raw counts when needed, sums replicate count
@@ -383,6 +411,9 @@ checksum is published it is checked during the
 resumable download; every downloaded source and normalized matrix receives a
 recorded SHA-256 in the result provenance. Converted and coarsened copies under
 `work/` are removed after the balanced context matrix is written successfully.
+Each GEO file uses one HTTP connection; the optional
+`contact_download_slots` aggregate resource controls how many independent files
+Snakemake downloads concurrently.
 
 The current dm6 GTF supplies one promoter node per distinct gene/TSS, using a
 fixed 500-bp promoter window. In each context, promoter activity is summarized

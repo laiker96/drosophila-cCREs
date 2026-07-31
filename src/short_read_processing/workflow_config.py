@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .accessions import AcquisitionError
-from .artifacts import FINAL_BAM_FILTERING_CONTRACT, semantic_sha256, sha256_file
+from .artifacts import (
+    CATALOG_FILE_FIELDS,
+    FINAL_BAM_FILTERING_CONTRACT,
+    semantic_sha256,
+    sha256_file,
+)
 from .stage_checkpoints import LOGICAL_STAGES
 from .contact_metadata import read_contact_source_manifest
 
@@ -80,6 +85,20 @@ ACTIVITY_LIBRARY_FIELDS = {
     "bai_sha256",
     "filtering_contract",
     "qc_status",
+}
+CATALOG_IMPORT_FIELDS = {
+    "schema_version",
+    "manifest",
+    "manifest_sha256",
+    "genome",
+    "method",
+    "contexts",
+    "source_project",
+    "source_run_id",
+    "source_semantic_sha256",
+    "source_sample_sheet_sha256",
+    *CATALOG_FILE_FIELDS,
+    *(f"{field}_sha256" for field in CATALOG_FILE_FIELDS),
 }
 CONTACT_FIELDS = {
     "schema_version",
@@ -253,7 +272,13 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         raise AcquisitionError("reference must be a mapping")
     _required(config["reference"], REFERENCE_FIELDS, "Reference")
     input_stage = str(config.get("input_stage", "accessions"))
-    if input_stage not in {"accessions", "final-bam", "master", "quantification"}:
+    if input_stage not in {
+        "accessions",
+        "final-bam",
+        "master",
+        "quantification",
+        "catalog",
+    }:
         raise AcquisitionError(f"Unsupported input_stage: {input_stage!r}")
     start_stage = str(config.get("start_stage", input_stage))
     output_stage = validate_stage_selection(start_stage, config.get("output_stage"))
@@ -268,6 +293,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             "links",
             "report",
         },
+        "catalog": {"catalog", "links"},
     }
     if start_stage not in valid_input_modes[input_stage]:
         raise AcquisitionError(
@@ -308,6 +334,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     elif external_master is not None:
         raise AcquisitionError("external_master requires input_stage=master")
     activity = config.get("activity")
+    catalog_import = config.get("catalog_import")
     if input_stage == "quantification":
         if config["assay"] != "activity" or not isinstance(activity, dict):
             raise AcquisitionError(
@@ -491,9 +518,57 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     elif activity is not None:
         raise AcquisitionError("activity mapping requires input_stage=quantification")
 
+    if input_stage == "catalog":
+        if config["assay"] != "activity" or not isinstance(catalog_import, dict):
+            raise AcquisitionError(
+                "Catalog input stage requires assay=activity and catalog_import"
+            )
+        if output_stage != "links":
+            raise AcquisitionError("Catalog import currently supports only links output")
+        _required(catalog_import, CATALOG_IMPORT_FIELDS, "Catalog import")
+        if catalog_import["schema_version"] != 1:
+            raise AcquisitionError("Unsupported catalog-import schema version")
+        if catalog_import["genome"] != config["reference"]["name"]:
+            raise AcquisitionError("Imported catalog and reference genomes differ")
+        for field in ("method", "source_project", "source_run_id"):
+            if not SAFE_ID_RE.fullmatch(str(catalog_import[field])):
+                raise AcquisitionError(f"Catalog import {field} is invalid")
+        catalog_contexts = catalog_import["contexts"]
+        if (
+            not isinstance(catalog_contexts, list)
+            or not catalog_contexts
+            or len(catalog_contexts) != len(set(catalog_contexts))
+            or any(
+                not SAFE_ID_RE.fullmatch(str(context))
+                for context in catalog_contexts
+            )
+        ):
+            raise AcquisitionError("Catalog import contexts are invalid")
+        digest_fields = {
+            "manifest_sha256",
+            "source_semantic_sha256",
+            "source_sample_sheet_sha256",
+            *(f"{field}_sha256" for field in CATALOG_FILE_FIELDS),
+        }
+        for field in digest_fields:
+            if not re.fullmatch(r"[0-9a-f]{64}", str(catalog_import[field])):
+                raise AcquisitionError(f"Catalog import {field} is not a SHA-256 digest")
+        for field in ("manifest", *CATALOG_FILE_FIELDS):
+            if not catalog_import[field]:
+                raise AcquisitionError(f"Catalog import {field} path is blank")
+            artifact = Path(str(catalog_import[field]))
+            if artifact.is_file():
+                digest_field = (
+                    "manifest_sha256" if field == "manifest" else f"{field}_sha256"
+                )
+                if sha256_file(artifact) != catalog_import[digest_field]:
+                    raise AcquisitionError(f"Catalog import {field} SHA-256 mismatch")
+    elif catalog_import is not None:
+        raise AcquisitionError("catalog_import requires input_stage=catalog")
+
     contacts = config.get("contacts")
     if contacts is not None:
-        if input_stage != "quantification" or config["assay"] != "activity":
+        if input_stage not in {"quantification", "catalog"} or config["assay"] != "activity":
             raise AcquisitionError(
                 "Contact links require an activity configuration"
             )
@@ -572,7 +647,12 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                     raise AcquisitionError(
                         f"Power-law context {context_id!r} must use distance_model"
                     )
-        if set(context_ids) != set(activity["contexts"]):
+        expected_contexts = (
+            activity["contexts"]
+            if input_stage == "quantification"
+            else catalog_import["contexts"]
+        )
+        if set(context_ids) != set(expected_contexts):
             raise AcquisitionError(
                 "Contact contexts must exactly match activity contexts"
             )
@@ -680,10 +760,10 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
 
     samples = config["samples"]
     if not isinstance(samples, list) or (
-        not samples and input_stage not in {"master", "quantification"}
+        not samples and input_stage not in {"master", "quantification", "catalog"}
     ):
         raise AcquisitionError("samples must be a non-empty list")
-    if input_stage in {"master", "quantification"} and samples:
+    if input_stage in {"master", "quantification", "catalog"} and samples:
         raise AcquisitionError(
             f"{input_stage.capitalize()} configuration must not schedule sample processing"
         )
@@ -914,6 +994,13 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
         ):
             path = Path(activity["master"][key])
             activity["master"][key] = str(
+                path if path.is_absolute() else (base / path).resolve()
+            )
+    catalog_import = config.get("catalog_import")
+    if catalog_import:
+        for key in ("manifest", *CATALOG_FILE_FIELDS):
+            path = Path(catalog_import[key])
+            catalog_import[key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )
     contacts = config.get("contacts")

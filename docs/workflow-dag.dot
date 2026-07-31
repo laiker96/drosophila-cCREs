@@ -73,6 +73,7 @@ digraph workflow {
     quantify [label="Normalized context signals +\nmaster-DHS activity table\nquantification checkpoint", fillcolor="#ffe5a8"];
     mixture [label="Context-averaged max window +\nguarded two-Gaussian fit", fillcolor="#f7e4b2"];
     catalog [label="Posterior/TSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
+    catalogbundle [label="Checksummed completed catalog\ndownstream restart bundle", shape=note, fillcolor="#f7e4b2"];
     browser [label="Mean TMM ATAC + H3 tracks\nDHS/cCRE IGV bundles", fillcolor="#e1f0f7"];
     contacts [label="Versioned dm6 contact sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
     normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
@@ -96,11 +97,12 @@ digraph workflow {
     catalog -> browser;
     contacts -> normalizecontacts -> decay -> links;
     catalog -> links;
+    catalogbundle -> links [style=dashed, label="restart"];
     browser -> report;
     links -> report;
     sources -> report [style=dashed];
     {rank=same; exact; background; windows;}
-    {rank=same; browser; contacts; sources;}
+    {rank=same; browser; contacts; sources; catalogbundle;}
   }
 
   reviewtable -> review;

@@ -185,6 +185,23 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
     # boundaries, so promoter annotation must not assume disjoint intervals.
     elements = tmp_path / "ctx.elements.tsv.gz"
     rows = []
+    rows.append(
+        {
+            "master_dhs_id": "DHS_other",
+            "chrom": "chr2L",
+            "start": 100,
+            "end": 200,
+            "summit": 150,
+            "context": "other",
+            "context_membership": 0,
+            "regulatory_class": "distal",
+            "atac_normalized_cpm_per_kb": 0,
+            "mixture_high_posterior_probability": "",
+            "activity_state": "not_accessible",
+            "combined_activity_max_500": 0,
+            "blacklist_overlap": 0,
+        }
+    )
     for identifier, start, end, summit in (
         ("DHS_1", 850, 1050, 950),
         ("DHS_2", 950, 1150, 1050),

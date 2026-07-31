@@ -11,7 +11,8 @@ if CONTACTS:
         wildcard_constraints:
             source_id=wildcard_regex(CONTACT_SOURCE_IDS_BY_FORMAT["mcool"])
         resources:
-            mem_mb=1000
+            mem_mb=1000,
+            contact_download_slots=1
         conda:
             "../envs/reference.yaml"
         log:
@@ -35,7 +36,8 @@ if CONTACTS:
         wildcard_constraints:
             source_id=wildcard_regex(CONTACT_SOURCE_IDS_BY_FORMAT["cool.gz"])
         resources:
-            mem_mb=1000
+            mem_mb=1000,
+            contact_download_slots=1
         conda:
             "../envs/reference.yaml"
         log:
@@ -59,7 +61,8 @@ if CONTACTS:
         wildcard_constraints:
             source_id=wildcard_regex(CONTACT_SOURCE_IDS_BY_FORMAT["h5"])
         resources:
-            mem_mb=1000
+            mem_mb=1000,
+            contact_download_slots=1
         conda:
             "../envs/reference.yaml"
         log:
@@ -146,7 +149,7 @@ if CONTACTS:
 
     rule build_context_contact_links:
         input:
-            elements=lambda wc: ACTIVITY_REGULATORY_ELEMENTS[wc.context],
+            elements=ACTIVITY_REGULATORY_CATALOG,
             promoters=CONTACT_PROMOTERS,
             powerlaw=CONTACT_POWERLAW,
             observed=lambda wc: (

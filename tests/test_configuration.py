@@ -5,10 +5,15 @@ import pytest
 import yaml
 
 from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
-from short_read_processing.artifacts import FINAL_BAM_FILTERING_CONTRACT, sha256_file
+from short_read_processing.artifacts import (
+    CATALOG_FILE_FIELDS,
+    FINAL_BAM_FILTERING_CONTRACT,
+    sha256_file,
+)
 from short_read_processing.configuration import (
     ATAC_QPOIS_DEFAULTS,
     generate_activity_config,
+    generate_catalog_links_config,
     generate_configs,
     generate_resume_config,
 )
@@ -16,6 +21,7 @@ from short_read_processing.contact_metadata import DM6_ATLAS_CONTEXT_IDS
 from short_read_processing.manifest import write_manifest
 from short_read_processing.workflow_config import (
     resolve_input_paths,
+    validate_workflow_config,
     workflow_semantic_sha256,
 )
 
@@ -1070,3 +1076,128 @@ def test_complete_dm6_atlas_config_adds_contact_links(tmp_path):
     assert config["contacts"]["source_manifest"].endswith(
         "resources/atlas_contact_sources.tsv"
     )
+
+
+def _write_catalog_bundle_manifest(tmp_path: Path, sheet: Path) -> Path:
+    root = tmp_path / "source-catalog"
+    catalog_root = root / "activity" / "catalog"
+    config_root = root / "provenance" / "configs"
+    catalog_root.mkdir(parents=True)
+    config_root.mkdir(parents=True)
+    catalog = catalog_root / "master_elements_long.tsv.gz"
+    catalog.write_bytes(b"catalog")
+    catalog_digest = sha256_file(catalog)
+    metrics = catalog_root / "regulatory_element_metrics.json"
+    metrics.write_text(
+        json.dumps(
+            {
+                "catalog_sha256": catalog_digest,
+                "context_count": len(DM6_ATLAS_CONTEXT_IDS),
+                "method": "catalog-v1",
+            }
+        )
+    )
+    provenance = catalog_root / "regulatory_element_provenance.json"
+    provenance.write_text(
+        json.dumps({"outputs": {"catalog": {"sha256": catalog_digest}}})
+    )
+    resolved = config_root / "report.resolved_config.json"
+    resolved.write_text(
+        json.dumps(
+            {
+                "project": "source-atlas",
+                "run_id": "catalog-v1",
+                "reference": {"name": "dm6"},
+                "activity": {"contexts": sorted(DM6_ATLAS_CONTEXT_IDS)},
+                "provenance": {
+                    "semantic_sha256": "c" * 64,
+                    "sample_sheet_sha256": sha256_file(sheet),
+                },
+            }
+        )
+    )
+    files = {
+        "catalog": catalog,
+        "metrics": metrics,
+        "provenance": provenance,
+        "resolved_config": resolved,
+    }
+    columns = [
+        "genome",
+        "method",
+        "contexts",
+        "source_project",
+        "source_run_id",
+    ]
+    columns.extend(
+        item for field in CATALOG_FILE_FIELDS for item in (field, f"{field}_sha256")
+    )
+    values = [
+        "dm6",
+        "catalog-v1",
+        ",".join(sorted(DM6_ATLAS_CONTEXT_IDS)),
+        "source-atlas",
+        "catalog-v1",
+    ]
+    values.extend(
+        item
+        for field, path in files.items()
+        for item in (str(path), sha256_file(path))
+    )
+    manifest = tmp_path / "catalog-manifest.tsv"
+    manifest.write_text("\t".join(columns) + "\n" + "\t".join(values) + "\n")
+    return manifest
+
+
+def test_catalog_import_generates_a_new_links_only_namespace(tmp_path):
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\tab\n"
+    )
+    manifest = _write_catalog_bundle_manifest(tmp_path, sheet)
+
+    output = generate_catalog_links_config(
+        sample_sheet_path=sheet,
+        catalog_manifest_path=manifest,
+        output_dir=tmp_path / "configs",
+        project="atlas-links",
+        run_id="from-catalog-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+    )
+    config = yaml.safe_load(output.read_text())
+
+    assert config["input_stage"] == "catalog"
+    assert config["output_stage"] == "links"
+    assert config["samples"] == []
+    assert config["catalog_import"]["source_run_id"] == "catalog-v1"
+    assert config["catalog_import"]["catalog"].endswith(
+        "activity/catalog/master_elements_long.tsv.gz"
+    )
+    assert {row["id"] for row in config["contacts"]["contexts"]} == set(
+        DM6_ATLAS_CONTEXT_IDS
+    )
+    validate_workflow_config(config)
+    resolve_input_paths(config, tmp_path)
+
+
+def test_catalog_import_rejects_a_different_sample_sheet(tmp_path):
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\tab\n"
+    )
+    manifest = _write_catalog_bundle_manifest(tmp_path, sheet)
+    sheet.write_text(sheet.read_text() + "SRR100002\tatac_rep2\tatac\tab\n")
+
+    with pytest.raises(AcquisitionError, match="source sample sheet"):
+        generate_catalog_links_config(
+            sample_sheet_path=sheet,
+            catalog_manifest_path=manifest,
+            output_dir=tmp_path / "configs",
+            project="atlas-links",
+            run_id="from-catalog-v1",
+            reference_root=tmp_path / "references",
+            path_base=tmp_path,
+        )

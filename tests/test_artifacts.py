@@ -1,10 +1,13 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from short_read_processing.accessions import AcquisitionError
 from short_read_processing.artifacts import (
+    CATALOG_FILE_FIELDS,
     FINAL_BAM_FILTERING_CONTRACT,
+    read_catalog_manifest,
     read_final_bam_manifest,
     read_master_manifest,
     semantic_sha256,
@@ -125,6 +128,84 @@ def test_master_manifest_requires_one_complete_row(tmp_path):
     )
     with pytest.raises(AcquisitionError, match="input_filtering_contract"):
         read_master_manifest(manifest)
+
+
+def _write_catalog_manifest(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    catalog = tmp_path / "master_elements_long.tsv.gz"
+    catalog.write_bytes(b"catalog")
+    catalog_digest = sha256_file(catalog)
+    metrics = tmp_path / "metrics.json"
+    metrics.write_text(
+        json.dumps(
+            {
+                "catalog_sha256": catalog_digest,
+                "context_count": 2,
+                "method": "catalog-v1",
+            }
+        )
+    )
+    provenance = tmp_path / "provenance.json"
+    provenance.write_text(
+        json.dumps({"outputs": {"catalog": {"sha256": catalog_digest}}})
+    )
+    resolved = tmp_path / "resolved.json"
+    resolved.write_text(
+        json.dumps(
+            {
+                "project": "atlas",
+                "run_id": "catalog-v1",
+                "reference": {"name": "dm6"},
+                "activity": {"contexts": ["eye", "wing"]},
+                "provenance": {
+                    "semantic_sha256": _digest("c"),
+                    "sample_sheet_sha256": _digest("d"),
+                },
+            }
+        )
+    )
+    files = {
+        "catalog": catalog,
+        "metrics": metrics,
+        "provenance": provenance,
+        "resolved_config": resolved,
+    }
+    columns = [
+        "genome",
+        "method",
+        "contexts",
+        "source_project",
+        "source_run_id",
+    ]
+    columns.extend(
+        item for field in CATALOG_FILE_FIELDS for item in (field, f"{field}_sha256")
+    )
+    values = ["dm6", "catalog-v1", "eye,wing", "atlas", "catalog-v1"]
+    values.extend(
+        item
+        for field, path in files.items()
+        for item in (path.name, sha256_file(path))
+    )
+    manifest = tmp_path / "catalog.tsv"
+    manifest.write_text("\t".join(columns) + "\n" + "\t".join(values) + "\n")
+    return manifest, files
+
+
+def test_catalog_manifest_verifies_bundle_and_source_metadata(tmp_path):
+    manifest, files = _write_catalog_manifest(tmp_path)
+
+    parsed = read_catalog_manifest(manifest)
+
+    assert parsed["catalog"] == str(files["catalog"].resolve())
+    assert parsed["contexts"] == ["eye", "wing"]
+    assert parsed["source_semantic_sha256"] == _digest("c")
+
+
+def test_catalog_manifest_rejects_changed_artifact(tmp_path):
+    manifest, files = _write_catalog_manifest(tmp_path)
+    files["catalog"].write_bytes(b"changed")
+
+    with pytest.raises(AcquisitionError, match="SHA-256 mismatch"):
+        read_catalog_manifest(manifest)
 
 
 def test_semantic_sha256_is_order_independent():

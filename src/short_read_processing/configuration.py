@@ -16,7 +16,9 @@ import yaml
 
 from .accessions import AcquisitionError
 from .artifacts import (
+    CATALOG_FILE_FIELDS,
     MASTER_FILE_FIELDS,
+    read_catalog_manifest,
     read_final_bam_manifest,
     read_master_manifest,
     sha256_file,
@@ -1036,6 +1038,100 @@ def generate_activity_config(
     return output_path.resolve()
 
 
+def generate_catalog_links_config(
+    *,
+    sample_sheet_path: Path,
+    catalog_manifest_path: Path,
+    output_dir: Path,
+    project: str,
+    run_id: str,
+    reference_root: Path,
+    path_base: Path,
+    schema_path: Path = DEFAULT_SCHEMA,
+    genome: str = "dm6",
+) -> Path:
+    """Generate a links-only configuration from a frozen catalog bundle."""
+
+    project = _safe_id(project, "project ID")
+    run_id = _safe_id(run_id, "run ID")
+    if genome not in GENOME_DEFAULTS:
+        raise AcquisitionError(f"Unsupported genome: {genome!r}")
+    read_sample_sheet(sample_sheet_path, schema_path=schema_path)
+    catalog = read_catalog_manifest(catalog_manifest_path, require_files=True)
+    if catalog["genome"] != genome:
+        raise AcquisitionError(
+            f"Catalog manifest genome {catalog['genome']!r} does not match {genome!r}"
+        )
+    sample_sheet_digest = sha256_file(sample_sheet_path)
+    if sample_sheet_digest != catalog["source_sample_sheet_sha256"]:
+        raise AcquisitionError(
+            "The supplied sample sheet differs from the catalog source sample sheet"
+        )
+    catalog_import: dict[str, Any] = {
+        "schema_version": 1,
+        "manifest": _display_path(catalog_manifest_path, path_base),
+        "manifest_sha256": sha256_file(catalog_manifest_path),
+        "genome": catalog["genome"],
+        "method": catalog["method"],
+        "contexts": catalog["contexts"],
+        "source_project": catalog["source_project"],
+        "source_run_id": catalog["source_run_id"],
+        "source_semantic_sha256": catalog["source_semantic_sha256"],
+        "source_sample_sheet_sha256": catalog["source_sample_sheet_sha256"],
+    }
+    for field in CATALOG_FILE_FIELDS:
+        catalog_import[field] = _display_path(catalog[field], path_base)
+        catalog_import[f"{field}_sha256"] = catalog[f"{field}_sha256"]
+    config: dict[str, Any] = {
+        "project": project,
+        "run_id": run_id,
+        "output_dir": "results",
+        "assay": "activity",
+        "input_stage": "catalog",
+        "start_stage": "catalog",
+        "output_stage": "links",
+        "reference": _reference_config(genome, reference_root, path_base),
+        "samples": [],
+        "catalog_import": catalog_import,
+        "provenance": {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "input_mode": "catalog_artifact_manifest",
+            "sample_sheet": _display_path(sample_sheet_path, path_base),
+            "sample_sheet_sha256": sample_sheet_digest,
+            "sample_sheet_schema": _display_path(schema_path, path_base),
+            "sample_sheet_schema_sha256": sha256_file(schema_path),
+            "catalog_manifest": _display_path(catalog_manifest_path, path_base),
+            "catalog_manifest_sha256": sha256_file(catalog_manifest_path),
+            "source_catalog_semantic_sha256": catalog[
+                "source_semantic_sha256"
+            ],
+        },
+    }
+    contact_config = (
+        default_dm6_contact_config(
+            contexts=catalog["contexts"],
+            reference=config["reference"],
+            manifest_path=DEFAULT_SCHEMA.parents[1]
+            / "resources"
+            / "atlas_contact_sources.tsv",
+            path_base=path_base,
+        )
+        if genome == "dm6"
+        else None
+    )
+    if contact_config is None:
+        raise AcquisitionError(
+            "The links stage is available only for the complete canonical dm6 atlas "
+            "context set"
+        )
+    config["contacts"] = contact_config
+    config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{project}.catalog-to-links.yaml"
+    _write_config_if_changed(output_path, config)
+    return output_path.resolve()
+
+
 def generate_resume_config(
     *,
     checkpoint_manifest_path: Path,
@@ -1110,6 +1206,10 @@ def generate_resume_config(
                 library[key] = display(library[key])
         for key in MASTER_FILE_FIELDS:
             activity["master"][key] = display(activity["master"][key])
+    catalog_import = resumed.get("catalog_import")
+    if catalog_import:
+        for key in ("manifest", *CATALOG_FILE_FIELDS):
+            catalog_import[key] = display(catalog_import[key])
     contacts = resumed.get("contacts")
     if contacts:
         for key in ("source_manifest", "promoter_annotation"):

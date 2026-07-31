@@ -405,7 +405,7 @@ def read_context_elements(path: Path, context: str) -> list[Element]:
             raise ValueError(f"{path} lacks catalog fields: {sorted(missing)}")
         for row in reader:
             if row["context"] != context or row["context_membership"] != "1":
-                raise ValueError(f"{path} contains a non-member row for {context}")
+                continue
             master_id = row["master_dhs_id"]
             if master_id in seen:
                 raise ValueError(f"{path} repeats {master_id}")

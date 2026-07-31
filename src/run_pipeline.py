@@ -17,6 +17,7 @@ from short_read_processing.cli import (
 )
 from short_read_processing.configuration import (
     generate_activity_config,
+    generate_catalog_links_config,
     generate_configs,
     generate_resume_config,
 )
@@ -113,6 +114,14 @@ def main() -> int:
         help="Immutable master-DHS bundle manifest for the master boundary",
     )
     parser.add_argument(
+        "--catalog-manifest",
+        type=Path,
+        help=(
+            "Immutable catalog bundle manifest for a downstream-only "
+            "catalog-to-links run"
+        ),
+    )
+    parser.add_argument(
         "--activity-bam-manifest",
         type=Path,
         action="append",
@@ -159,6 +168,7 @@ def main() -> int:
             args.checkpoint_manifest
             or args.final_bam_manifest
             or args.master_manifest
+            or args.catalog_manifest
             or args.activity_bam_manifest
             or args.report_source_root
         ):
@@ -166,6 +176,8 @@ def main() -> int:
                 "artifact manifests require the matching reuse --from-stage"
             )
     else:
+        if args.catalog_manifest and args.from_stage != "catalog":
+            parser.error("--catalog-manifest requires --from-stage catalog")
         incompatible = (
             args.skip_download
             or args.download_only
@@ -235,10 +247,29 @@ def main() -> int:
                 parser.error(
                     "quantification mode uses --activity-bam-manifest"
                 )
-        if args.from_stage in {"catalog", "links", "report"} and not args.checkpoint_manifest:
-            parser.error(
-                f"--from-stage {args.from_stage} requires --checkpoint-manifest"
-            )
+        if args.from_stage == "catalog":
+            if bool(args.checkpoint_manifest) == bool(args.catalog_manifest):
+                parser.error(
+                    "--from-stage catalog requires exactly one of "
+                    "--checkpoint-manifest or --catalog-manifest"
+                )
+            if args.catalog_manifest:
+                if output_stage != "links":
+                    parser.error(
+                        "--catalog-manifest currently supports only --until-stage links"
+                    )
+                if (
+                    args.final_bam_manifest
+                    or args.master_manifest
+                    or args.activity_bam_manifest
+                    or args.report_source_root
+                ):
+                    parser.error(
+                        "--catalog-manifest cannot be combined with upstream artifact "
+                        "manifests or report sources"
+                    )
+        if args.from_stage in {"links", "report"} and not args.checkpoint_manifest:
+            parser.error(f"--from-stage {args.from_stage} requires --checkpoint-manifest")
 
     sample_sheet = args.sample_sheet.resolve()
     if args.from_stage == "alignment" and args.checkpoint_manifest:
@@ -277,6 +308,7 @@ def main() -> int:
                 args.checkpoint_manifest,
                 args.final_bam_manifest,
                 args.master_manifest,
+                args.catalog_manifest,
                 *args.activity_bam_manifest,
             )
             if artifact is not None
@@ -296,7 +328,21 @@ def main() -> int:
         }
         or (args.from_stage == "qc" and output_stage == "qc")
     )
-    if resume_in_place:
+    if args.catalog_manifest:
+        configs = [
+            generate_catalog_links_config(
+                sample_sheet_path=sample_sheet,
+                catalog_manifest_path=args.catalog_manifest.resolve(),
+                output_dir=args.config_dir.resolve(),
+                project=args.project,
+                run_id=args.run_id,
+                reference_root=args.reference_root,
+                path_base=REPO_ROOT,
+                schema_path=args.schema.resolve(),
+                genome=args.genome,
+            )
+        ]
+    elif resume_in_place:
         configs = [
             generate_resume_config(
                 checkpoint_manifest_path=args.checkpoint_manifest.resolve(),

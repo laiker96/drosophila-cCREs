@@ -39,6 +39,7 @@ INPUT_STAGE = str(config.get("input_stage", "accessions"))
 START_STAGE = str(config.get("start_stage", INPUT_STAGE))
 OUTPUT_STAGE = validate_stage_selection(START_STAGE, config.get("output_stage"))
 ACTIVITY = config.get("activity")
+CATALOG_IMPORT = config.get("catalog_import")
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
 RESOLVED_CONFIG = f"{RESULT_ROOT}/provenance/resolved_config.json"
@@ -516,7 +517,13 @@ ACTIVITY_LIBRARY_SUMMARIES = {
     library: f"{ACTIVITY_QUANTIFICATION_ROOT}/libraries/{library}.summary.json"
     for library in ACTIVITY_LIBRARY_IDS
 }
-ACTIVITY_CONTEXTS = list(ACTIVITY["contexts"]) if ACTIVITY else []
+ACTIVITY_CONTEXTS = (
+    list(ACTIVITY["contexts"])
+    if ACTIVITY
+    else list(CATALOG_IMPORT["contexts"])
+    if CATALOG_IMPORT
+    else []
+)
 ACTIVITY_CONTEXT_RE = wildcard_regex(ACTIVITY_CONTEXTS)
 ACTIVITY_CONTEXT_ASSAY_LIBRARIES = {
     (context, assay): [
@@ -550,7 +557,11 @@ ACTIVITY_REGULATORY_WINDOW_COUNTS = {
     library: f"{ACTIVITY_REGULATORY_ROOT}/libraries/{library}.window_counts.tsv.gz"
     for library in ACTIVITY_H3K27AC_LIBRARIES
 }
-ACTIVITY_REGULATORY_CATALOG = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_long.tsv.gz"
+ACTIVITY_REGULATORY_CATALOG = (
+    str(CATALOG_IMPORT["catalog"])
+    if CATALOG_IMPORT
+    else f"{ACTIVITY_REGULATORY_ROOT}/master_elements_long.tsv.gz"
+)
 ACTIVITY_REGULATORY_WIDE = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_wide.tsv.gz"
 ACTIVITY_REGULATORY_ELEMENTS = {
     context: f"{ACTIVITY_REGULATORY_ROOT}/elements/{context}.elements.tsv.gz"
@@ -930,7 +941,7 @@ STAGE_RESOLVED_CONFIGS = {
     for stage in STAGE_CHECKPOINT_MANIFESTS
 }
 
-ACTIVITY_CATALOG_CHECKPOINT_FILES = [
+ACTIVITY_CATALOG_CHECKPOINT_FILES = ([
     ACTIVITY_TMM_FACTORS,
     ACTIVITY_TMM_RECEIPT,
     ACTIVITY_CONTEXT_SIGNAL,
@@ -958,7 +969,15 @@ ACTIVITY_CATALOG_CHECKPOINT_FILES = [
     *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
     *ACTIVITY_CONTEXT_IGV_SESSIONS.values(),
     ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
-]
+] if ACTIVITY else [
+    str(CATALOG_IMPORT["manifest"]),
+    *[str(CATALOG_IMPORT[field]) for field in (
+        "catalog",
+        "metrics",
+        "provenance",
+        "resolved_config",
+    )],
+] if CATALOG_IMPORT else [])
 
 
 STAGE_CHECKPOINT_ARTIFACTS = {
@@ -1090,6 +1109,7 @@ STAGE_CHECKPOINT_ARTIFACTS = {
 STAGE_CHECKPOINT_PARAMETERS = {
     "assay": ASSAY,
     "atac_qpois": config.get("atac_qpois"),
+    "catalog_import": CATALOG_IMPORT,
     "contacts": CONTACTS,
     "peak_callers": {
         sample: SAMPLES[sample]["peak_caller"]

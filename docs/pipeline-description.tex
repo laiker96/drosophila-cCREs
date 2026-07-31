@@ -258,7 +258,8 @@ master & Checksummed master bundle and accepted ATAC/H3K27ac BAM manifests when 
 \stage{master}, \stage{quantification}, \stage{catalog}, \stage{links}, or \stage{report} \\
 quantification & Checksummed quantification checkpoint &
 \stage{quantification}, \stage{catalog}, \stage{links}, or \stage{report} \\
-catalog & Checksummed catalog checkpoint & \stage{catalog}, \stage{links}, or \stage{report} \\
+catalog & Checksummed catalog checkpoint, or an immutable catalog-bundle manifest &
+\stage{catalog}, \stage{links}, or \stage{report} from a checkpoint; \stage{links} only from a bundle manifest \\
 links & Checksummed contact-link checkpoint & \stage{links} or \stage{report} \\
 report & Checksummed report checkpoint & \stage{report} validation \\
 \bottomrule
@@ -857,6 +858,24 @@ attractive track represents a different normalization or sample selection.
 
 \section{Context contacts and candidate genes}
 
+\subsection{Starting from a completed catalog}
+
+A completed context-resolved catalog can be used as the input boundary for a
+new links-only result namespace.  The command
+\filep{src/create\_catalog\_manifest.py} writes a one-row TSV that binds the long
+catalog, catalog metrics, catalog provenance, and source resolved configuration
+by SHA-256.  The manifest also records the source project, run, method, genome,
+context order, and semantic digest carried by the source configuration.
+
+At launch, the pipeline verifies all four files and their internal catalog hash,
+requires the supplied accession table to match the sample-sheet hash recorded by
+the source catalog, and requires the canonical nine-context dm6 set.  The link
+rules stream the long table and select only rows belonging to the requested
+context.  Quantification, mixture fitting, catalog construction, BigWig
+generation, and IGV-session generation are not placed in this DAG.  This makes
+the catalog a downstream artifact boundary without assigning the current BAM
+filtering contract to older alignments that were never processed under it.
+
 \subsection{Context mapping and source acquisition}
 
 The link stage is enabled automatically only when the activity configuration
@@ -890,6 +909,8 @@ claimed, not that integrity is ignored: the computed SHA-256 of every source
 file is frozen in the normalization metrics and final provenance.  Source
 matrices are immutable inputs.  GEO supplementary files use one connection;
 its server rejects the parallel range requests used by the general downloader.
+The per-file rules declare one \texttt{contact\_download\_slots} unit, allowing
+the launcher to limit simultaneous source downloads independently of CPU cores.
 
 \subsection{Resolution harmonization and balancing}
 
@@ -1152,6 +1173,28 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
   --project drosophila-atlas --run-id catalog-v1 --genome dm6 \
   --until-stage report --cores 16
 \end{lstlisting}
+
+\subsection{Completed catalog through contact links}
+
+\begin{lstlisting}
+python src/create_catalog_manifest.py \
+  results/drosophila-atlas/catalog-from-reviewed-v1 \
+  --output data/reviewed/atlas-catalog.reviewed.tsv
+
+python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
+  --from-stage catalog --until-stage links \
+  --catalog-manifest data/reviewed/atlas-catalog.reviewed.tsv \
+  --project drosophila-atlas \
+  --run-id contact-links-from-catalog-v1 --genome dm6 \
+  --cores 8 \
+  --snakemake-arg=--resources \
+  --snakemake-arg=mem_mb=16000 \
+  --snakemake-arg=contact_download_slots=2
+\end{lstlisting}
+
+This command creates only \filep{activity/links/} and links-stage provenance in
+the new run.  The original catalog remains immutable and is referenced by its
+manifest and hashes.
 
 Re-running the same command and run ID resumes valid work.  Use
 \stage{quantification}, \stage{catalog}, or \stage{links} as an earlier
