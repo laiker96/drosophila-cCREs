@@ -56,8 +56,17 @@ names, or sample relationships.
   clusters with representative summits less than 50 bp apart merge only when
   their context sets are disjoint; a shared context is evidence for two sites.
 - H3K27ac integration through context-resolved activity annotation is part of
-  this processing DAG. ABC candidate resizing/scoring and Micro-C integration
-  remain outside it.
+  this processing DAG. For the canonical nine-context dm6 atlas, contact-map
+  normalization and context-specific element--promoter candidate links are
+  also part of the DAG; ABC candidate resizing/scoring remains outside it.
+- Contact replicates are coarsened only by exact integer count summation,
+  merged as raw counts, and ICE-balanced once per context. The seven observed
+  contexts retain assay/match caveats; `e13` and `hid` use an explicitly
+  labeled atlas-wide distance model rather than a substituted contact map.
+- Contact links connect context-member master DHSs to distinct GTF gene/TSS
+  promoters within 1 Mb. Candidate scores combine contact weight with promoter
+  ATAC/H3K27ac activity and are rankings, not calibrated probabilities or
+  causal target assignments.
 - TF ChIP defaults to narrow MACS3 peaks; histone ChIP defaults to broad peaks.
 - ChIP controls are explicit `control_library` relationships. IP-only ChIP is
   represented by omitting that optional column and runs MACS3 without `-c`.
@@ -129,10 +138,11 @@ Do not commit:
 - SLURM scripts or site profiles;
 - secrets, credentials, private metadata, or large temporary fixtures.
 
-The versioned `resources/` directory is intentionally limited to adapter FASTAs
-and the two canonical ATAC/H3K27ac atlas input tables. Detailed selection/QC
-metadata belongs in the atlas-analysis repository. Do not add random download
-selections or generated smoke-test data here.
+The versioned `resources/` directory is intentionally limited to adapter FASTAs,
+the two canonical ATAC/H3K27ac atlas input tables, and the reviewed contact
+source manifest. Detailed selection/QC metadata belongs in the atlas-analysis
+repository. Do not add random download selections or generated smoke-test data
+here.
 
 Preserve unrelated user changes in a dirty worktree. Use `rg`/`rg --files` for
 search and `apply_patch` for focused file edits.

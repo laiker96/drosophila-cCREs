@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from short_read_processing.accessions import AcquisitionError
+from short_read_processing.artifacts import sha256_file
 from short_read_processing.configuration import ATAC_QPOIS_DEFAULTS, REFERENCE_SOURCES
 from short_read_processing.workflow_config import (
     guard_result_namespace,
@@ -69,6 +70,96 @@ def _dry_run(tmp_path: Path, config: dict, name: str = "workflow") -> str:
     return output
 
 
+def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
+    config = copy.deepcopy(BASE_CONFIG)
+    config["assay"] = "activity"
+    config["input_stage"] = "quantification"
+    config["output_stage"] = "catalog"
+    config["samples"] = []
+    config.pop("atac_qpois")
+    master = {}
+    for field in (
+        "master_bed",
+        "summits_bed",
+        "membership_tsv",
+        "context_matrix_tsv",
+        "stats_json",
+    ):
+        path = tmp_path / "master" / field
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(field)
+        master[field] = str(path)
+        master[f"{field}_sha256"] = "a" * 64
+    master.update(
+        {
+            "genome": "dm6",
+            "method": "reciprocal_summit_complete_linkage_v2",
+            "input_filtering_contract": "short-read-processing-final-v2",
+            "source_project": "atlas",
+            "source_run_id": "master-v1",
+        }
+    )
+    libraries = []
+    for context in contexts:
+        for replicate in (1, 2):
+            for assay in ("atac", "h3k27ac"):
+                library_id = f"atlas_{context}_{assay}_{replicate}"
+                bam = tmp_path / "bams" / f"{library_id}.bam"
+                bai = tmp_path / "bams" / f"{library_id}.bam.bai"
+                bam.parent.mkdir(exist_ok=True)
+                bam.write_bytes(b"bam")
+                bai.write_bytes(b"bai")
+                libraries.append(
+                    {
+                        "id": library_id,
+                        "assay": assay,
+                        "cohort": "atlas",
+                        "context": context,
+                        "layout": (
+                            "single"
+                            if assay == "h3k27ac" and replicate == 1
+                            else "paired"
+                        ),
+                        "genome": "dm6",
+                        "bam": str(bam),
+                        "bai": str(bai),
+                        "bam_sha256": "b" * 64,
+                        "bai_sha256": "c" * 64,
+                        "filtering_contract": "short-read-processing-final-v2",
+                        "qc_status": "accepted",
+                        **(
+                            {"estimated_fragment_length_bp": 165}
+                            if assay == "h3k27ac" and replicate == 1
+                            else {}
+                        ),
+                    }
+                )
+    config["activity"] = {
+        "schema_version": 3,
+        "master": master,
+        "contexts": list(contexts),
+        "libraries": libraries,
+        "atac_fragment_maximum": 150,
+        "atac_browser_extension_bp": 150,
+        "normalization": "background_tmm_10kb_autosomes_v1",
+        "h3k27ac_signal": "summit_max3_500bp_v1",
+        "mixture_model": "guarded_two_gaussian_log10_v1",
+    }
+    config["report"] = {
+        "schema_version": 1,
+        "source_roots": [],
+        "source_files": [
+            {
+                "path": str(tmp_path / "master" / "stats_json"),
+                "sha256": "a" * 64,
+                "kind": "master_metrics",
+                "source_root": str(tmp_path / "master"),
+            }
+        ],
+    }
+    return config
+
+
 def test_result_namespace_accepts_same_semantic_configuration(tmp_path):
     config = copy.deepcopy(BASE_CONFIG)
     config["provenance"] = {}
@@ -99,6 +190,8 @@ def test_output_stage_does_not_change_scientific_semantic_digest():
         ("qc", "master"),
         ("master", "quantification"),
         ("quantification", "catalog"),
+        ("catalog", "links"),
+        ("links", "report"),
         ("catalog", "report"),
         ("report", "report"),
     ],
@@ -513,90 +606,7 @@ def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
 
 
 def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
-    config = copy.deepcopy(BASE_CONFIG)
-    config["assay"] = "activity"
-    config["input_stage"] = "quantification"
-    config["output_stage"] = "catalog"
-    config["samples"] = []
-    config.pop("atac_qpois")
-    master = {}
-    for field in (
-        "master_bed",
-        "summits_bed",
-        "membership_tsv",
-        "context_matrix_tsv",
-        "stats_json",
-    ):
-        path = tmp_path / "master" / field
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(field)
-        master[field] = str(path)
-        master[f"{field}_sha256"] = "a" * 64
-    master.update(
-        {
-            "genome": "dm6",
-            "method": "reciprocal_summit_complete_linkage_v2",
-            "input_filtering_contract": "short-read-processing-final-v2",
-            "source_project": "atlas",
-            "source_run_id": "master-v1",
-        }
-    )
-    libraries = []
-    for library_id, assay, context in (
-        ("atlas_atac", "atac", "ctx"),
-        ("atlas_atac_2", "atac", "ctx"),
-        ("atlas_h3", "h3k27ac", "ctx"),
-        ("atlas_h3_2", "h3k27ac", "ctx"),
-    ):
-        bam = tmp_path / "bams" / f"{library_id}.bam"
-        bai = tmp_path / "bams" / f"{library_id}.bam.bai"
-        bam.parent.mkdir(exist_ok=True)
-        bam.write_bytes(b"bam")
-        bai.write_bytes(b"bai")
-        libraries.append(
-            {
-                "id": library_id,
-                "assay": assay,
-                "cohort": "atlas",
-                "context": context,
-                "layout": "single" if library_id == "atlas_h3" else "paired",
-                "genome": "dm6",
-                "bam": str(bam),
-                "bai": str(bai),
-                "bam_sha256": "b" * 64,
-                "bai_sha256": "c" * 64,
-                "filtering_contract": "short-read-processing-final-v2",
-                "qc_status": "accepted",
-                **(
-                    {"estimated_fragment_length_bp": 165}
-                    if library_id == "atlas_h3"
-                    else {}
-                ),
-            }
-        )
-    config["activity"] = {
-        "schema_version": 3,
-        "master": master,
-        "contexts": ["ctx"],
-        "libraries": libraries,
-        "atac_fragment_maximum": 150,
-        "atac_browser_extension_bp": 150,
-        "normalization": "background_tmm_10kb_autosomes_v1",
-        "h3k27ac_signal": "summit_max3_500bp_v1",
-        "mixture_model": "guarded_two_gaussian_log10_v1",
-    }
-    config["report"] = {
-        "schema_version": 1,
-        "source_roots": [],
-        "source_files": [
-            {
-                "path": str(tmp_path / "master" / "stats_json"),
-                "sha256": "a" * 64,
-                "kind": "master_metrics",
-                "source_root": str(tmp_path / "master"),
-            }
-        ],
-    }
+    config = _activity_config(tmp_path)
 
     output = _dry_run(tmp_path, config, "catalog")
 
@@ -661,7 +671,7 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     insufficient_libraries["activity"]["libraries"] = [
         library
         for library in insufficient_libraries["activity"]["libraries"]
-        if library["id"] != "atlas_h3_2"
+        if library["id"] != "atlas_ctx_h3k27ac_2"
     ]
     with pytest.raises(AcquisitionError, match="background TMM requires two h3k27ac"):
         validate_workflow_config(insufficient_libraries)
@@ -681,3 +691,70 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     assert "build_activity_tmm_table" in quantification_output
     assert "master_dhs_activity.tsv.gz" in quantification_output
     assert "build_regulatory_element_catalog" not in quantification_output
+
+
+def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
+    config = _activity_config(tmp_path, contexts=("observed", "modelled"))
+    config["output_stage"] = "links"
+    annotation = tmp_path / "reference" / "genes.gtf.gz"
+    annotation.parent.mkdir()
+    annotation.write_bytes(b"annotation")
+    manifest = tmp_path / "contact-sources.tsv"
+    manifest.write_text(
+        "source_id\tcontext\tassay\treplicate\tformat\turl\tlocal_path\t"
+        "checksum\tmatch_quality\tbiological_context\tcaveat\n"
+        "observed_rep1\tobserved\tMicro-C\trep1\tcool.gz\t"
+        "https://example.org/observed_rep1.cool.gz\t"
+        "data/raw/contacts/observed_rep1.cool.gz\t\t"
+        "tissue_matched\tsynthetic\t\n",
+        encoding="utf-8",
+    )
+    config["contacts"] = {
+        "schema_version": 1,
+        "source_manifest": str(manifest),
+        "source_manifest_sha256": sha256_file(manifest),
+        "promoter_annotation": str(annotation),
+        "promoter_annotation_checksum": "sha256:" + "d" * 64,
+        "canonical_chromosomes": ["chr2L"],
+        "promoter_width_bp": 500,
+        "maximum_distance_bp": 1_000_000,
+        "pseudocount_fraction": 0.01,
+        "promoter_posterior_threshold": 0.5,
+        "normalization": "merge_counts_then_ice_v1",
+        "promoter_activity": "overlapping_master_dhs_max_v1",
+        "link_score": "contact_weight_x_promoter_activity_posterior_v1",
+        "contexts": [
+            {
+                "id": "observed",
+                "strategy": "observed",
+                "assay": "Micro-C",
+                "match": "tissue_matched",
+                "resolution_bp": 5000,
+                "caveat": "synthetic",
+            },
+            {
+                "id": "modelled",
+                "strategy": "powerlaw",
+                "assay": "distance_model",
+                "match": "no_exact_map",
+                "resolution_bp": 5000,
+                "caveat": "synthetic",
+            },
+        ],
+    }
+
+    output = _dry_run(tmp_path, config, "contact-links")
+
+    for expected in (
+        "download_contact_cool_gz",
+        "standardize_context_contacts",
+        "fit_contact_powerlaw",
+        "build_contact_promoters",
+        "build_context_contact_links",
+        "aggregate_contact_links",
+        "observed.element_promoter_edges.tsv.gz",
+        "modelled.element_gene_candidates.tsv.gz",
+        "links.checkpoint.json",
+    ):
+        assert expected in output
+    assert "build_integrated_qc_report" not in output

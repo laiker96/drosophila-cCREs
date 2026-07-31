@@ -29,7 +29,7 @@
 \hypersetup{
   pdftitle={Drosophila cCRE pipeline: detailed implementation},
   pdfauthor={drosophila-cCREs project},
-  pdfsubject={ATAC-seq, H3K27ac ChIP-seq, master DHS, and regulatory catalog workflow}
+  pdfsubject={ATAC-seq, H3K27ac ChIP-seq, master DHS, regulatory catalog, and contact-link workflow}
 }
 
 \pagestyle{fancy}
@@ -67,7 +67,7 @@
 \title{\textbf{Drosophila cCRE Pipeline}\\[0.3em]
 \large Detailed implementation and scientific reasoning}
 \author{drosophila-cCREs project}
-\date{Repository documentation revision: 2026-07-30}
+\date{Repository documentation revision: 2026-07-31}
 
 \begin{document}
 
@@ -80,8 +80,11 @@ BAMs, replicate-supported context peaks, a variable-width summit-aware master
 DNase-hypersensitive-site (DHS) registry, and a context-resolved regulatory
 element catalog.  The downstream catalog combines ATAC accessibility and
 H3K27ac signal using assay-specific background TMM normalization, guarded
-two-component Gaussian mixture models, portable browser tracks, IGV sessions,
-and an integrated checksummed report.  The emphasis is both operational and
+two-component Gaussian mixture models, portable browser tracks, and IGV
+sessions.  For the canonical dm6 atlas, the workflow also normalizes available
+Micro-C/Hi-C matrices, models contact decay where a context map is absent, and
+builds context-specific element--promoter and element--gene candidate tables.
+An integrated checksummed report summarizes all stages.  The emphasis is both operational and
 scientific: each section states what the current rules do, why that choice was
 made, and which limitations remain.  This is implementation documentation for
 the live \filep{workflow/Snakefile} and its included rule files; it is not a
@@ -94,7 +97,7 @@ particular run.
 
 \section{Purpose and scope}
 
-The pipeline has two related scientific goals:
+The pipeline has three related scientific goals:
 
 \begin{enumerate}
   \item construct a stable atlas coordinate system---the master DHS registry---
@@ -102,7 +105,10 @@ The pipeline has two related scientific goals:
   the input table; and
   \item annotate every master DHS in every context with accessibility,
 H3K27ac, a high-component posterior probability, TSS proximity, blacklist
-  overlap, and a guarded high/low interpretation.
+  overlap, and a guarded high/low interpretation; and
+  \item use matched contact evidence and promoter activity to prioritize
+  candidate genes for context-member elements without turning a ranking into
+  a causal target assignment.
 \end{enumerate}
 
 The public interface is accession-first.  Users provide public accessions and
@@ -114,14 +120,17 @@ resource scheduling, rule environments, and restart behavior.
 
 The current workflow includes ATAC-seq processing, TF and histone ChIP-seq
 processing, H3K27ac-based context activity annotation, catalog visualization,
-and integrated reporting.  It does not perform ABC candidate resizing or ABC
-scoring, and it does not integrate Micro-C contacts.  It also does not import
-an external regulatory-element catalog or apply quantile normalization.
+contact-map normalization, candidate-gene linking, and integrated reporting.
+It does not perform ABC candidate resizing or ABC scoring.  It also does not
+import an external regulatory-element catalog or apply quantile normalization.
 
-A master registry should be derived from the project's own reviewed
-accessibility evidence.  Keeping contact-based enhancer--gene assignment and
-ABC scoring outside this workflow prevents a coordinate-building pipeline from
-silently making a different biological claim about target genes.
+A master registry is derived from the project's own reviewed accessibility
+evidence before contacts are introduced.  Contact information therefore
+annotates stable master coordinates but cannot change which DHSs exist.  The
+link stage preserves observed contact, distance expectation, promoter activity,
+and separate rankings, making its evidential limits visible.  ABC scoring
+remains outside this workflow because it would add a different candidate
+definition and calibration claim.
 
 \section{The data model}
 
@@ -211,9 +220,10 @@ validate $\rightarrow$ accepted ATAC replicate/context peaks $\rightarrow$
 master DHS bundle
 
 \vspace{0.35em}
-\textbf{Invocation 3: accepted BAMs + frozen master $\rightarrow$ catalog/report}\\
+\textbf{Invocation 3: accepted BAMs + frozen master $\rightarrow$ catalog/links/report}\\
 validate $\rightarrow$ count $\rightarrow$ normalize $\rightarrow$ annotate
-$\rightarrow$ tracks, IGV sessions, and report
+$\rightarrow$ normalize contacts $\rightarrow$ candidate links $\rightarrow$
+tracks, IGV sessions, and report
 \end{minipage}}
 \end{center}
 
@@ -245,10 +255,11 @@ alignment & Checksummed alignment checkpoint or complete final-BAM manifest &
 qc & QC checkpoint plus a reviewed ATAC final-BAM manifest for master construction &
 \stage{qc} or \stage{master} \\
 master & Checksummed master bundle and accepted ATAC/H3K27ac BAM manifests when continuing &
-\stage{master}, \stage{quantification}, \stage{catalog}, or \stage{report} \\
+\stage{master}, \stage{quantification}, \stage{catalog}, \stage{links}, or \stage{report} \\
 quantification & Checksummed quantification checkpoint &
-\stage{quantification}, \stage{catalog}, or \stage{report} \\
-catalog & Checksummed catalog checkpoint & \stage{catalog} or \stage{report} \\
+\stage{quantification}, \stage{catalog}, \stage{links}, or \stage{report} \\
+catalog & Checksummed catalog checkpoint & \stage{catalog}, \stage{links}, or \stage{report} \\
+links & Checksummed contact-link checkpoint & \stage{links} or \stage{report} \\
 report & Checksummed report checkpoint & \stage{report} validation \\
 \bottomrule
 \end{longtable}
@@ -844,6 +855,153 @@ diagnostic view of the same accepted libraries, units, factors, and coordinates.
 Generating both from shared inputs minimizes the risk that a visually
 attractive track represents a different normalization or sample selection.
 
+\section{Context contacts and candidate genes}
+
+\subsection{Context mapping and source acquisition}
+
+The link stage is enabled automatically only when the activity configuration
+contains the complete canonical nine-context dm6 atlas.  Its reviewed source
+table is \filep{resources/atlas_contact_sources.tsv}, with structure documented
+by \filep{schemas/contact-sources.schema.yaml}.  Restricting the automatic
+mapping to that exact context set prevents an unrelated catalog from silently
+inheriting a biologically inappropriate contact experiment.
+
+\begin{longtable}{>{\ttfamily}p{0.12\textwidth} p{0.15\textwidth} p{0.22\textwidth} p{0.39\textwidth}}
+\toprule
+\normalfont Context & Assay/strategy & Target resolution & Match represented by the source \\
+\midrule
+\endhead
+ab & Micro-C & 5 kb & Two adult-CNS biological replicates \\
+e5 & Micro-C & 5 kb & Nuclear-cycle-14 whole embryos, used as the closest stage-5 proxy \\
+e11 & Micro-C & 5 kb & Whole-embryo stages 10--12 \\
+ead & Micro-C & 5 kb & Eye-disc control matrix supplied as a four-sample merge \\
+lb & Micro-C & 5 kb & Two third-instar larval-CNS biological replicates \\
+o & Hi-C & 4 kb & Two whole-ovary stage-1--8 maps; assay and stage-range caveats are retained \\
+wid & Micro-C & 5 kb & Wing-disc WT matrix supplied as a four-sample merge \\
+e13 & powerlaw & 5 kb & No defensible exact whole-embryo map; distance model only \\
+hid & powerlaw & 5 kb & No defensible exact haltere-disc map; distance model only \\
+\bottomrule
+\end{longtable}
+
+The observed matrices are resumably downloaded to
+\filep{data/raw/contacts/}.  The manifest can carry an upstream MD5 or SHA-256
+when one is published.  Empty checksum cells mean that no source checksum was
+claimed, not that integrity is ignored: the computed SHA-256 of every source
+file is frozen in the normalization metrics and final provenance.  Source
+matrices are immutable inputs.
+
+\subsection{Resolution harmonization and balancing}
+
+Each multiresolution Cooler is opened at the finest stored resolution that
+exactly divides the configured target.  Single-resolution Coolers and converted
+HiCExplorer H5 matrices must satisfy the same divisibility rule.  Coarsening
+sums raw pixel counts; approximate coordinate remapping is rejected.  Within a
+context, prepared replicate matrices are then summed by pixel and one ICE
+balancing pass is applied to the merged count matrix.  This order gives each
+read pair one contribution before normalization and avoids averaging
+independently balanced matrices with incompatible scales or masks.
+
+The retained result is
+\filep{activity/links/contacts/<context>.balanced.cool}.  Its JSON sidecar
+records source IDs and hashes, original and target resolutions, replicate
+count, matrix dimensions, the finite-weight fraction, convergence status, and
+biological caveats.  Conversion and coarsening copies under
+\filep{work/<project>/<run_id>/activity/contacts/} are reproducible
+intermediates and are removed after a successful normalized matrix is written;
+the downloaded source and balanced result are never modified in place.
+
+\subsection{Contact-decay model}
+
+For every observed context, the workflow extracts finite nonnegative balanced
+cis contacts from 40 log-spaced diagonal offsets up to 1 Mb and takes the mean of
+all finite nonnegative pixels, including valid zero pixels, at each usable
+offset.  Masked bins are excluded.  A linear fit in log--log space estimates
+
+\[
+  E_c(d) = s_c\,\max(d,r_c)^{\gamma_c},
+\]
+
+where $r_c$ is matrix resolution.  The floor at one bin avoids an undefined
+zero-distance expectation.  Exponents outside $(-3,-0.05)$ are rejected as
+implausible instead of being used silently.  The atlas model used for
+\texttt{e13} and \texttt{hid} takes the arithmetic mean of observed-context
+exponents and the geometric mean of their scales.  Both the individual fits
+and atlas parameters are retained in
+\filep{activity/links/contacts/dm6_powerlaw.json}.
+
+This model supplies an explicit distance prior when direct evidence is absent;
+it does not impute loops or pretend that the two modeled contexts have measured
+contacts.  Every downstream row retains \texttt{contact\_strategy=powerlaw},
+\texttt{contact\_assay=distance\_model}, and the match caveat.
+
+\subsection{Promoter nodes and activity}
+
+The current dm6 GTF supplies one promoter node for every distinct
+gene/TSS/strand combination.  Alternative transcripts sharing a TSS are
+collapsed into that node while their transcript IDs are retained.  Promoter
+windows are 500 bp centered on the zero-based TSS and clipped at chromosome
+boundaries.
+
+For a given context, all context-member master DHSs overlapping a promoter
+window contribute to its annotation.  The node records their IDs, maximum ATAC
+signal, maximum H3K27ac high-component posterior, and maximum geometric
+activity $A_j=\sqrt{\mathrm{ATAC}_j\times\mathrm{H3K27ac}_j}$.  It is marked
+active when at least one context-member DHS overlaps and the maximum posterior
+is at least 0.5.  The continuous promoter activity score is
+
+\[
+  P_p = \max_{j\in p}\left[A_j\Pr(\mathrm{high\ H3K27ac}\mid j)\right].
+\]
+
+Taking the product within each DHS prevents the maximum activity and maximum
+posterior from two different overlapping sites from being combined.  Using
+both accessibility and acetylation distinguishes the user's motivating
+case---a contacted, active promoter from a contacted but inactive promoter---
+while preserving the underlying values for later thresholds.
+
+\subsection{Edges, gene projection, and interpretation}
+
+Every context-member master DHS is connected to each annotated promoter on the
+same chromosome whose TSS lies within 1 Mb of the representative summit.  For
+an observed context, the edge records the ICE-balanced pixel $O$, the fitted
+expectation $E_c(d)$, and $O/E_c(d)$.  Its contact weight is
+
+\[
+  W_{i,p}=O_{i,p}+0.01E_c(d_{i,p}).
+\]
+
+The small distance-aware pseudocount gives zero pixels a finite, explicitly
+weak weight.  When both anchors occupy one contact bin, the matrix cannot
+resolve their internal contact; the maximum adjacent-bin value is used and the
+row is labeled \texttt{adjacent\_bin\_proxy}.  For a modeled context,
+$W_{i,p}=E_{\mathrm{atlas}}(d_{i,p})$, observed contact and enrichment remain
+blank, and the row is labeled \texttt{distance\_model}.
+
+The candidate score is
+
+\[
+  S_{i,p}=W_{i,p}P_p.
+\]
+
+The complete edge table keeps inactive promoters and zero observed pixels; it
+is not a filtered positive-only network.  It stores source/target node IDs and
+edge evidence without repeating coordinates, transcript IDs, and element
+annotations on millions of rows; those attributes live in the node table.
+Alternative promoters are collapsed
+to one element--gene candidate by the best score.  Each gene row includes the
+best promoter, best active promoter when present, minimum distance, contact
+and promoter-activity measurements, and four within-element ranks: combined
+candidate score, active-promoter candidate score, contact-only weight, and
+nearest-gene distance.  These parallel ranks expose why a gene is prioritized.
+
+The three graph products per context are
+\filep{contexts/<context>.nodes.tsv.gz},
+\filep{<context>.element_promoter_edges.tsv.gz}, and
+\filep{<context>.element_gene_candidates.tsv.gz} below
+\filep{activity/links/}.  They represent candidate relationships.  ICE values,
+the 1% pseudocount, promoter posterior, and distance model do not yield a
+calibrated interaction probability, and a high rank is not proof of regulation.
+
 \section{Integrated reporting and provenance}
 
 The report endpoint emits deterministic HTML, PDF, and JSON.  Repeated
@@ -856,8 +1014,10 @@ report construction.
 The integrated report summarizes input/output inventories, BAM and FRiP QC,
 ATAC TSS and fragment evidence, ChIP cross-correlation, master statistics, TMM
 factors, regulatory classes, mixture fits, exact guardrail warnings, and the
-catalog browser assets.  Its JSON sidecar records every declared source and
-current output hash, including BEDs, mean BigWigs, and all IGV sessions.
+catalog browser assets.  When contacts are configured, it also reports the
+observed-versus-modeled contexts, active promoter counts, and edge/candidate
+counts.  Its JSON sidecar records every declared source and current output
+hash, including BEDs, mean BigWigs, IGV sessions, and contact-link provenance.
 
 \subsection{Reproducibility mechanisms}
 
@@ -931,6 +1091,11 @@ Browser bundle &
 \filep{activity/catalog/bed/}, \filep{activity/catalog/tracks/},
 \filep{activity/catalog/igv/<context>.xml}, and
 \filep{activity/catalog/all-contexts.igv.xml} \\
+Contact links &
+\filep{activity/links/contacts/*.balanced.cool},
+\filep{contacts/dm6_powerlaw.json}, \filep{promoters.tsv.gz},
+\filep{contexts/*.nodes.tsv.gz}, \filep{*.element_promoter_edges.tsv.gz},
+\filep{*.element_gene_candidates.tsv.gz}, metrics, and provenance JSON \\
 Integrated report &
 \filep{activity/report/integrated_qc_report.html},
 \filep{integrated_qc_report.pdf}, and
@@ -988,8 +1153,10 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
 \end{lstlisting}
 
 Re-running the same command and run ID resumes valid work.  Use
-\stage{quantification} or \stage{catalog} as an earlier endpoint.  To advance
-later, pass its exported checkpoint as the completed start boundary:
+\stage{quantification}, \stage{catalog}, or \stage{links} as an earlier
+endpoint.  For the canonical nine-context dm6 atlas, choosing \stage{links} or
+\stage{report} downloads and normalizes the versioned contact sources.  To
+advance later, pass an exported checkpoint as the completed start boundary:
 
 \begin{lstlisting}
 python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
@@ -1023,6 +1190,10 @@ H3K27ac windows & three 500-bp windows & Left, center, and right of the master s
 Mixture minimum population & 200 positive members & Small contexts cannot support the bimodality claim \\
 Mixture evidence & \(\Delta\mathrm{BIC}\geq10\), \(D\geq2\), weights \(\geq0.10\) & Required together with unique crossing and nonzero variance \\
 Promoter/proximal boundaries & 250 / 1,000 bp & Absolute summit-to-nearest-TSS distance \\
+Contact promoter window & 500 bp & Centered on each distinct dm6 GTF gene/TSS node \\
+Maximum link distance & 1 Mb & Same-chromosome element summit to promoter TSS \\
+Observed contact pseudocount & 1\% of fitted expectation & Finite weak weight for a zero matrix pixel \\
+Promoter active posterior & 0.5 & Requires an overlapping context-member DHS and H3K27ac high-component posterior \\
 \bottomrule
 \end{longtable}
 
@@ -1044,6 +1215,7 @@ MACS3 & 3.0.4 & deepTools & 3.5.6 \\
 MultiQC & 1.35 & phantompeakqualtools & 1.2.2 \\
 R & 4.5.3 & edgeR & 4.8.2 \\
 pyBigWig & 0.3.25 & WeasyPrint & 66.0 \\
+Cooler & 0.10.4 & HiCExplorer & 3.7.6 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1074,16 +1246,25 @@ pyBigWig & 0.3.25 & WeasyPrint & 66.0 \\
   \item Browser tracks are normalized context means intended for inspection;
   replicate-level tables and standard deviations remain necessary for
   uncertainty assessment.
-  \item ABC scoring and Micro-C integration require downstream workflows that
-  consume the continuous signals and frozen master coordinates.
+  \item Contact match quality differs by context.  The ovary data are Hi-C,
+  several Micro-C sources are close proxies or pre-merged matrices, and
+  \texttt{e13}/\texttt{hid} have distance-only evidence.  These labels must be
+  retained in comparative analyses.
+  \item ICE-balanced pixels and the fitted distance prior are relative
+  contact evidence.  Candidate scores are useful within-element rankings but
+  are not calibrated probabilities, causal assignments, or directly
+  comparable expression effects across contexts.
+  \item ABC scoring requires a downstream workflow that consumes the
+  continuous signals, links, and frozen master coordinates.
 \end{itemize}
 
 \section{Verification of this description}
 
 This document was written against the current sample-sheet schema, launcher,
 configuration validators, \filep{workflow/Snakefile}, all included rule files,
-the master/consensus/activity/catalog implementations, the README, and the
-workflow environment files.  To rebuild the PDF from the repository root:
+the master/consensus/activity/catalog/contact-link implementations, the README,
+and the workflow environment files.  To rebuild the PDF from the repository
+root:
 
 \begin{lstlisting}
 latexmk -pdf -interaction=nonstopmode -halt-on-error \

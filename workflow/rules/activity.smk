@@ -649,6 +649,8 @@ if ACTIVITY:
             ),
             igv_sessions=list(ACTIVITY_CONTEXT_IGV_SESSIONS.values()),
             all_contexts_igv_session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+            contact_link_metrics=(CONTACT_LINK_METRICS if CONTACTS else []),
+            contact_link_provenance=(CONTACT_LINK_PROVENANCE if CONTACTS else []),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
         output:
             html=ACTIVITY_REPORT_HTML,
@@ -700,6 +702,14 @@ if ACTIVITY:
                     for context, path in ACTIVITY_CONTEXT_IGV_SESSIONS.items()
                 },
                 "igv_session_all_contexts": ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+                **(
+                    {
+                        "contact_graph_metrics": CONTACT_LINK_METRICS,
+                        "contact_graph_provenance": CONTACT_LINK_PROVENANCE,
+                    }
+                    if CONTACTS
+                    else {}
+                ),
             }
         resources:
             mem_mb=4000

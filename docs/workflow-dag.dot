@@ -59,7 +59,7 @@ digraph workflow {
   }
 
   subgraph cluster_activity {
-    label="Invocation 3: accepted BAMs and frozen master to catalog/report";
+    label="Invocation 3: accepted BAMs and frozen master to catalog, links, and report";
     color="#d9c18c";
     style="rounded";
     margin=14;
@@ -73,7 +73,11 @@ digraph workflow {
     quantify [label="Normalized context signals +\nmaster-DHS activity table\nquantification checkpoint", fillcolor="#ffe5a8"];
     mixture [label="Context-averaged max window +\nguarded two-Gaussian fit", fillcolor="#f7e4b2"];
     catalog [label="Posterior/TSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
-    browser [label="Mean TMM 150-bp ATAC pileup + H3\npooled qpois in compact IGV", fillcolor="#e1f0f7"];
+    browser [label="Mean TMM ATAC + H3 tracks\nDHS/cCRE IGV bundles", fillcolor="#e1f0f7"];
+    contacts [label="Versioned dm6 contact sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
+    normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
+    decay [label="Context contact decay +\natlas-wide power-law model", fillcolor="#d8eeea"];
+    links [label="Element--promoter graph +\nranked gene candidates\nlinks checkpoint", fillcolor="#c7e5df"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
 
@@ -89,10 +93,14 @@ digraph workflow {
     quantify -> mixture -> catalog;
     units -> browser [style=dashed];
     tmm -> browser;
-    catalog -> browser -> report;
+    catalog -> browser;
+    contacts -> normalizecontacts -> decay -> links;
+    catalog -> links;
+    browser -> report;
+    links -> report;
     sources -> report [style=dashed];
     {rank=same; exact; background; windows;}
-    {rank=same; browser; sources;}
+    {rank=same; browser; contacts; sources;}
   }
 
   reviewtable -> review;
@@ -101,4 +109,5 @@ digraph workflow {
   reviewedbam -> validate;
   mastermanifest -> validate;
   reference -> validate [style=dashed, constraint=false];
+  reference -> links [style=dashed, constraint=false];
 }

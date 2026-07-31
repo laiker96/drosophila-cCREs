@@ -91,7 +91,7 @@ def main() -> int:
         choices=OUTPUT_STAGES,
         help=(
             "Stop at this boundary. Defaults to QC from accessions/alignment, "
-            "master from QC/master, and report from quantification/catalog."
+            "master from QC/master, and report from quantification/catalog/links."
         ),
     )
     parser.add_argument(
@@ -99,7 +99,7 @@ def main() -> int:
         type=Path,
         help=(
             "Checksummed JSON checkpoint exported at --from-stage; required for "
-            "trimming, QC-to-master, quantification, catalog, and report resumes"
+            "trimming, QC-to-master, quantification, catalog, links, and report resumes"
         ),
     )
     parser.add_argument(
@@ -235,7 +235,7 @@ def main() -> int:
                 parser.error(
                     "quantification mode uses --activity-bam-manifest"
                 )
-        if args.from_stage in {"catalog", "report"} and not args.checkpoint_manifest:
+        if args.from_stage in {"catalog", "links", "report"} and not args.checkpoint_manifest:
             parser.error(
                 f"--from-stage {args.from_stage} requires --checkpoint-manifest"
             )
@@ -287,7 +287,13 @@ def main() -> int:
         print("Fallback before the selected checkpoint is disabled")
 
     resume_in_place = bool(args.checkpoint_manifest) and (
-        args.from_stage in {"trimming", "quantification", "catalog", "report"}
+        args.from_stage in {
+            "trimming",
+            "quantification",
+            "catalog",
+            "links",
+            "report",
+        }
         or (args.from_stage == "qc" and output_stage == "qc")
     )
     if resume_in_place:

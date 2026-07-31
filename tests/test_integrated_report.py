@@ -113,6 +113,30 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
     )
     mixture_svg = tmp_path / "mixtures.svg"
     mixture_svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    contact_metrics = tmp_path / "contact-metrics.json"
+    contact_metrics.write_text(
+        json.dumps(
+            {
+                "observed_context_count": 1,
+                "powerlaw_context_count": 0,
+                "element_promoter_edge_count": 250,
+                "element_gene_candidate_count": 200,
+                "contexts": {
+                    "ctx": {
+                        "contact_strategy": "observed",
+                        "contact_assay": "Micro-C",
+                        "contact_match": "test_match",
+                        "contact_resolution_bp": 5000,
+                        "active_promoter_count": 20,
+                        "element_promoter_edge_count": 250,
+                        "element_gene_candidate_count": 200,
+                    }
+                },
+            }
+        )
+    )
+    contact_provenance = tmp_path / "contact-provenance.json"
+    contact_provenance.write_text(json.dumps({"method": "test"}))
 
     config = {
         "project": "atlas",
@@ -147,6 +171,8 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
         "mixture_models": mixtures,
         "regulatory_element_summary": summary,
         "mixture_distributions": mixture_svg,
+        "contact_graph_metrics": contact_metrics,
+        "contact_graph_provenance": contact_provenance,
     }
     output_html = tmp_path / "report.html"
     output_pdf = tmp_path / "report.pdf"
@@ -192,6 +218,8 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
     )
 
     assert result["mixture_warning_count"] == 1
+    assert result["contact_links"]["observed_context_count"] == 1
+    assert "Context contact links and candidate genes" in output_html.read_text()
     assert "insufficient_positive_members" in output_html.read_text()
     assert first_hashes == tuple(
         sha256_file(path) for path in (output_html, output_pdf, output_metrics)

@@ -335,6 +335,11 @@ def build_integrated_qc_report(
     factors = _read_tsv(current_files["normalization_factors"])
     mixtures = _read_tsv(current_files["mixture_models"])
     summary = _read_tsv(current_files["regulatory_element_summary"])
+    contact_metrics = (
+        _read_json(current_files["contact_graph_metrics"])
+        if "contact_graph_metrics" in current_files
+        else None
+    )
     qc_rows = _qc_rows(records)
     cross_correlation = _cross_correlation_rows(records)
 
@@ -492,6 +497,28 @@ def build_integrated_qc_report(
         ],
         color="#df8f44",
     )
+    contact_section = ""
+    if contact_metrics is not None:
+        contact_rows = [
+            [
+                context,
+                values["contact_strategy"],
+                values["contact_assay"],
+                values["contact_match"],
+                values["contact_resolution_bp"],
+                values["active_promoter_count"],
+                values["element_promoter_edge_count"],
+                values["element_gene_candidate_count"],
+            ]
+            for context, values in sorted(contact_metrics["contexts"].items())
+        ]
+        contact_section = f"""
+<section class="stage"><h2>6. Context contact links and candidate genes</h2>
+{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count'))])}
+<p>Observed contexts use the merged, ICE-balanced contact matrix. Contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity.</p>
+{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates'], contact_rows, compact=True)}
+</section>
+"""
 
     css = """
     @page { size: A4 landscape; margin: 12mm 13mm 14mm; @bottom-right { content: "Page " counter(page) " of " counter(pages); color: #657184; font-size: 8pt; } }
@@ -573,7 +600,9 @@ def build_integrated_qc_report(
 <h3>H3K27ac member-DHS distributions and fitted mixtures</h3><div class="mixture">{mixture_svg}</div>
 </section>
 
-<section class="stage"><h2>6. Outputs and audit trail</h2>
+{contact_section}
+
+<section class="stage"><h2>{'7' if contact_metrics is not None else '6'}. Outputs and audit trail</h2>
 <p>Every listed artifact is an explicit workflow input to this report. Sizes and checksum prefixes make the report auditable without embedding the large count tables themselves.</p>
 {_table(['Output', 'Path', 'Bytes', 'SHA-256 prefix'], output_inventory, compact=True)}
 </section>
@@ -584,8 +613,8 @@ def build_integrated_qc_report(
     renderer_version = renderer(report_html, output_pdf)
     metrics = {
         "status": "ok",
-        "schema_version": 1,
-        "method": "integrated_regulatory_catalog_qc_report_v1",
+        "schema_version": 2,
+        "method": "integrated_regulatory_catalog_contact_qc_report_v2",
         "project": config["project"],
         "run_id": config["run_id"],
         "contexts": contexts,
@@ -597,6 +626,7 @@ def build_integrated_qc_report(
         "mixture_warning_count": sum(
             row["mixture_supported"] != "1" for row in mixtures
         ),
+        "contact_links": contact_metrics,
         "warnings": warnings,
         "pdf_renderer": {"implementation": "WeasyPrint", "version": renderer_version},
         "inputs": {

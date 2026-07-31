@@ -1,8 +1,10 @@
 # Drosophila cCREs
 
 Reproducible ATAC-seq and ChIP-seq processing from public accessions to a
-summit-aware master DHS registry and a context-resolved regulatory-element
-catalog. Contexts are not hard-coded: they come from the canonical input table.
+summit-aware master DHS registry, a context-resolved regulatory-element
+catalog, and context-specific element--promoter candidate links. Catalog
+contexts come from the canonical input table; the contact-source mapping is a
+versioned dm6 atlas resource.
 
 The production path has three phases separated by an explicit manual QC gate:
 
@@ -10,8 +12,8 @@ The production path has three phases separated by an explicit manual QC gate:
 2. review every library, then construct the master DHS set from accepted ATAC
    libraries only;
 3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, fit the
-   guarded H3K27ac mixtures, and write posterior- and blacklist-annotated
-   regulatory-element catalogs.
+   guarded H3K27ac mixtures, write posterior- and blacklist-annotated catalogs,
+   then normalize the available contact maps and build candidate-gene links.
 
 There is no external regulatory-element reference or quantile-normalization
 branch. Strict reuse of a checksummed master-DHS bundle is supported.
@@ -81,14 +83,16 @@ environment is active.
    and stop at `master`. The lenient replicate peak evidence is reused; only
    context pooling, support filtering, and master construction run downstream.
 4. Start from `master` with the accepted ATAC/H3K27ac manifests. Stop at
-   `quantification`, `catalog`, or `report`.
+   `quantification`, `catalog`, `links`, or `report`. For the complete
+   nine-context dm6 atlas, the links stage downloads and normalizes the
+   versioned contact sources automatically.
 
 Use the same `project` and `run_id` to resume an invocation. Use a new `run_id`
 when scientific parameters or selected libraries change. Before a large run,
 add `--snakemake-dry-run` to inspect the planned jobs. `--cores` limits total
 local/cluster cores; `--jobs` limits concurrent cluster jobs. Complete commands
 for each invocation appear in [Phase 1](#phase-1-master-dhs-construction) and
-[Phase 2](#phase-2-quantification-and-catalog).
+[Phase 2](#phase-2-quantification-catalog-and-links).
 
 ## Pipeline DAG
 
@@ -136,7 +140,8 @@ two biological ATAC libraries per context.
 | `master` | replicate-supported context peaks and master DHS bundle/manifest |
 | `quantification` | raw, CPM/kb, background-TMM factors and normalized master-element signals |
 | `catalog` | max-window H3K27ac mixtures, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
-| `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the catalog |
+| `links` | normalized contact matrices, the atlas contact-decay model, promoter nodes, context element--promoter edges, and ranked element--gene candidates |
+| `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the links |
 
 Snakemake owns completeness. Re-running the same `project`/`run_id` resumes
 from existing valid outputs and never realigns merely because a later stage is
@@ -173,9 +178,10 @@ artifacts cause an error rather than upstream recomputation.
 | `trimming` | trimming `--checkpoint-manifest` | trimming, alignment, or QC in the same run namespace |
 | `alignment` | alignment checkpoint or `--final-bam-manifest` | alignment or QC |
 | `qc` | QC checkpoint; reviewed ATAC `--final-bam-manifest` for master | QC or master |
-| `master` | `--master-manifest`; accepted BAM manifests when continuing | master, quantification, catalog, or report |
-| `quantification` | quantification checkpoint | quantification, catalog, or report |
-| `catalog` | catalog checkpoint | catalog or report |
+| `master` | `--master-manifest`; accepted BAM manifests when continuing | master, quantification, catalog, links, or report |
+| `quantification` | quantification checkpoint | quantification, catalog, links, or report |
+| `catalog` | catalog checkpoint | catalog, links, or report |
+| `links` | links checkpoint | links or report |
 | `report` | report checkpoint | report validation |
 
 `final-bam` remains a compatibility alias for older commands. New commands
@@ -314,7 +320,7 @@ review command form the explicit checkpoint; a separate master invocation is
 required. A master invocation with any pending ATAC decision fails before
 Snakemake starts.
 
-## Phase 2: quantification and catalog
+## Phase 2: quantification, catalog, and links
 
 Use the same accession table as metadata, the exported master manifest, and
 one or more reviewed final-BAM manifests:
@@ -353,6 +359,56 @@ cross-correlation results, and MultiQC locations into the report configuration.
 The master-manifest result root is discovered automatically when possible.
 Report inputs affect only reporting and are excluded from the scientific
 semantic digest.
+
+## Contact normalization and candidate-gene links
+
+The canonical nine-context dm6 configuration automatically reads
+`resources/atlas_contact_sources.tsv`. Seven contexts have observed contact
+evidence: `ab`, `e5`, `e11`, `ead`, `lb`, `o`, and `wid`. The `o` evidence is
+Hi-C at 4 kb; the other observed contexts use Micro-C at 5 kb. No defensible
+context-matched map is assigned to `e13` or `hid`, so those two contexts are
+explicitly labeled `powerlaw` and use an atlas-wide distance model fitted from
+the seven observed maps. A partial or non-dm6 catalog does not silently inherit
+this atlas mapping and cannot select the `links` endpoint without an explicit,
+valid contact configuration.
+
+Contact files download to `data/raw/contacts/`. For each observed context, the
+workflow selects a stored resolution that exactly divides the target
+resolution, coarsens by summing raw counts when needed, sums replicate count
+matrices, and performs one ICE balancing pass on the merged matrix. It never
+averages pre-balanced replicates or approximately rebins incompatible
+resolutions. When an upstream checksum is published it is checked during the
+resumable download; every downloaded source and normalized matrix receives a
+recorded SHA-256 in the result provenance. Converted and coarsened copies under
+`work/` are removed after the balanced context matrix is written successfully.
+
+The current dm6 GTF supplies one promoter node per distinct gene/TSS, using a
+fixed 500-bp promoter window. In each context, promoter activity is summarized
+from overlapping context-member master DHSs. A promoter is marked active when
+it is ATAC-accessible and its maximum H3K27ac high-component posterior is at
+least 0.5. Every context-member element is linked to promoters on the same
+chromosome within 1 Mb. Observed contexts report the ICE-balanced matrix pixel,
+the fitted distance expectation, and observed/expected enrichment. Same-bin
+pairs use the maximum adjacent-bin contact and are labeled
+`adjacent_bin_proxy`, because a matrix diagonal cannot resolve an internal
+element--promoter contact. The two missing contexts report distance-model
+weights only.
+
+The decay fit uses the mean of finite balanced diagonal pixels at each sampled
+distance, including valid zero pixels and excluding masked bins. This avoids
+inflating the model by conditioning only on nonzero contacts.
+
+The promoter activity score is the maximum of
+`combined_activity × H3K27ac_posterior` over individual overlapping DHSs; the
+two maxima are not taken from different DHSs and multiplied. The edge score is
+`contact_weight × promoter_activity_score`.
+It is a prioritization score, not a calibrated probability or causal claim.
+The element--gene table collapses alternative promoters per gene and reports
+candidate, active-candidate, contact-only, and nearest-gene ranks so users can
+compare the sources of evidence rather than accepting one fixed target call.
+The edge table is intentionally normalized: coordinates, transcript IDs, and
+element annotations live in the node table rather than being repeated on every
+edge. `source_node_id` and `target_node_id` join the two files.
 
 ## Quantification method
 
@@ -543,6 +599,22 @@ results/<project>/<run_id>/activity/catalog/igv/<context>.xml
 results/<project>/<run_id>/activity/catalog/all-contexts.igv.xml
 ```
 
+Contact links:
+
+```text
+results/<project>/<run_id>/activity/links/contacts/<context>.balanced.cool
+results/<project>/<run_id>/activity/links/contacts/<context>.metrics.json
+results/<project>/<run_id>/activity/links/contacts/dm6_powerlaw.json
+results/<project>/<run_id>/activity/links/promoters.tsv.gz
+results/<project>/<run_id>/activity/links/promoters.metrics.json
+results/<project>/<run_id>/activity/links/contexts/<context>.nodes.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<context>.element_promoter_edges.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<context>.element_gene_candidates.tsv.gz
+results/<project>/<run_id>/activity/links/contexts/<context>.metrics.json
+results/<project>/<run_id>/activity/links/contact_graph_metrics.json
+results/<project>/<run_id>/activity/links/contact_graph_provenance.json
+```
+
 Integrated report:
 
 ```text
@@ -553,8 +625,9 @@ results/<project>/<run_id>/activity/report/integrated_qc_report.json
 
 The report includes frozen input and output inventories with checksums, BAM QC
 and FRiP statistics, H3K27ac cross-correlation, ATAC TSS plots, master-registry
-statistics, TMM factors, high-component TSS classes, mixture fits and exact
-guardrail warnings. The JSON sidecar records every report input and output hash.
+statistics, TMM factors, high-component TSS classes, mixture fits, exact
+guardrail warnings, and contact-link coverage by context. The JSON sidecar
+records every report input and output hash.
 
 The long table contains one master-element/context row and reports both mixture
 components, continuous posterior, TSS distance, and blacklist overlap. The

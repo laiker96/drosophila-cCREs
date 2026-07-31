@@ -25,6 +25,7 @@ from .manifest import read_manifest
 from .sample_sheet import DEFAULT_SCHEMA, read_sample_sheet
 from .stage_checkpoints import read_stage_checkpoint
 from .workflow_config import validate_stage_selection, workflow_semantic_sha256
+from .contact_metadata import default_dm6_contact_config
 from .integrated_report import (
     discover_report_source_files,
     report_source_record,
@@ -1009,6 +1010,25 @@ def generate_activity_config(
         },
         "provenance": provenance,
     }
+    contact_config = (
+        default_dm6_contact_config(
+            contexts=contexts,
+            reference=config["reference"],
+            manifest_path=DEFAULT_SCHEMA.parents[1]
+            / "resources"
+            / "atlas_contact_sources.tsv",
+            path_base=path_base,
+        )
+        if genome == "dm6"
+        else None
+    )
+    if contact_config is not None:
+        config["contacts"] = contact_config
+    elif output_stage == "links" or start_stage == "links":
+        raise AcquisitionError(
+            "The links stage is available only for the complete canonical dm6 atlas "
+            "context set"
+        )
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.quantification.yaml"
@@ -1090,6 +1110,10 @@ def generate_resume_config(
                 library[key] = display(library[key])
         for key in MASTER_FILE_FIELDS:
             activity["master"][key] = display(activity["master"][key])
+    contacts = resumed.get("contacts")
+    if contacts:
+        for key in ("source_manifest", "promoter_annotation"):
+            contacts[key] = display(contacts[key])
     report = resumed.get("report")
     if report:
         report["source_roots"] = [display(value) for value in report["source_roots"]]

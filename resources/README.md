@@ -1,7 +1,7 @@
 # Pipeline resources
 
-This directory contains reviewed accession inputs for the dm6 atlas plus the
-adapter sequences used by the workflow.
+This directory contains reviewed accession and contact-source inputs for the
+dm6 atlas plus the adapter sequences used by the workflow.
 
 ## Atlas inputs
 
@@ -29,6 +29,22 @@ scientific selection, not merely the IP-only table plus control rows.
 The encoded matched pairs are GSE140539 stage-5 IP/input runs
 `SRR10485675/SRR10485676` and `SRR10485677/SRR10485678`, plus adult-brain
 `SRR5319052/SRR5319047`.
+
+## Contact sources
+
+`atlas_contact_sources.tsv` is the versioned source manifest for the contact
+link stage. It contains the primary GEO download URL, format, replicate label,
+target atlas context, biological match description, and caveat for each matrix.
+The seven observed contexts are `ab`, `e5`, `e11`, `ead`, `lb`, `o`, and `wid`;
+`e13` and `hid` are intentionally absent because the workflow models them by
+distance. The table conforms to `schemas/contact-sources.schema.yaml`.
+
+The source repositories do not publish a checksum for every supplementary
+matrix, so blank checksum cells are explicit rather than invented. The
+workflow checks any checksum present, preserves aria2 resume state, and records
+the computed SHA-256 of every downloaded source and normalized output. Raw
+matrices are downloaded below the ignored `data/raw/contacts/` namespace and
+are never committed.
 
 ## Adapter sequences
 

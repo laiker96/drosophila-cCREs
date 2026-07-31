@@ -18,6 +18,7 @@ LOGICAL_STAGES = (
     "master",
     "quantification",
     "catalog",
+    "links",
     "report",
 )
 

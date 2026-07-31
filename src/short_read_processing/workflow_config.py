@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from .accessions import AcquisitionError
-from .artifacts import FINAL_BAM_FILTERING_CONTRACT, semantic_sha256
+from .artifacts import FINAL_BAM_FILTERING_CONTRACT, semantic_sha256, sha256_file
 from .stage_checkpoints import LOGICAL_STAGES
+from .contact_metadata import read_contact_source_manifest
 
 
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -80,6 +81,30 @@ ACTIVITY_LIBRARY_FIELDS = {
     "filtering_contract",
     "qc_status",
 }
+CONTACT_FIELDS = {
+    "schema_version",
+    "source_manifest",
+    "source_manifest_sha256",
+    "promoter_annotation",
+    "promoter_annotation_checksum",
+    "canonical_chromosomes",
+    "promoter_width_bp",
+    "maximum_distance_bp",
+    "pseudocount_fraction",
+    "promoter_posterior_threshold",
+    "normalization",
+    "promoter_activity",
+    "link_score",
+    "contexts",
+}
+CONTACT_CONTEXT_FIELDS = {
+    "id",
+    "strategy",
+    "assay",
+    "match",
+    "resolution_bp",
+    "caveat",
+}
 REPORT_FIELDS = {"schema_version", "source_roots", "source_files"}
 REPORT_SOURCE_FIELDS = {"path", "sha256", "kind", "source_root"}
 REFERENCE_FIELDS = {
@@ -100,9 +125,10 @@ OUTPUT_STAGES_BY_INPUT = {
     "trimming": {"trimming", "alignment", "qc"},
     "alignment": {"alignment", "qc"},
     "qc": {"qc", "master"},
-    "master": {"master", "quantification", "catalog", "report"},
-    "quantification": {"quantification", "catalog", "report"},
-    "catalog": {"catalog", "report"},
+    "master": {"master", "quantification", "catalog", "links", "report"},
+    "quantification": {"quantification", "catalog", "links", "report"},
+    "catalog": {"catalog", "links", "report"},
+    "links": {"links", "report"},
     "report": {"report"},
     # Backward-compatible artifact-mode name. New commands use alignment or qc.
     "final-bam": {"alignment", "qc", "master"},
@@ -115,6 +141,7 @@ DEFAULT_OUTPUT_STAGE_BY_INPUT = {
     "master": "master",
     "quantification": "report",
     "catalog": "report",
+    "links": "report",
     "report": "report",
     "final-bam": "master",
 }
@@ -234,7 +261,13 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         "accessions": {"accessions", "trimming", "alignment"},
         "final-bam": {"alignment", "qc", "final-bam"},
         "master": {"master"},
-        "quantification": {"master", "quantification", "catalog", "report"},
+        "quantification": {
+            "master",
+            "quantification",
+            "catalog",
+            "links",
+            "report",
+        },
     }
     if start_stage not in valid_input_modes[input_stage]:
         raise AcquisitionError(
@@ -457,6 +490,119 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             raise AcquisitionError("Report source-file paths must be unique")
     elif activity is not None:
         raise AcquisitionError("activity mapping requires input_stage=quantification")
+
+    contacts = config.get("contacts")
+    if contacts is not None:
+        if input_stage != "quantification" or config["assay"] != "activity":
+            raise AcquisitionError(
+                "Contact links require an activity configuration"
+            )
+        if not isinstance(contacts, dict):
+            raise AcquisitionError("contacts must be a mapping")
+        _required(contacts, CONTACT_FIELDS, "Contacts")
+        if contacts["schema_version"] != 1:
+            raise AcquisitionError("Unsupported contacts schema version")
+        if config["reference"]["name"] != "dm6":
+            raise AcquisitionError("The configured contact atlas is dm6-only")
+        if not re.fullmatch(
+            r"[0-9a-f]{64}", str(contacts["source_manifest_sha256"])
+        ):
+            raise AcquisitionError("Contact source-manifest SHA-256 is invalid")
+        if not CHECKSUM_RE.fullmatch(str(contacts["promoter_annotation_checksum"])):
+            raise AcquisitionError("Contact promoter-annotation checksum is invalid")
+        if not contacts["source_manifest"] or not contacts["promoter_annotation"]:
+            raise AcquisitionError("Contact input paths cannot be blank")
+        canonical = contacts["canonical_chromosomes"]
+        if (
+            not isinstance(canonical, list)
+            or not canonical
+            or len(canonical) != len(set(canonical))
+            or any(not str(chromosome).startswith("chr") for chromosome in canonical)
+        ):
+            raise AcquisitionError("Contact canonical chromosomes are invalid")
+        if (
+            int(contacts["promoter_width_bp"]) < 1
+            or int(contacts["maximum_distance_bp"]) < 1
+        ):
+            raise AcquisitionError("Contact promoter width and distance must be positive")
+        if not 0 <= float(contacts["pseudocount_fraction"]) <= 1:
+            raise AcquisitionError("Contact pseudocount fraction must be in [0, 1]")
+        if not 0 <= float(contacts["promoter_posterior_threshold"]) <= 1:
+            raise AcquisitionError("Promoter posterior threshold must be in [0, 1]")
+        expected_methods = {
+            "normalization": "merge_counts_then_ice_v1",
+            "promoter_activity": "overlapping_master_dhs_max_v1",
+            "link_score": "contact_weight_x_promoter_activity_posterior_v1",
+        }
+        for field, expected in expected_methods.items():
+            if contacts[field] != expected:
+                raise AcquisitionError(
+                    f"Unsupported contact {field}: {contacts[field]!r}"
+                )
+        context_rows = contacts["contexts"]
+        if not isinstance(context_rows, list) or not context_rows:
+            raise AcquisitionError("Contact contexts must be a non-empty list")
+        context_ids = []
+        observed_contexts = set()
+        for row in context_rows:
+            if not isinstance(row, dict):
+                raise AcquisitionError("Contact context records must be mappings")
+            _required(row, CONTACT_CONTEXT_FIELDS, "Contact context")
+            context_id = str(row["id"])
+            if not SAFE_ID_RE.fullmatch(context_id) or context_id in context_ids:
+                raise AcquisitionError("Contact context IDs must be safe and unique")
+            context_ids.append(context_id)
+            strategy = row["strategy"]
+            if strategy not in {"observed", "powerlaw"}:
+                raise AcquisitionError(
+                    f"Contact context {context_id!r} has invalid strategy"
+                )
+            if int(row["resolution_bp"]) < 1 or not row["match"]:
+                raise AcquisitionError(
+                    f"Contact context {context_id!r} has invalid metadata"
+                )
+            if strategy == "observed":
+                if row["assay"] not in {"Micro-C", "Hi-C"}:
+                    raise AcquisitionError(
+                        f"Observed context {context_id!r} has invalid assay"
+                    )
+                observed_contexts.add(context_id)
+            else:
+                if row["assay"] != "distance_model":
+                    raise AcquisitionError(
+                        f"Power-law context {context_id!r} must use distance_model"
+                    )
+        if set(context_ids) != set(activity["contexts"]):
+            raise AcquisitionError(
+                "Contact contexts must exactly match activity contexts"
+            )
+        if not observed_contexts:
+            raise AcquisitionError("A power-law model requires observed contact contexts")
+        manifest = Path(str(contacts["source_manifest"]))
+        if manifest.is_file():
+            if sha256_file(manifest) != contacts["source_manifest_sha256"]:
+                raise AcquisitionError("Contact source-manifest SHA-256 mismatch")
+            source_rows = read_contact_source_manifest(manifest)
+            source_contexts = {row["context"] for row in source_rows}
+            if source_contexts != observed_contexts:
+                raise AcquisitionError(
+                    "Contact sources must cover exactly the observed contexts"
+                )
+            configured_by_context = {
+                str(row["id"]): row for row in context_rows
+            }
+            for source in source_rows:
+                configured = configured_by_context[source["context"]]
+                if (
+                    source["assay"] != configured["assay"]
+                    or source["match_quality"] != configured["match"]
+                ):
+                    raise AcquisitionError(
+                        f"Contact source metadata differs from configured context "
+                        f"{source['context']!r}"
+                    )
+    elif start_stage == "links" or output_stage == "links":
+        raise AcquisitionError("The links stage requires contact configuration")
 
     qpois = config.get("atac_qpois")
     if (
@@ -768,6 +914,13 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
         ):
             path = Path(activity["master"][key])
             activity["master"][key] = str(
+                path if path.is_absolute() else (base / path).resolve()
+            )
+    contacts = config.get("contacts")
+    if contacts:
+        for key in ("source_manifest", "promoter_annotation"):
+            path = Path(contacts[key])
+            contacts[key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )
     report = config.get("report")

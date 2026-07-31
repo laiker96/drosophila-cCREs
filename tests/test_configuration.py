@@ -12,6 +12,7 @@ from short_read_processing.configuration import (
     generate_configs,
     generate_resume_config,
 )
+from short_read_processing.contact_metadata import DM6_ATLAS_CONTEXT_IDS
 from short_read_processing.manifest import write_manifest
 from short_read_processing.workflow_config import (
     resolve_input_paths,
@@ -1024,3 +1025,48 @@ def test_activity_config_records_and_skips_documented_rejection(tmp_path):
             "reason": "insufficient depth",
         }
     ]
+
+
+def test_complete_dm6_atlas_config_adds_contact_links(tmp_path):
+    sheet_rows = ["accession\tlibrary_id\tassay\tcontext"]
+    manifest_rows = []
+    accession = 200000
+    for context in sorted(DM6_ATLAS_CONTEXT_IDS):
+        for assay, manifest_assay in (
+            ("atac", "atac"),
+            ("h3k27ac", "chip_histone"),
+        ):
+            library_id = f"{context}_{assay}"
+            sheet_rows.append(
+                f"SRR{accession}\t{library_id}\t{assay}\t{context}"
+            )
+            manifest_rows.append((library_id, manifest_assay, context))
+            accession += 1
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text("\n".join(sheet_rows) + "\n", encoding="utf-8")
+    manifest = _write_activity_bam_manifest(tmp_path, "atlas", manifest_rows)
+
+    output = generate_activity_config(
+        sample_sheet_path=sheet,
+        final_bam_manifests=[manifest],
+        master_manifest_path=_write_master_manifest(tmp_path),
+        output_dir=tmp_path / "configs",
+        project="activity-test",
+        run_id="links-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_files=True,
+        output_stage="links",
+    )
+    config = yaml.safe_load(output.read_text())
+
+    assert config["output_stage"] == "links"
+    assert len(config["contacts"]["contexts"]) == 9
+    assert {
+        row["id"]
+        for row in config["contacts"]["contexts"]
+        if row["strategy"] == "powerlaw"
+    } == {"e13", "hid"}
+    assert config["contacts"]["source_manifest"].endswith(
+        "resources/atlas_contact_sources.tsv"
+    )

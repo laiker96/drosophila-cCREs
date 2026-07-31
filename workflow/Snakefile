@@ -16,6 +16,7 @@ from short_read_processing.activity_tmm import (
     TMM_BACKGROUND_METHOD,
 )
 from short_read_processing.workflow_config import (
+    aria2_checksum,
     guard_result_namespace,
     named_artifacts,
     resolve_input_paths,
@@ -23,6 +24,7 @@ from short_read_processing.workflow_config import (
     validate_workflow_config,
     wildcard_regex,
 )
+from short_read_processing.contact_metadata import read_contact_source_manifest
 
 
 if not config:
@@ -664,6 +666,106 @@ ACTIVITY_REPORT_TARGETS = (
     else []
 )
 
+CONTACTS = config.get("contacts")
+CONTACT_SOURCE_MANIFEST = str(CONTACTS["source_manifest"]) if CONTACTS else ""
+CONTACT_SOURCE_ROWS = (
+    read_contact_source_manifest(Path(CONTACT_SOURCE_MANIFEST))
+    if CONTACTS
+    else []
+)
+CONTACT_SOURCE_BY_ID = {
+    row["source_id"]: row for row in CONTACT_SOURCE_ROWS
+}
+CONTACT_SOURCE_IDS_BY_FORMAT = {
+    file_format: [
+        row["source_id"]
+        for row in CONTACT_SOURCE_ROWS
+        if row["format"] == file_format
+    ]
+    for file_format in ("mcool", "cool.gz", "h5")
+}
+CONTACT_SOURCE_ROWS_BY_CONTEXT = {
+    context: [row for row in CONTACT_SOURCE_ROWS if row["context"] == context]
+    for context in ACTIVITY_CONTEXTS
+}
+CONTACT_DOWNLOAD_CHECKSUM_ARGUMENTS = {
+    source_id: (
+        f"--checksum={aria2_checksum(source)}"
+        if source["checksum"]
+        else ""
+    )
+    for source_id, source in CONTACT_SOURCE_BY_ID.items()
+}
+CONTACT_CONTEXTS = (
+    [str(row["id"]) for row in CONTACTS["contexts"]]
+    if CONTACTS
+    else []
+)
+CONTACT_CONTEXT_BY_ID = (
+    {str(row["id"]): row for row in CONTACTS["contexts"]}
+    if CONTACTS
+    else {}
+)
+CONTACT_OBSERVED_CONTEXTS = [
+    context
+    for context in CONTACT_CONTEXTS
+    if CONTACT_CONTEXT_BY_ID[context]["strategy"] == "observed"
+]
+CONTACT_LINK_ROOT = f"{ACTIVITY_ROOT}/links"
+CONTACT_NORMALIZED_ROOT = f"{CONTACT_LINK_ROOT}/contacts"
+CONTACT_WORK_ROOT = f"{ACTIVITY_WORK}/contacts"
+CONTACT_NORMALIZED = {
+    context: f"{CONTACT_NORMALIZED_ROOT}/{context}.balanced.cool"
+    for context in CONTACT_OBSERVED_CONTEXTS
+}
+CONTACT_NORMALIZED_METRICS = {
+    context: f"{CONTACT_NORMALIZED_ROOT}/{context}.metrics.json"
+    for context in CONTACT_OBSERVED_CONTEXTS
+}
+CONTACT_POWERLAW = f"{CONTACT_NORMALIZED_ROOT}/dm6_powerlaw.json"
+CONTACT_PROMOTERS = f"{CONTACT_LINK_ROOT}/promoters.tsv.gz"
+CONTACT_PROMOTER_METRICS = f"{CONTACT_LINK_ROOT}/promoters.metrics.json"
+CONTACT_LINK_CONTEXT_NODES = {
+    context: f"{CONTACT_LINK_ROOT}/contexts/{context}.nodes.tsv.gz"
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_EDGES = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/{context}.element_promoter_edges.tsv.gz"
+    )
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_GENES = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/{context}.element_gene_candidates.tsv.gz"
+    )
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_METRICS = {
+    context: f"{CONTACT_LINK_ROOT}/contexts/{context}.metrics.json"
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_METRICS = f"{CONTACT_LINK_ROOT}/contact_graph_metrics.json"
+CONTACT_LINK_PROVENANCE = f"{CONTACT_LINK_ROOT}/contact_graph_provenance.json"
+CONTACT_LINK_TARGETS = (
+    ACTIVITY_CATALOG_TARGETS
+    + list(CONTACT_NORMALIZED.values())
+    + list(CONTACT_NORMALIZED_METRICS.values())
+    + [
+        CONTACT_POWERLAW,
+        CONTACT_PROMOTERS,
+        CONTACT_PROMOTER_METRICS,
+        *CONTACT_LINK_CONTEXT_NODES.values(),
+        *CONTACT_LINK_CONTEXT_EDGES.values(),
+        *CONTACT_LINK_CONTEXT_GENES.values(),
+        *CONTACT_LINK_CONTEXT_METRICS.values(),
+        CONTACT_LINK_METRICS,
+        CONTACT_LINK_PROVENANCE,
+    ]
+    if CONTACTS
+    else []
+)
+
 CALLPEAK_NARROW = [
     sample
     for sample in CHIP_TREATMENTS
@@ -819,6 +921,7 @@ STAGE_CHECKPOINT_MANIFESTS = {
         "master",
         "quantification",
         "catalog",
+        "links",
         "report",
     )
 }
@@ -826,6 +929,36 @@ STAGE_RESOLVED_CONFIGS = {
     stage: f"{RESULT_ROOT}/provenance/configs/{stage}.resolved_config.json"
     for stage in STAGE_CHECKPOINT_MANIFESTS
 }
+
+ACTIVITY_CATALOG_CHECKPOINT_FILES = [
+    ACTIVITY_TMM_FACTORS,
+    ACTIVITY_TMM_RECEIPT,
+    ACTIVITY_CONTEXT_SIGNAL,
+    ACTIVITY_TABLE,
+    ACTIVITY_METRICS,
+    ACTIVITY_PROVENANCE,
+    ACTIVITY_REGULATORY_WINDOWS,
+    ACTIVITY_REGULATORY_WINDOWS_BED,
+    *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
+    ACTIVITY_REGULATORY_CATALOG,
+    ACTIVITY_REGULATORY_WIDE,
+    *ACTIVITY_REGULATORY_ELEMENTS.values(),
+    ACTIVITY_REGULATORY_MIXTURES,
+    ACTIVITY_REGULATORY_SUMMARY,
+    ACTIVITY_REGULATORY_METRICS,
+    ACTIVITY_REGULATORY_PROVENANCE,
+    ACTIVITY_REGULATORY_MIXTURE_PLOT,
+    ACTIVITY_REGULATORY_MIXTURE_BINS,
+    ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
+    ACTIVITY_CATALOG_MASTER_BED,
+    *ACTIVITY_CATALOG_CONTEXT_DHS.values(),
+    *ACTIVITY_CATALOG_ELEMENT_BEDS.values(),
+    ACTIVITY_CATALOG_BED_MANIFEST,
+    *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
+    *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
+    *ACTIVITY_CONTEXT_IGV_SESSIONS.values(),
+    ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+]
 
 
 STAGE_CHECKPOINT_ARTIFACTS = {
@@ -922,36 +1055,29 @@ STAGE_CHECKPOINT_ARTIFACTS = {
     "catalog": {
         "resolved_config": STAGE_RESOLVED_CONFIGS["catalog"],
         **named_artifacts(
-            [
-                ACTIVITY_TMM_FACTORS,
-                ACTIVITY_TMM_RECEIPT,
-                ACTIVITY_CONTEXT_SIGNAL,
-                ACTIVITY_TABLE,
-                ACTIVITY_METRICS,
-                ACTIVITY_PROVENANCE,
-                ACTIVITY_REGULATORY_WINDOWS,
-                ACTIVITY_REGULATORY_WINDOWS_BED,
-                *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
-                ACTIVITY_REGULATORY_CATALOG,
-                ACTIVITY_REGULATORY_WIDE,
-                *ACTIVITY_REGULATORY_ELEMENTS.values(),
-                ACTIVITY_REGULATORY_MIXTURES,
-                ACTIVITY_REGULATORY_SUMMARY,
-                ACTIVITY_REGULATORY_METRICS,
-                ACTIVITY_REGULATORY_PROVENANCE,
-                ACTIVITY_REGULATORY_MIXTURE_PLOT,
-                ACTIVITY_REGULATORY_MIXTURE_BINS,
-                ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
-                ACTIVITY_CATALOG_MASTER_BED,
-                *ACTIVITY_CATALOG_CONTEXT_DHS.values(),
-                *ACTIVITY_CATALOG_ELEMENT_BEDS.values(),
-                ACTIVITY_CATALOG_BED_MANIFEST,
-                *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
-                *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
-                *ACTIVITY_CONTEXT_IGV_SESSIONS.values(),
-                ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
-            ],
+            ACTIVITY_CATALOG_CHECKPOINT_FILES,
             "catalog_artifact",
+        ),
+    },
+    "links": {
+        "resolved_config": STAGE_RESOLVED_CONFIGS["links"],
+        **named_artifacts(
+            [
+                *ACTIVITY_CATALOG_CHECKPOINT_FILES,
+                CONTACT_SOURCE_MANIFEST,
+                *CONTACT_NORMALIZED.values(),
+                *CONTACT_NORMALIZED_METRICS.values(),
+                CONTACT_POWERLAW,
+                CONTACT_PROMOTERS,
+                CONTACT_PROMOTER_METRICS,
+                *CONTACT_LINK_CONTEXT_NODES.values(),
+                *CONTACT_LINK_CONTEXT_EDGES.values(),
+                *CONTACT_LINK_CONTEXT_GENES.values(),
+                *CONTACT_LINK_CONTEXT_METRICS.values(),
+                CONTACT_LINK_METRICS,
+                CONTACT_LINK_PROVENANCE,
+            ],
+            "contact_link_artifact",
         ),
     },
     "report": {
@@ -964,6 +1090,7 @@ STAGE_CHECKPOINT_ARTIFACTS = {
 STAGE_CHECKPOINT_PARAMETERS = {
     "assay": ASSAY,
     "atac_qpois": config.get("atac_qpois"),
+    "contacts": CONTACTS,
     "peak_callers": {
         sample: SAMPLES[sample]["peak_caller"]
         for sample in TREATMENTS
@@ -972,7 +1099,17 @@ STAGE_CHECKPOINT_PARAMETERS = {
 
 STANDARD_FINAL_TARGETS = MASTER_TARGETS
 if OUTPUT_STAGE == "report":
-    FINAL_TARGETS = ACTIVITY_REPORT_TARGETS
+    FINAL_TARGETS = (
+        ACTIVITY_REPORT_TARGETS
+        + (CONTACT_LINK_TARGETS if CONTACTS and START_STAGE != "report" else [])
+        + (
+            [STAGE_CHECKPOINT_MANIFESTS["links"]]
+            if CONTACTS and START_STAGE != "report"
+            else []
+        )
+    )
+elif OUTPUT_STAGE == "links":
+    FINAL_TARGETS = CONTACT_LINK_TARGETS
 elif OUTPUT_STAGE == "catalog":
     FINAL_TARGETS = ACTIVITY_CATALOG_TARGETS
 elif OUTPUT_STAGE == "quantification":
@@ -1014,4 +1151,5 @@ include: "rules/peaks.smk"
 include: "rules/atac_peaks.smk"
 include: "rules/atac_consensus.smk"
 include: "rules/activity.smk"
+include: "rules/contacts.smk"
 include: "rules/qc.smk"
