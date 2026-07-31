@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 name: immutable final-BAM manifest
 formats: [tsv]
 path_resolution: Relative bam and bai paths are resolved against the manifest directory.
@@ -41,7 +41,7 @@ fields:
     values: [dm6, hg38]
   filtering_contract:
     type: enum
-    values: [short-read-processing-final-v1]
+    values: [short-read-processing-final-v2]
   bam_sha256:
     type: sha256
   bai_sha256:
@@ -67,6 +67,7 @@ rules:
   - Library metadata must agree with the accession sample sheet.
   - BAM and BAI paths must exist, be distinct, and not be reused by another row.
   - Full SHA-256 values are mandatory.
+  - The v2 final-BAM contract retains blacklist-overlapping alignments; blacklist overlap is annotated on catalog elements instead of filtering reads.
   - Workflow validation checks BAM integrity, explicit-index readability, coordinate sorting, and exact reference sequence names and lengths.
   - pending_review and accepted BAMs may enter downstream peak calling and QC; master DHS construction accepts only reviewed accepted BAMs as inputs.
   - Master DHS construction requires an explicit accepted or rejected decision for every ATAC library; rejected rows remain in the reviewed manifest and are excluded from the master inputs.

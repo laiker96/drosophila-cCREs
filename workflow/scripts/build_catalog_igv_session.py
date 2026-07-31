@@ -12,7 +12,7 @@ track_count = build_catalog_session(
     h3k27ac_bigwig=Path(str(snakemake.input.h3k27ac)),
     context_dhs_bed=Path(str(snakemake.input.context_dhs)),
     master_dhs_bed=Path(str(snakemake.input.master_dhs)),
-    active_elements_bed=Path(str(snakemake.input.active_elements)),
+    elements_bed=Path(str(snakemake.input.elements)),
     output=Path(str(snakemake.output.session)),
 )
 log = Path(str(snakemake.log[0]))

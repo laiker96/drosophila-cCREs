@@ -391,9 +391,21 @@ def _write_master_manifest(tmp_path: Path) -> Path:
         path.write_text(f"{field}\n")
         artifacts[field] = path
     manifest = tmp_path / "master.tsv"
-    columns = ["genome", "method", "source_project", "source_run_id"]
+    columns = [
+        "genome",
+        "method",
+        "input_filtering_contract",
+        "source_project",
+        "source_run_id",
+    ]
     columns.extend(item for field in fields for item in (field, f"{field}_sha256"))
-    values = ["dm6", "reciprocal_summit_complete_linkage_v2", "atlas", "master-v1"]
+    values = [
+        "dm6",
+        "reciprocal_summit_complete_linkage_v2",
+        FINAL_BAM_FILTERING_CONTRACT,
+        "atlas",
+        "master-v1",
+    ]
     for field in fields:
         values.extend((str(artifacts[field]), sha256_file(artifacts[field])))
     manifest.write_text("\t".join(columns) + "\n" + "\t".join(values) + "\n")
@@ -860,7 +872,9 @@ def test_activity_config_requires_complete_accepted_contexts(tmp_path):
         "final_bam_manifest",
     }
     assert config["samples"] == []
+    assert config["activity"]["schema_version"] == 3
     assert config["activity"]["contexts"] == ["eye"]
+    assert config["activity"]["atac_browser_extension_bp"] == 150
     assert config["activity"]["normalization"] == "background_tmm_10kb_autosomes_v1"
     assert {
         (library["cohort"], library["assay"])

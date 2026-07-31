@@ -85,13 +85,25 @@ def test_master_manifest_requires_one_complete_row(tmp_path):
         path = tmp_path / name
         path.write_text(name)
         files[name] = path
-    columns = ["genome", "method", "source_project", "source_run_id"]
+    columns = [
+        "genome",
+        "method",
+        "input_filtering_contract",
+        "source_project",
+        "source_run_id",
+    ]
     columns.extend(
         item
         for name in files
         for item in (name, f"{name}_sha256")
     )
-    values = ["dm6", "method-v1", "atlas", "run-v1"]
+    values = [
+        "dm6",
+        "method-v1",
+        FINAL_BAM_FILTERING_CONTRACT,
+        "atlas",
+        "run-v1",
+    ]
     values.extend(
         item
         for name, path in files.items()
@@ -104,6 +116,15 @@ def test_master_manifest_requires_one_complete_row(tmp_path):
 
     assert parsed["master_bed"] == str(files["master_bed"].resolve())
     assert parsed["method"] == "method-v1"
+
+    manifest.write_text(
+        manifest.read_text().replace(
+            FINAL_BAM_FILTERING_CONTRACT,
+            "short-read-processing-final-v1",
+        )
+    )
+    with pytest.raises(AcquisitionError, match="input_filtering_contract"):
+        read_master_manifest(manifest)
 
 
 def test_semantic_sha256_is_order_independent():

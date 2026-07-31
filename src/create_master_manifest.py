@@ -10,7 +10,11 @@ import os
 from pathlib import Path
 import tempfile
 
-from short_read_processing.artifacts import MASTER_FILE_FIELDS, sha256_file
+from short_read_processing.artifacts import (
+    FINAL_BAM_FILTERING_CONTRACT,
+    MASTER_FILE_FIELDS,
+    sha256_file,
+)
 from short_read_processing.cli import cli_main
 
 
@@ -63,13 +67,20 @@ def main() -> int:
             "Master bundle is incomplete; missing: " + ", ".join(str(path) for path in missing)
         )
 
-    fieldnames = ["genome", "method", "source_project", "source_run_id"]
+    fieldnames = [
+        "genome",
+        "method",
+        "input_filtering_contract",
+        "source_project",
+        "source_run_id",
+    ]
     fieldnames.extend(
         item for field in MASTER_FILE_FIELDS for item in (field, f"{field}_sha256")
     )
     row = {
         "genome": args.genome,
         "method": args.method,
+        "input_filtering_contract": FINAL_BAM_FILTERING_CONTRACT,
         "source_project": args.source_project,
         "source_run_id": args.source_run_id,
     }

@@ -44,7 +44,13 @@ with paths["stats_json"].open(encoding="utf-8") as handle:
 if stats.get("method") != metadata["method"]:
     raise ValueError("Master statistics method differs from export metadata")
 
-fieldnames = ["genome", "method", "source_project", "source_run_id"]
+fieldnames = [
+    "genome",
+    "method",
+    "input_filtering_contract",
+    "source_project",
+    "source_run_id",
+]
 fieldnames.extend(
     item
     for field in ARTIFACT_FIELDS
@@ -52,7 +58,13 @@ fieldnames.extend(
 )
 row = {
     key: metadata[key]
-    for key in ("genome", "method", "source_project", "source_run_id")
+    for key in (
+        "genome",
+        "method",
+        "input_filtering_contract",
+        "source_project",
+        "source_run_id",
+    )
 }
 for field, path in paths.items():
     if not path.is_file():

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 name: immutable master-DHS bundle manifest
 formats: [tsv]
 path_resolution: Relative artifact paths are resolved against the manifest directory.
@@ -6,6 +6,7 @@ row_model: The manifest contains exactly one data row for one complete master-DH
 required_columns:
   - genome
   - method
+  - input_filtering_contract
   - source_project
   - source_run_id
   - master_bed
@@ -24,4 +25,5 @@ rules:
   - The master BED must be non-empty, strict BED6, sorted, uniquely named, and non-overlapping.
   - Summit, membership, context-matrix, and statistics records must agree exactly with the master BED.
   - The statistics method must equal the manifest method.
+  - input_filtering_contract must be short-read-processing-final-v2, which retains blacklist-overlapping alignments for annotation.
   - A missing or invalid bundle is an error; the workflow never reconstructs a replacement automatically.

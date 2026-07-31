@@ -22,8 +22,8 @@ track_count = build_all_contexts_catalog_session(
         for context in contexts
     },
     master_dhs_bed=Path(str(snakemake.input.master_dhs)),
-    active_elements_beds={
-        context: Path(str(snakemake.params.active_element_paths[context]))
+    element_beds={
+        context: Path(str(snakemake.params.element_paths[context]))
         for context in contexts
     },
     output=Path(str(snakemake.output.session)),

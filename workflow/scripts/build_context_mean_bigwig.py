@@ -16,6 +16,7 @@ metrics = build_context_mean_bigwig(
     context=str(snakemake.params.context),
     output_bigwig=Path(str(snakemake.output.bigwig)),
     output_metrics=Path(str(snakemake.output.metrics)),
+    atac_extension_bp=int(snakemake.params.atac_extension_bp),
     threads=int(snakemake.threads),
 )
 log = Path(str(snakemake.log[0]))

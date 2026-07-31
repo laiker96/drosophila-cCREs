@@ -17,10 +17,11 @@ reference:
   macs3_genome_size: 20000
 samples: []
 activity:
-  schema_version: 2
+  schema_version: 3
   master:
     genome: dm6
     method: reciprocal_summit_complete_linkage_v2
+    input_filtering_contract: short-read-processing-final-v2
     source_project: atlas
     source_run_id: master-v1
     master_bed: tests/fixtures/workflow/sample_R1.fastq
@@ -35,6 +36,7 @@ activity:
     stats_json_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   contexts: [example]
   atac_fragment_maximum: 150
+  atac_browser_extension_bp: 150
   normalization: background_tmm_10kb_autosomes_v1
   h3k27ac_signal: summit_max3_500bp_v1
   mixture_model: guarded_two_gaussian_log10_v1
@@ -49,7 +51,7 @@ activity:
       bai: tests/fixtures/workflow/sample_R2.fastq
       bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
+      filtering_contract: short-read-processing-final-v2
       qc_status: accepted
     - id: atlas_atac_2
       assay: atac
@@ -61,7 +63,7 @@ activity:
       bai: tests/fixtures/workflow/tiny.blacklist.bed
       bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
+      filtering_contract: short-read-processing-final-v2
       qc_status: accepted
     - id: atlas_h3_1
       assay: h3k27ac
@@ -73,7 +75,7 @@ activity:
       bai: tests/fixtures/workflow/tiny.fa.fai
       bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
+      filtering_contract: short-read-processing-final-v2
       qc_status: accepted
     - id: atlas_h3_2
       assay: h3k27ac
@@ -85,7 +87,7 @@ activity:
       bai: tests/fixtures/workflow/tiny.autosomes.txt
       bam_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       bai_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-      filtering_contract: short-read-processing-final-v1
+      filtering_contract: short-read-processing-final-v2
       qc_status: accepted
 report:
   schema_version: 1

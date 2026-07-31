@@ -16,6 +16,8 @@ from short_read_processing.regulatory_elements import (
     CATALOG_FIELDS,
     WINDOW_COUNT_FIELDS,
     WINDOW_FIELDS,
+    _read_blacklist,
+    blacklist_overlap,
     build_regulatory_catalog,
     fit_guarded_mixture,
     mixture_assignment,
@@ -141,6 +143,22 @@ def test_nearest_tss_classes_use_inclusive_250_and_1000_boundaries():
     assert regulatory_class(None) == "unclassified_no_tss_on_contig"
 
 
+def test_blacklist_overlap_uses_unioned_interval_bases(tmp_path):
+    path = tmp_path / "blacklist.bed"
+    path.write_text(
+        "chr1\t60\t90\n"
+        "chr1\t80\t120\n"
+        "chr1\t140\t160\n"
+    )
+    blacklist = _read_blacklist(path)
+
+    overlap_bp, overlap_fraction = blacklist_overlap("chr1", 50, 151, blacklist)
+
+    assert overlap_bp == 71
+    assert overlap_fraction == pytest.approx(71 / 101)
+    assert blacklist_overlap("chr2", 50, 151, blacklist) == (0, 0.0)
+
+
 def _write_factor_table(path: Path) -> None:
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(
@@ -250,15 +268,18 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     )
     tss = tmp_path / "tss.bed"
     tss.write_text("chr1\t100\t101\ttss1\t0\t+\n")
+    blacklist = tmp_path / "blacklist.bed"
+    blacklist.write_text("chr1\t425\t475\n")
     catalog = tmp_path / "catalog.tsv.gz"
     wide = tmp_path / "wide.tsv.gz"
-    active = tmp_path / "ctx.active.tsv.gz"
+    context_elements = tmp_path / "ctx.elements.tsv.gz"
 
     build_regulatory_catalog(
         master_bed=master,
         summit_bed=summit,
         context_matrix=matrix,
         tss_bed=tss,
+        blacklist_bed=blacklist,
         window_table=windows,
         window_count_paths=count_paths,
         factor_table=factors,
@@ -266,7 +287,7 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         contexts=["ctx"],
         output_catalog=catalog,
         output_wide=wide,
-        output_active_paths={"ctx": active},
+        output_element_paths={"ctx": context_elements},
         output_mixtures=tmp_path / "mixtures.tsv",
         output_summary=tmp_path / "summary.tsv",
         output_metrics=tmp_path / "metrics.json",
@@ -281,6 +302,9 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
     assert second["h3k27ac_max_500_window"] == "center_500"
     assert second["mixture_guardrail_warning"] == "1"
     assert second["mixture_guardrail_failures"] == "insufficient_positive_members"
+    assert second["blacklist_overlap"] == "1"
+    assert second["blacklist_overlap_bp"] == "50"
+    assert float(second["blacklist_overlap_fraction"]) == pytest.approx(50 / 101)
     assert float(second["h3k27ac_left_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
     assert float(second["h3k27ac_center_500_normalized_cpm_per_kb"]) == pytest.approx(100000)
     assert float(second["combined_activity_max_500"]) == pytest.approx(
@@ -291,7 +315,7 @@ def test_catalog_averages_replicates_before_max_and_uses_center_tie_break(tmp_pa
         assert "ctx__mixture_guardrail_warning" in wide_reader.fieldnames
         assert "ctx__mixture_guardrail_failures" in wide_reader.fieldnames
         assert len(list(wide_reader)) == 2
-    with gzip.open(active, "rt", newline="") as handle:
-        active_reader = csv.DictReader(handle, delimiter="\t")
-        assert active_reader.fieldnames == CATALOG_FIELDS
-        assert list(active_reader) == []
+    with gzip.open(context_elements, "rt", newline="") as handle:
+        element_reader = csv.DictReader(handle, delimiter="\t")
+        assert element_reader.fieldnames == CATALOG_FIELDS
+        assert len(list(element_reader)) == 2

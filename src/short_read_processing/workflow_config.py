@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .accessions import AcquisitionError
-from .artifacts import semantic_sha256
+from .artifacts import FINAL_BAM_FILTERING_CONTRACT, semantic_sha256
 from .stage_checkpoints import LOGICAL_STAGES
 
 
@@ -41,6 +41,7 @@ FINAL_BAM_FIELDS = {
 EXTERNAL_MASTER_FIELDS = {
     "genome",
     "method",
+    "input_filtering_contract",
     "source_project",
     "source_run_id",
     "master_bed",
@@ -60,6 +61,7 @@ ACTIVITY_FIELDS = {
     "contexts",
     "libraries",
     "atac_fragment_maximum",
+    "atac_browser_extension_bp",
     "normalization",
     "h3k27ac_signal",
     "mixture_model",
@@ -263,6 +265,8 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         _required(external_master, EXTERNAL_MASTER_FIELDS, "External master")
         if external_master["genome"] != config["reference"].get("name"):
             raise AcquisitionError("External master and reference genomes differ")
+        if external_master["input_filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
+            raise AcquisitionError("External master has an incompatible BAM filtering contract")
         for field in EXTERNAL_MASTER_FIELDS:
             if field.endswith("_sha256") and not re.fullmatch(
                 r"[0-9a-f]{64}", str(external_master[field])
@@ -283,6 +287,8 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
         _required(master, EXTERNAL_MASTER_FIELDS, "Activity master")
         if master["genome"] != config["reference"]["name"]:
             raise AcquisitionError("Activity master and reference genomes differ")
+        if master["input_filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
+            raise AcquisitionError("Activity master has an incompatible BAM filtering contract")
         for field in EXTERNAL_MASTER_FIELDS:
             if field.endswith("_sha256") and not re.fullmatch(
                 r"[0-9a-f]{64}", str(master[field])
@@ -290,10 +296,12 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity master {field} is not a SHA-256 digest"
                 )
-        if activity["schema_version"] != 2:
+        if activity["schema_version"] != 3:
             raise AcquisitionError("Unsupported activity schema version")
         if int(activity["atac_fragment_maximum"]) < 2:
             raise AcquisitionError("Activity ATAC fragment maximum is invalid")
+        if int(activity["atac_browser_extension_bp"]) != 150:
+            raise AcquisitionError("Activity ATAC browser extension must be 150 bp")
         if activity["normalization"] != "background_tmm_10kb_autosomes_v1":
             raise AcquisitionError("Unsupported activity normalization method")
         if (
@@ -379,7 +387,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     f"Activity library {library_id}: genome differs from reference"
                 )
-            if library["filtering_contract"] != "short-read-processing-final-v1":
+            if library["filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
                 raise AcquisitionError(
                     f"Activity library {library_id}: invalid filtering contract"
                 )
@@ -597,7 +605,7 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                     f"{final_bam['qc_status']!r} is invalid for output stage "
                     f"{output_stage!r}"
                 )
-            if final_bam["filtering_contract"] != "short-read-processing-final-v1":
+            if final_bam["filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
                 raise AcquisitionError(
                     f"Sample {sample_id}: unsupported final BAM filtering contract"
                 )

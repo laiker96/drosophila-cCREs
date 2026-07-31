@@ -74,6 +74,9 @@ CATALOG_FIELDS = [
     "end",
     "summit",
     "width_bp",
+    "blacklist_overlap",
+    "blacklist_overlap_bp",
+    "blacklist_overlap_fraction",
     "context",
     "context_membership",
     "nearest_tss_distance_bp",
@@ -424,6 +427,56 @@ def _read_tss(path: Path) -> dict[str, tuple[list[int], dict[int, list[str]]]]:
     }
 
 
+def _read_blacklist(path: Path) -> dict[str, tuple[list[int], list[tuple[int, int]]]]:
+    by_chrom: dict[str, list[tuple[int, int]]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "track ", "browser ")):
+                continue
+            fields = stripped.split("\t")
+            if len(fields) < 3:
+                raise ValueError(f"{path}:{line_number}: expected BED3+")
+            chrom, start_text, end_text = fields[:3]
+            start, end = int(start_text), int(end_text)
+            if not chrom or start < 0 or end <= start:
+                raise ValueError(f"{path}:{line_number}: invalid blacklist interval")
+            by_chrom.setdefault(chrom, []).append((start, end))
+
+    merged_by_chrom = {}
+    for chrom, intervals in by_chrom.items():
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        merged_by_chrom[chrom] = ([start for start, _end in merged], merged)
+    return merged_by_chrom
+
+
+def blacklist_overlap(
+    chrom: str,
+    start: int,
+    end: int,
+    blacklist: dict[str, tuple[list[int], list[tuple[int, int]]]],
+) -> tuple[int, float]:
+    """Return unioned blacklist overlap in bases and as an interval fraction."""
+
+    if start < 0 or end <= start:
+        raise ValueError("Element coordinates must define a positive-width interval")
+    if chrom not in blacklist:
+        return 0, 0.0
+    starts, intervals = blacklist[chrom]
+    stop = bisect_left(starts, end)
+    begin = max(0, bisect_left(starts, start) - 1)
+    overlap_bp = sum(
+        max(0, min(end, interval_end) - max(start, interval_start))
+        for interval_start, interval_end in intervals[begin:stop]
+    )
+    return overlap_bp, overlap_bp / (end - start)
+
+
 def nearest_tss(
     chrom: str,
     summit: int,
@@ -672,6 +725,7 @@ def build_regulatory_catalog(
     summit_bed: Path,
     context_matrix: Path,
     tss_bed: Path,
+    blacklist_bed: Path,
     window_table: Path,
     window_count_paths: dict[str, Path],
     factor_table: Path,
@@ -679,7 +733,7 @@ def build_regulatory_catalog(
     contexts: list[str],
     output_catalog: Path,
     output_wide: Path,
-    output_active_paths: dict[str, Path],
+    output_element_paths: dict[str, Path],
     output_mixtures: Path,
     output_summary: Path,
     output_metrics: Path,
@@ -689,8 +743,8 @@ def build_regulatory_catalog(
 
     if not contexts or len(contexts) != len(set(contexts)):
         raise ValueError("Contexts must be non-empty and unique")
-    if set(output_active_paths) != set(contexts):
-        raise ValueError("Active-element output paths must match contexts")
+    if set(output_element_paths) != set(contexts):
+        raise ValueError("Context-element output paths must match contexts")
     elements = read_master_elements(master_bed, summit_bed)
     definitions = _read_window_table(window_table)
     definition_keys = [(row["window_id"], row["width_bp"]) for row in definitions]
@@ -749,6 +803,20 @@ def build_regulatory_catalog(
     if set(membership) != set(expected_keys):
         raise ValueError("Context membership rows differ from activity rows")
     tss = _read_tss(tss_bed)
+    blacklist = _read_blacklist(blacklist_bed)
+    blacklist_by_element = {}
+    for element in elements:
+        overlap_bp, overlap_fraction = blacklist_overlap(
+            element.chrom,
+            element.start,
+            element.end,
+            blacklist,
+        )
+        blacklist_by_element[element.master_id] = {
+            "blacklist_overlap": int(overlap_bp > 0),
+            "blacklist_overlap_bp": overlap_bp,
+            "blacklist_overlap_fraction": overlap_fraction,
+        }
 
     aggregated: dict[tuple[str, str], dict[str, Any]] = {}
     for context in contexts:
@@ -883,6 +951,7 @@ def build_regulatory_catalog(
             "end": element.end,
             "summit": element.summit,
             "width_bp": element.width,
+            **blacklist_by_element[element.master_id],
             "context": context,
             "context_membership": member,
             "nearest_tss_distance_bp": distance,
@@ -940,6 +1009,9 @@ def build_regulatory_catalog(
         "end",
         "summit",
         "width_bp",
+        "blacklist_overlap",
+        "blacklist_overlap_bp",
+        "blacklist_overlap_fraction",
         "nearest_tss_distance_bp",
         "nearest_tss_ids",
         "regulatory_class",
@@ -966,13 +1038,12 @@ def build_regulatory_catalog(
     _write_gzip_dict_rows(output_wide, wide_fields, wide_rows())
     for context in contexts:
         _write_gzip_dict_rows(
-            output_active_paths[context],
+            output_element_paths[context],
             CATALOG_FIELDS,
             (
                 row
                 for element in elements
-                if (row := catalog_row(context, element))["mixture_component"]
-                == "high"
+                if (row := catalog_row(context, element))["context_membership"]
             ),
         )
 
@@ -1010,7 +1081,7 @@ def build_regulatory_catalog(
     _atomic_text_if_changed(output_summary, summary_content)
 
     metrics = {
-        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v1",
+        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v2",
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "catalog_row_count": len(elements) * len(contexts),
@@ -1052,8 +1123,25 @@ def build_regulatory_catalog(
             "distal_enhancer_like": "distance > 1000",
             "unclassified_no_tss_on_contig": "no TSS on contig",
         },
+        "blacklist_annotation_definition": {
+            "coordinate": "master_dhs_interval",
+            "blacklist_overlap": "1 when at least one master-DHS base overlaps the reference blacklist",
+            "blacklist_overlap_bp": "unioned number of overlapping bases",
+            "blacklist_overlap_fraction": "blacklist_overlap_bp divided by master-DHS width",
+            "filtering_policy": "annotate_only",
+        },
         "catalog_sha256": sha256_file(output_catalog),
         "wide_catalog_sha256": sha256_file(output_wide),
+        "blacklist_overlapping_master_dhs_count": sum(
+            annotation["blacklist_overlap"]
+            for annotation in blacklist_by_element.values()
+        ),
+        "context_element_count_by_context": {
+            context: sum(
+                membership[(element.master_id, context)] for element in elements
+            )
+            for context in contexts
+        },
         "active_element_count_by_context": {
             context: sum(
                 count
@@ -1076,6 +1164,7 @@ def build_regulatory_catalog(
             "summit_bed": {"path": str(summit_bed.resolve()), "sha256": sha256_file(summit_bed)},
             "context_matrix": {"path": str(context_matrix.resolve()), "sha256": sha256_file(context_matrix)},
             "tss_bed": {"path": str(tss_bed.resolve()), "sha256": sha256_file(tss_bed)},
+            "blacklist_bed": {"path": str(blacklist_bed.resolve()), "sha256": sha256_file(blacklist_bed)},
             "window_table": {"path": str(window_table.resolve()), "sha256": sha256_file(window_table)},
             "factor_table": {"path": str(factor_table.resolve()), "sha256": sha256_file(factor_table)},
             "activity_table": {"path": str(activity_table.resolve()), "sha256": sha256_file(activity_table)},
@@ -1086,17 +1175,23 @@ def build_regulatory_catalog(
         },
         "parameters": {
             key: metrics[key]
-            for key in ("window_definition", "z_score_definition", "mixture_definition", "regulatory_class_definition")
+            for key in (
+                "window_definition",
+                "z_score_definition",
+                "mixture_definition",
+                "regulatory_class_definition",
+                "blacklist_annotation_definition",
+            )
         },
         "outputs": {
             "catalog": {"path": str(output_catalog.resolve()), "sha256": sha256_file(output_catalog)},
             "wide_catalog": {"path": str(output_wide.resolve()), "sha256": sha256_file(output_wide)},
-            "active_elements": {
+            "context_elements": {
                 context: {
                     "path": str(path.resolve()),
                     "sha256": sha256_file(path),
                 }
-                for context, path in sorted(output_active_paths.items())
+                for context, path in sorted(output_element_paths.items())
             },
             "mixtures": {"path": str(output_mixtures.resolve()), "sha256": sha256_file(output_mixtures)},
             "summary": {"path": str(output_summary.resolve()), "sha256": sha256_file(output_summary)},

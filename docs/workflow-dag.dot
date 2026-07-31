@@ -15,7 +15,7 @@ digraph workflow {
     download [label="Checksummed FASTQ\ndownload"];
     reference [label="Checksummed dm6/hg38\nreference preparation", fillcolor="#eef6ff"];
     trim [label="Raw/trimmed FastQC + Cutadapt\ntrimming checkpoint"];
-    align [label="Lane alignment + library merge\nduplicate mark + filter\nalignment checkpoint"];
+    align [label="Lane alignment + library merge\nduplicate mark + quality filter\nblacklist reads retained"];
     bammanifest [label="Pending final-BAM\nmanifest", fillcolor="#e5f1ff"];
     qc [label="Lenient replicate peaks + FRiP\nassay QC + MultiQC", fillcolor="#f1e9fa"];
     qccheckpoint [label="Checksummed QC checkpoint\npeak/refinement parameters", fillcolor="#f1e9fa"];
@@ -72,8 +72,8 @@ digraph workflow {
     tmm [label="Assay-specific background TMM\nfactors", fillcolor="#fff0c7"];
     quantify [label="Normalized context signals +\nmaster-DHS activity table\nquantification checkpoint", fillcolor="#ffe5a8"];
     mixture [label="Context-averaged max window +\nguarded two-Gaussian fit", fillcolor="#f7e4b2"];
-    catalog [label="Long/wide catalogs + active elements\ncatalog checkpoint", fillcolor="#f7e4b2"];
-    browser [label="Mean TMM ATAC/H3 + pooled qpois\ncompact and context IGV", fillcolor="#e1f0f7"];
+    catalog [label="Posterior/TSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
+    browser [label="Mean TMM 150-bp ATAC pileup + H3\npooled qpois in compact IGV", fillcolor="#e1f0f7"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
 

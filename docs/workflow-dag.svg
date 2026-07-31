@@ -80,8 +80,8 @@
 <title>align</title>
 <path fill="#f4f7fa" stroke="#40566b" d="M475,-1319C475,-1319 305,-1319 305,-1319 299,-1319 293,-1313 293,-1307 293,-1307 293,-1283 293,-1283 293,-1277 299,-1271 305,-1271 305,-1271 475,-1271 475,-1271 481,-1271 487,-1277 487,-1283 487,-1283 487,-1307 487,-1307 487,-1313 481,-1319 475,-1319"/>
 <text text-anchor="middle" x="390" y="-1304.2" font-family="Helvetica,sans-Serif" font-size="11.00">Lane alignment + library merge</text>
-<text text-anchor="middle" x="390" y="-1292.2" font-family="Helvetica,sans-Serif" font-size="11.00">duplicate mark + filter</text>
-<text text-anchor="middle" x="390" y="-1280.2" font-family="Helvetica,sans-Serif" font-size="11.00">alignment checkpoint</text>
+<text text-anchor="middle" x="390" y="-1292.2" font-family="Helvetica,sans-Serif" font-size="11.00">duplicate mark + quality filter</text>
+<text text-anchor="middle" x="390" y="-1280.2" font-family="Helvetica,sans-Serif" font-size="11.00">blacklist reads retained</text>
 </g>
 <!-- reference&#45;&gt;align -->
 <g id="edge5" class="edge">
@@ -304,15 +304,15 @@
 <!-- browser -->
 <g id="node24" class="node">
 <title>browser</title>
-<path fill="#e1f0f7" stroke="#40566b" d="M459.5,-126C459.5,-126 268.5,-126 268.5,-126 262.5,-126 256.5,-120 256.5,-114 256.5,-114 256.5,-102 256.5,-102 256.5,-96 262.5,-90 268.5,-90 268.5,-90 459.5,-90 459.5,-90 465.5,-90 471.5,-96 471.5,-102 471.5,-102 471.5,-114 471.5,-114 471.5,-120 465.5,-126 459.5,-126"/>
-<text text-anchor="middle" x="364" y="-111.2" font-family="Helvetica,sans-Serif" font-size="11.00">Mean TMM ATAC/H3 + pooled qpois</text>
-<text text-anchor="middle" x="364" y="-99.2" font-family="Helvetica,sans-Serif" font-size="11.00">compact and context IGV</text>
+<path fill="#e1f0f7" stroke="#40566b" d="M449,-126C449,-126 253,-126 253,-126 247,-126 241,-120 241,-114 241,-114 241,-102 241,-102 241,-96 247,-90 253,-90 253,-90 449,-90 449,-90 455,-90 461,-96 461,-102 461,-102 461,-114 461,-114 461,-120 455,-126 449,-126"/>
+<text text-anchor="middle" x="351" y="-111.2" font-family="Helvetica,sans-Serif" font-size="11.00">Mean TMM 150&#45;bp ATAC pileup + H3</text>
+<text text-anchor="middle" x="351" y="-99.2" font-family="Helvetica,sans-Serif" font-size="11.00">pooled qpois in compact IGV</text>
 </g>
 <!-- units&#45;&gt;browser -->
 <g id="edge25" class="edge">
 <title>units&#45;&gt;browser</title>
-<path fill="none" stroke="#607d8b" stroke-dasharray="5,2" d="M395.76,-516.09C440.24,-507.75 491.95,-494.83 507,-478 532.48,-449.52 520,-431.22 520,-393 520,-393 520,-393 520,-243 520,-203.08 518.66,-186.78 491,-158 478.78,-145.29 462.9,-135.83 446.53,-128.8"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="447.4,-126.51 439.99,-126.13 445.54,-131.04 447.4,-126.51"/>
+<path fill="none" stroke="#607d8b" stroke-dasharray="5,2" d="M395.76,-516.09C440.24,-507.75 491.95,-494.83 507,-478 532.48,-449.52 520,-431.22 520,-393 520,-393 520,-393 520,-243 520,-198.71 501.61,-186.84 468,-158 453.62,-145.66 435.68,-136.07 418.2,-128.79"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="418.68,-126.34 411.27,-126.01 416.86,-130.89 418.68,-126.34"/>
 </g>
 <!-- tmm -->
 <g id="node20" class="node">
@@ -350,15 +350,15 @@
 <!-- mixture -->
 <g id="node22" class="node">
 <title>mixture</title>
-<path fill="#f7e4b2" stroke="#40566b" d="M453.5,-262C453.5,-262 274.5,-262 274.5,-262 268.5,-262 262.5,-256 262.5,-250 262.5,-250 262.5,-238 262.5,-238 262.5,-232 268.5,-226 274.5,-226 274.5,-226 453.5,-226 453.5,-226 459.5,-226 465.5,-232 465.5,-238 465.5,-238 465.5,-250 465.5,-250 465.5,-256 459.5,-262 453.5,-262"/>
-<text text-anchor="middle" x="364" y="-247.2" font-family="Helvetica,sans-Serif" font-size="11.00">Context&#45;averaged max window +</text>
-<text text-anchor="middle" x="364" y="-235.2" font-family="Helvetica,sans-Serif" font-size="11.00">guarded two&#45;Gaussian fit</text>
+<path fill="#f7e4b2" stroke="#40566b" d="M440.5,-262C440.5,-262 261.5,-262 261.5,-262 255.5,-262 249.5,-256 249.5,-250 249.5,-250 249.5,-238 249.5,-238 249.5,-232 255.5,-226 261.5,-226 261.5,-226 440.5,-226 440.5,-226 446.5,-226 452.5,-232 452.5,-238 452.5,-238 452.5,-250 452.5,-250 452.5,-256 446.5,-262 440.5,-262"/>
+<text text-anchor="middle" x="351" y="-247.2" font-family="Helvetica,sans-Serif" font-size="11.00">Context&#45;averaged max window +</text>
+<text text-anchor="middle" x="351" y="-235.2" font-family="Helvetica,sans-Serif" font-size="11.00">guarded two&#45;Gaussian fit</text>
 </g>
 <!-- windows&#45;&gt;mixture -->
 <g id="edge22" class="edge">
 <title>windows&#45;&gt;mixture</title>
-<path fill="none" stroke="#607d8b" d="M437.59,-441.95C441.49,-410.67 446,-342.89 421,-294 415.59,-283.42 406.81,-274.16 397.75,-266.63"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="399.11,-264.58 392.1,-262.16 396.07,-268.42 399.11,-264.58"/>
+<path fill="none" stroke="#607d8b" d="M438.01,-441.94C442.68,-410.37 448.47,-341.71 421,-294 414.51,-282.72 404.24,-273.41 393.55,-266.06"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="394.79,-263.94 387.59,-262.17 392.11,-268.05 394.79,-263.94"/>
 </g>
 <!-- tmm&#45;&gt;quantify -->
 <g id="edge21" class="edge">
@@ -369,61 +369,61 @@
 <!-- tmm&#45;&gt;browser -->
 <g id="edge26" class="edge">
 <title>tmm&#45;&gt;browser</title>
-<path fill="none" stroke="#607d8b" d="M194.68,-373.77C190.02,-331.73 184.07,-222.61 237,-158 247.42,-145.28 261.55,-135.86 276.61,-128.88"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="277.68,-131.08 283.11,-126.03 275.72,-126.59 277.68,-131.08"/>
+<path fill="none" stroke="#607d8b" d="M194.53,-373.89C189.5,-332.12 182.51,-223.55 234,-158 243.85,-145.46 257.49,-136.09 271.98,-129.11"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="273.33,-131.19 278.69,-126.06 271.31,-126.73 273.33,-131.19"/>
 </g>
 <!-- quantify&#45;&gt;mixture -->
 <g id="edge23" class="edge">
 <title>quantify&#45;&gt;mixture</title>
-<path fill="none" stroke="#607d8b" d="M332.81,-293.82C338,-285.7 343.83,-276.57 349.03,-268.43"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="351.16,-269.64 352.87,-262.42 347.03,-267 351.16,-269.64"/>
+<path fill="none" stroke="#607d8b" d="M328.62,-293.82C332.27,-285.86 336.37,-276.93 340.04,-268.91"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="342.32,-269.81 343.01,-262.42 337.87,-267.77 342.32,-269.81"/>
 </g>
 <!-- catalog -->
 <g id="node23" class="node">
 <title>catalog</title>
-<path fill="#f7e4b2" stroke="#40566b" d="M466.5,-194C466.5,-194 261.5,-194 261.5,-194 255.5,-194 249.5,-188 249.5,-182 249.5,-182 249.5,-170 249.5,-170 249.5,-164 255.5,-158 261.5,-158 261.5,-158 466.5,-158 466.5,-158 472.5,-158 478.5,-164 478.5,-170 478.5,-170 478.5,-182 478.5,-182 478.5,-188 472.5,-194 466.5,-194"/>
-<text text-anchor="middle" x="364" y="-179.2" font-family="Helvetica,sans-Serif" font-size="11.00">Long/wide catalogs + active elements</text>
-<text text-anchor="middle" x="364" y="-167.2" font-family="Helvetica,sans-Serif" font-size="11.00">catalog checkpoint</text>
+<path fill="#f7e4b2" stroke="#40566b" d="M443.5,-194C443.5,-194 258.5,-194 258.5,-194 252.5,-194 246.5,-188 246.5,-182 246.5,-182 246.5,-170 246.5,-170 246.5,-164 252.5,-158 258.5,-158 258.5,-158 443.5,-158 443.5,-158 449.5,-158 455.5,-164 455.5,-170 455.5,-170 455.5,-182 455.5,-182 455.5,-188 449.5,-194 443.5,-194"/>
+<text text-anchor="middle" x="351" y="-179.2" font-family="Helvetica,sans-Serif" font-size="11.00">Posterior/TSS/blacklist annotations</text>
+<text text-anchor="middle" x="351" y="-167.2" font-family="Helvetica,sans-Serif" font-size="11.00">long, wide, and context catalogs</text>
 </g>
 <!-- mixture&#45;&gt;catalog -->
 <g id="edge24" class="edge">
 <title>mixture&#45;&gt;catalog</title>
-<path fill="none" stroke="#607d8b" d="M364,-225.66C364,-218.29 364,-209.57 364,-201.55"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="366.45,-201.45 364,-194.45 361.55,-201.45 366.45,-201.45"/>
+<path fill="none" stroke="#607d8b" d="M351,-225.66C351,-218.29 351,-209.57 351,-201.55"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="353.45,-201.45 351,-194.45 348.55,-201.45 353.45,-201.45"/>
 </g>
 <!-- catalog&#45;&gt;browser -->
 <g id="edge27" class="edge">
 <title>catalog&#45;&gt;browser</title>
-<path fill="none" stroke="#607d8b" d="M364,-157.66C364,-150.29 364,-141.57 364,-133.55"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="366.45,-133.45 364,-126.45 361.55,-133.45 366.45,-133.45"/>
+<path fill="none" stroke="#607d8b" d="M351,-157.66C351,-150.29 351,-141.57 351,-133.55"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="353.45,-133.45 351,-126.45 348.55,-133.45 353.45,-133.45"/>
 </g>
 <!-- report -->
 <g id="node26" class="node">
 <title>report</title>
-<path fill="#e8e1f5" stroke="#40566b" d="M256.5,-58C256.5,-58 91.5,-58 91.5,-58 85.5,-58 79.5,-52 79.5,-46 79.5,-46 79.5,-34 79.5,-34 79.5,-28 85.5,-22 91.5,-22 91.5,-22 256.5,-22 256.5,-22 262.5,-22 268.5,-28 268.5,-34 268.5,-34 268.5,-46 268.5,-46 268.5,-52 262.5,-58 256.5,-58"/>
-<text text-anchor="middle" x="174" y="-43.2" font-family="Helvetica,sans-Serif" font-size="11.00">Checksummed HTML/PDF/JSON</text>
-<text text-anchor="middle" x="174" y="-31.2" font-family="Helvetica,sans-Serif" font-size="11.00">report checkpoint</text>
+<path fill="#e8e1f5" stroke="#40566b" d="M337.5,-58C337.5,-58 172.5,-58 172.5,-58 166.5,-58 160.5,-52 160.5,-46 160.5,-46 160.5,-34 160.5,-34 160.5,-28 166.5,-22 172.5,-22 172.5,-22 337.5,-22 337.5,-22 343.5,-22 349.5,-28 349.5,-34 349.5,-34 349.5,-46 349.5,-46 349.5,-52 343.5,-58 337.5,-58"/>
+<text text-anchor="middle" x="255" y="-43.2" font-family="Helvetica,sans-Serif" font-size="11.00">Checksummed HTML/PDF/JSON</text>
+<text text-anchor="middle" x="255" y="-31.2" font-family="Helvetica,sans-Serif" font-size="11.00">report checkpoint</text>
 </g>
 <!-- browser&#45;&gt;report -->
 <g id="edge28" class="edge">
 <title>browser&#45;&gt;report</title>
-<path fill="none" stroke="#607d8b" d="M314.58,-89.83C288.63,-80.82 256.73,-69.74 229.89,-60.41"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="230.59,-58.07 223.18,-58.08 228.99,-62.69 230.59,-58.07"/>
+<path fill="none" stroke="#607d8b" d="M326.03,-89.83C313.69,-81.35 298.7,-71.05 285.68,-62.09"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="287,-60.03 279.85,-58.08 284.23,-64.07 287,-60.03"/>
 </g>
 <!-- sources -->
 <g id="node25" class="node">
 <title>sources</title>
-<polygon fill="#f3eef9" stroke="#40566b" points="225.5,-126 94.5,-126 94.5,-90 231.5,-90 231.5,-120 225.5,-126"/>
-<polyline fill="none" stroke="#40566b" points="225.5,-126 225.5,-120 "/>
-<polyline fill="none" stroke="#40566b" points="231.5,-120 225.5,-120 "/>
-<text text-anchor="middle" x="163" y="-111.2" font-family="Helvetica,sans-Serif" font-size="11.00">Frozen upstream QC</text>
-<text text-anchor="middle" x="163" y="-99.2" font-family="Helvetica,sans-Serif" font-size="11.00">artifacts for reporting</text>
+<polygon fill="#f3eef9" stroke="#40566b" points="209.5,-126 78.5,-126 78.5,-90 215.5,-90 215.5,-120 209.5,-126"/>
+<polyline fill="none" stroke="#40566b" points="209.5,-126 209.5,-120 "/>
+<polyline fill="none" stroke="#40566b" points="215.5,-120 209.5,-120 "/>
+<text text-anchor="middle" x="147" y="-111.2" font-family="Helvetica,sans-Serif" font-size="11.00">Frozen upstream QC</text>
+<text text-anchor="middle" x="147" y="-99.2" font-family="Helvetica,sans-Serif" font-size="11.00">artifacts for reporting</text>
 </g>
 <!-- sources&#45;&gt;report -->
 <g id="edge29" class="edge">
 <title>sources&#45;&gt;report</title>
-<path fill="none" stroke="#607d8b" stroke-dasharray="5,2" d="M165.89,-89.66C167.12,-82.29 168.57,-73.57 169.91,-65.55"/>
-<polygon fill="#607d8b" stroke="#607d8b" points="172.36,-65.76 171.09,-58.45 167.52,-64.96 172.36,-65.76"/>
+<path fill="none" stroke="#607d8b" stroke-dasharray="5,2" d="M175.09,-89.83C189.09,-81.28 206.14,-70.86 220.88,-61.85"/>
+<polygon fill="#607d8b" stroke="#607d8b" points="222.35,-63.82 227.05,-58.08 219.8,-59.64 222.35,-63.82"/>
 </g>
 </g>
 </svg>

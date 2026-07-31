@@ -9,18 +9,18 @@ manifest = build_catalog_beds(
     master_bed=Path(str(snakemake.input.master)),
     summit_bed=Path(str(snakemake.input.summits)),
     context_matrix=Path(str(snakemake.input.context_matrix)),
-    active_paths={
+    element_paths={
         str(context): Path(str(path))
-        for context, path in dict(snakemake.params.active_paths).items()
+        for context, path in dict(snakemake.params.element_paths).items()
     },
     output_master_bed=Path(str(snakemake.output.master)),
     output_context_dhs={
         str(context): Path(str(path))
         for context, path in dict(snakemake.params.context_dhs_paths).items()
     },
-    output_active_beds={
+    output_element_beds={
         str(context): Path(str(path))
-        for context, path in dict(snakemake.params.active_bed_paths).items()
+        for context, path in dict(snakemake.params.element_bed_paths).items()
     },
     output_manifest=Path(str(snakemake.output.manifest)),
 )

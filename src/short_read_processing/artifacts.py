@@ -14,7 +14,7 @@ from .sample_sheet import ASSAY_ALIASES, read_delimited_rows
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-FINAL_BAM_FILTERING_CONTRACT = "short-read-processing-final-v1"
+FINAL_BAM_FILTERING_CONTRACT = "short-read-processing-final-v2"
 FINAL_BAM_QC_STATUSES = {"pending_review", "accepted", "rejected"}
 FINAL_BAM_REQUIRED_COLUMNS = {
     "library_id",
@@ -40,6 +40,7 @@ MASTER_FILE_FIELDS = (
 MASTER_REQUIRED_COLUMNS = {
     "genome",
     "method",
+    "input_filtering_contract",
     "source_project",
     "source_run_id",
     *MASTER_FILE_FIELDS,
@@ -210,6 +211,7 @@ def read_master_manifest(
     result = {
         "genome": raw["genome"],
         "method": raw["method"],
+        "input_filtering_contract": raw["input_filtering_contract"],
         "source_project": _safe_id(
             raw["source_project"], field="source_project", line=2
         ),
@@ -217,6 +219,12 @@ def read_master_manifest(
             raw["source_run_id"], field="source_run_id", line=2
         ),
     }
+    if result["input_filtering_contract"] != FINAL_BAM_FILTERING_CONTRACT:
+        raise AcquisitionError(
+            "Master manifest has unsupported input_filtering_contract "
+            f"{result['input_filtering_contract']!r}; expected "
+            f"{FINAL_BAM_FILTERING_CONTRACT!r}"
+        )
     for field in MASTER_FILE_FIELDS:
         artifact = _artifact_path(raw[field], manifest=path, field=field, line=2)
         if require_files and not artifact.is_file():

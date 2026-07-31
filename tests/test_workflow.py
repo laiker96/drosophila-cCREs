@@ -381,7 +381,7 @@ def _external_final_bam(sample: str, tmp_path: Path) -> dict:
         "bam": str(bam),
         "bai": str(bai),
         "genome": "dm6",
-        "filtering_contract": "short-read-processing-final-v1",
+        "filtering_contract": "short-read-processing-final-v2",
         "bam_sha256": "a" * 64,
         "bai_sha256": "b" * 64,
         "qc_status": "accepted",
@@ -460,7 +460,7 @@ def test_master_config_rejects_pending_final_bam():
             "bam": f"{sample['id']}.bam",
             "bai": f"{sample['id']}.bam.bai",
             "genome": "dm6",
-            "filtering_contract": "short-read-processing-final-v1",
+            "filtering_contract": "short-read-processing-final-v2",
             "bam_sha256": "a" * 64,
             "bai_sha256": "b" * 64,
             "qc_status": "pending_review",
@@ -491,6 +491,7 @@ def test_master_reuse_dry_run_validates_but_never_reconstructs(tmp_path):
     config["external_master"] = {
         "genome": "dm6",
         "method": "reciprocal_summit_complete_linkage_v2",
+        "input_filtering_contract": "short-read-processing-final-v2",
         "source_project": "atlas",
         "source_run_id": "master-v1",
         **artifacts,
@@ -535,6 +536,7 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         {
             "genome": "dm6",
             "method": "reciprocal_summit_complete_linkage_v2",
+            "input_filtering_contract": "short-read-processing-final-v2",
             "source_project": "atlas",
             "source_run_id": "master-v1",
         }
@@ -563,7 +565,7 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
                 "bai": str(bai),
                 "bam_sha256": "b" * 64,
                 "bai_sha256": "c" * 64,
-                "filtering_contract": "short-read-processing-final-v1",
+                "filtering_contract": "short-read-processing-final-v2",
                 "qc_status": "accepted",
                 **(
                     {"estimated_fragment_length_bp": 165}
@@ -573,11 +575,12 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
             }
         )
     config["activity"] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "master": master,
         "contexts": ["ctx"],
         "libraries": libraries,
         "atac_fragment_maximum": 150,
+        "atac_browser_extension_bp": 150,
         "normalization": "background_tmm_10kb_autosomes_v1",
         "h3k27ac_signal": "summit_max3_500bp_v1",
         "mixture_model": "guarded_two_gaussian_log10_v1",
@@ -620,10 +623,10 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         "master_dhs_activity.tsv.gz",
         "master_elements_long.tsv.gz",
         "master_elements_wide.tsv.gz",
-        "ctx.active_elements.tsv.gz",
+        "ctx.elements.tsv.gz",
         "mixture_models.tsv",
         "h3k27ac_mixture_distributions.svg",
-        "ctx.active_elements.bed",
+        "ctx.elements.bed",
         "ctx.atac.mean.background_tmm.bw",
         "ctx.h3k27ac.mean.background_tmm.bw",
         "igv/ctx.xml",
@@ -648,6 +651,11 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
         match="Unsupported activity normalization",
     ):
         validate_workflow_config(invalid_method)
+
+    invalid_browser_extension = copy.deepcopy(config)
+    invalid_browser_extension["activity"]["atac_browser_extension_bp"] = 100
+    with pytest.raises(AcquisitionError, match="browser extension must be 150 bp"):
+        validate_workflow_config(invalid_browser_extension)
 
     insufficient_libraries = copy.deepcopy(config)
     insufficient_libraries["activity"]["libraries"] = [

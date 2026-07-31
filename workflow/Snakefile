@@ -11,6 +11,7 @@ REPO_ROOT = Path(workflow.basedir).parent.resolve()
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from short_read_processing.consensus import condition_specs
+from short_read_processing.artifacts import FINAL_BAM_FILTERING_CONTRACT
 from short_read_processing.activity_tmm import (
     TMM_BACKGROUND_METHOD,
 )
@@ -370,7 +371,7 @@ for sample in SAMPLE_IDS:
         "bam": FINAL_BAMS[sample],
         "bai": FINAL_BAIS[sample],
         "genome": str(REFERENCE["name"]),
-        "filtering_contract": "short-read-processing-final-v1",
+        "filtering_contract": FINAL_BAM_FILTERING_CONTRACT,
         "qc_status": (
             str(external["qc_status"]) if external else "pending_review"
         ),
@@ -403,6 +404,11 @@ MASTER_EXPORT_METADATA = (
             str(EXTERNAL_MASTER["method"])
             if EXTERNAL_MASTER
             else "reciprocal_summit_complete_linkage_v2"
+        ),
+        "input_filtering_contract": (
+            str(EXTERNAL_MASTER["input_filtering_contract"])
+            if EXTERNAL_MASTER
+            else FINAL_BAM_FILTERING_CONTRACT
         ),
         "source_project": (
             str(EXTERNAL_MASTER["source_project"])
@@ -544,8 +550,8 @@ ACTIVITY_REGULATORY_WINDOW_COUNTS = {
 }
 ACTIVITY_REGULATORY_CATALOG = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_long.tsv.gz"
 ACTIVITY_REGULATORY_WIDE = f"{ACTIVITY_REGULATORY_ROOT}/master_elements_wide.tsv.gz"
-ACTIVITY_REGULATORY_ACTIVE = {
-    context: f"{ACTIVITY_REGULATORY_ROOT}/active/{context}.active_elements.tsv.gz"
+ACTIVITY_REGULATORY_ELEMENTS = {
+    context: f"{ACTIVITY_REGULATORY_ROOT}/elements/{context}.elements.tsv.gz"
     for context in ACTIVITY_CONTEXTS
 }
 ACTIVITY_REGULATORY_MIXTURES = f"{ACTIVITY_REGULATORY_ROOT}/mixture_models.tsv"
@@ -563,8 +569,8 @@ ACTIVITY_CATALOG_CONTEXT_DHS = {
     context: f"{ACTIVITY_CATALOG_BED_ROOT}/{context}.dhs.bed"
     for context in ACTIVITY_CONTEXTS
 }
-ACTIVITY_CATALOG_ACTIVE_BEDS = {
-    context: f"{ACTIVITY_CATALOG_BED_ROOT}/{context}.active_elements.bed"
+ACTIVITY_CATALOG_ELEMENT_BEDS = {
+    context: f"{ACTIVITY_CATALOG_BED_ROOT}/{context}.elements.bed"
     for context in ACTIVITY_CONTEXTS
 }
 ACTIVITY_CATALOG_BED_MANIFEST = f"{ACTIVITY_CATALOG_BED_ROOT}/bed_tracks.json"
@@ -628,7 +634,7 @@ ACTIVITY_CATALOG_TARGETS = (
         *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
         ACTIVITY_REGULATORY_CATALOG,
         ACTIVITY_REGULATORY_WIDE,
-        *ACTIVITY_REGULATORY_ACTIVE.values(),
+        *ACTIVITY_REGULATORY_ELEMENTS.values(),
         ACTIVITY_REGULATORY_MIXTURES,
         ACTIVITY_REGULATORY_SUMMARY,
         ACTIVITY_REGULATORY_METRICS,
@@ -638,7 +644,7 @@ ACTIVITY_CATALOG_TARGETS = (
         ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
         ACTIVITY_CATALOG_MASTER_BED,
         *ACTIVITY_CATALOG_CONTEXT_DHS.values(),
-        *ACTIVITY_CATALOG_ACTIVE_BEDS.values(),
+        *ACTIVITY_CATALOG_ELEMENT_BEDS.values(),
         ACTIVITY_CATALOG_BED_MANIFEST,
         *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
         *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),
@@ -928,7 +934,7 @@ STAGE_CHECKPOINT_ARTIFACTS = {
                 *ACTIVITY_REGULATORY_WINDOW_COUNTS.values(),
                 ACTIVITY_REGULATORY_CATALOG,
                 ACTIVITY_REGULATORY_WIDE,
-                *ACTIVITY_REGULATORY_ACTIVE.values(),
+                *ACTIVITY_REGULATORY_ELEMENTS.values(),
                 ACTIVITY_REGULATORY_MIXTURES,
                 ACTIVITY_REGULATORY_SUMMARY,
                 ACTIVITY_REGULATORY_METRICS,
@@ -938,7 +944,7 @@ STAGE_CHECKPOINT_ARTIFACTS = {
                 ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
                 ACTIVITY_CATALOG_MASTER_BED,
                 *ACTIVITY_CATALOG_CONTEXT_DHS.values(),
-                *ACTIVITY_CATALOG_ACTIVE_BEDS.values(),
+                *ACTIVITY_CATALOG_ELEMENT_BEDS.values(),
                 ACTIVITY_CATALOG_BED_MANIFEST,
                 *ACTIVITY_CONTEXT_MEAN_BIGWIGS.values(),
                 *ACTIVITY_CONTEXT_MEAN_BIGWIG_METRICS.values(),

@@ -25,6 +25,7 @@ REGULATORY_CLASS_COLORS = {
     "distal_enhancer_like": "69,117,180",
     "unclassified_no_tss_on_contig": "117,112,179",
 }
+ATAC_BROWSER_EXTENSION_BP = 150
 
 
 def _read_chrom_sizes(path: Path) -> list[tuple[str, int]]:
@@ -94,7 +95,7 @@ def _read_context_matrix(
     return membership
 
 
-def _active_bed_content(
+def _element_bed_content(
     *,
     path: Path,
     context: str,
@@ -115,12 +116,14 @@ def _active_bed_content(
             "context",
             "context_membership",
             "regulatory_class",
+            "nearest_tss_distance_bp",
+            "blacklist_overlap",
             "mixture_component",
             "mixture_guardrail_warning",
             "mixture_high_posterior_probability",
         }
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise ValueError(f"{path}: active-element table lacks required columns")
+            raise ValueError(f"{path}: context-element table lacks required columns")
         for line_number, row in enumerate(reader, start=2):
             master_id = row["master_dhs_id"]
             element = element_by_id.get(master_id)
@@ -129,23 +132,43 @@ def _active_bed_content(
             if (
                 row["context"] != context
                 or row["context_membership"] != "1"
-                or row["mixture_component"] != "high"
                 or not membership[(master_id, context)]
                 or row["chrom"] != element.chrom
                 or int(row["start"]) != element.start
                 or int(row["end"]) != element.end
                 or int(row["summit"]) != element.summit
             ):
-                raise ValueError(f"{path}:{line_number}: inconsistent active element")
+                raise ValueError(f"{path}:{line_number}: inconsistent context element")
             element_class = row["regulatory_class"]
-            color = REGULATORY_CLASS_COLORS.get(element_class, "105,105,105")
-            posterior = float(row["mixture_high_posterior_probability"])
-            if not math.isfinite(posterior) or not 0 <= posterior <= 1:
+            blacklisted = row["blacklist_overlap"] == "1"
+            if row["blacklist_overlap"] not in {"0", "1"}:
+                raise ValueError(f"{path}:{line_number}: invalid blacklist annotation")
+            color = (
+                "0,0,0"
+                if blacklisted
+                else REGULATORY_CLASS_COLORS.get(element_class, "105,105,105")
+            )
+            posterior_text = row["mixture_high_posterior_probability"]
+            posterior = float(posterior_text) if posterior_text else None
+            if posterior is not None and (
+                not math.isfinite(posterior) or not 0 <= posterior <= 1
+            ):
                 raise ValueError(f"{path}:{line_number}: invalid mixture posterior")
             warning = row["mixture_guardrail_warning"] == "1"
-            state = "high_mixture_warning" if warning else "high_mixture_supported"
-            name = f"{master_id}|{element_class}|{state}"
-            score = round(1000 * posterior)
+            component = row["mixture_component"]
+            if component not in {"low", "high", "not_applicable"}:
+                raise ValueError(f"{path}:{line_number}: invalid mixture component")
+            distance = row["nearest_tss_distance_bp"] or "NA"
+            posterior_label = "NA" if posterior is None else f"{posterior:.6g}"
+            state = f"{component}_mixture" if component != "not_applicable" else component
+            warning_label = "warning" if warning else "supported"
+            blacklist_label = "blacklist_overlap" if blacklisted else "blacklist_clear"
+            name = (
+                f"{master_id}|{element_class}|tss_distance={distance}|"
+                f"posterior_high={posterior_label}|{state}|{warning_label}|"
+                f"{blacklist_label}"
+            )
+            score = 0 if posterior is None else round(1000 * posterior)
             lines.append(
                 f"{element.chrom}\t{element.start}\t{element.end}\t{name}\t"
                 f"{score}\t.\t{element.summit}\t{element.summit + 1}\t{color}\n"
@@ -160,19 +183,19 @@ def build_catalog_beds(
     master_bed: Path,
     summit_bed: Path,
     context_matrix: Path,
-    active_paths: dict[str, Path],
+    element_paths: dict[str, Path],
     output_master_bed: Path,
     output_context_dhs: dict[str, Path],
-    output_active_beds: dict[str, Path],
+    output_element_beds: dict[str, Path],
     output_manifest: Path,
 ) -> dict[str, Any]:
-    """Write portable master, context-DHS, and active-element BED tracks."""
+    """Write portable master, context-DHS, and posterior-annotated BED tracks."""
 
-    contexts = list(active_paths)
+    contexts = list(element_paths)
     if (
         not contexts
         or set(output_context_dhs) != set(contexts)
-        or set(output_active_beds) != set(contexts)
+        or set(output_element_beds) != set(contexts)
     ):
         raise ValueError("Catalog BED context mappings must be complete and identical")
     elements = read_master_elements(master_bed, summit_bed)
@@ -194,20 +217,20 @@ def build_catalog_beds(
                     f"{element.summit + 1}\t0,145,130\n"
                 )
         _atomic_text_if_changed(output_context_dhs[context], "".join(dhs_lines))
-        active_content, class_counts = _active_bed_content(
-            path=active_paths[context],
+        element_content, class_counts = _element_bed_content(
+            path=element_paths[context],
             context=context,
             element_by_id=element_by_id,
             membership=membership,
         )
-        _atomic_text_if_changed(output_active_beds[context], active_content)
-        active_n = sum(class_counts.values())
-        if active_n > len(dhs_lines):
-            raise ValueError(f"Active-element count exceeds context DHSs for {context}")
+        _atomic_text_if_changed(output_element_beds[context], element_content)
+        element_n = sum(class_counts.values())
+        if element_n != len(dhs_lines):
+            raise ValueError(f"Context-element count differs from context DHSs for {context}")
         context_metrics[context] = {
             "context_dhs_count": len(dhs_lines),
-            "active_element_count": active_n,
-            "active_by_regulatory_class": dict(sorted(class_counts.items())),
+            "context_element_count": element_n,
+            "elements_by_regulatory_class": dict(sorted(class_counts.items())),
         }
 
     outputs = {
@@ -221,9 +244,9 @@ def build_catalog_beds(
                     "path": str(output_context_dhs[context].resolve()),
                     "sha256": sha256_file(output_context_dhs[context]),
                 },
-                "active_elements_bed": {
-                    "path": str(output_active_beds[context].resolve()),
-                    "sha256": sha256_file(output_active_beds[context]),
+                "context_elements_bed": {
+                    "path": str(output_element_beds[context].resolve()),
+                    "sha256": sha256_file(output_element_beds[context]),
                 },
             }
             for context in contexts
@@ -231,11 +254,12 @@ def build_catalog_beds(
     }
     manifest = {
         "status": "ok",
-        "schema_version": 1,
-        "method": "catalog_igv_bed_tracks_v1",
+        "schema_version": 2,
+        "method": "catalog_igv_bed_tracks_v2",
         "context_dhs_definition": "master DHS coordinates with context_matrix membership=1",
-        "active_element_definition": "context-member master DHS assigned to the high H3K27ac mixture",
-        "bed_format": "BED9; thick interval marks the representative summit",
+        "context_element_definition": "all context-member master DHSs; high/low is annotation, not an export filter",
+        "bed_format": "BED9; score is high-component posterior times 1000 and thick interval marks the representative summit",
+        "blacklist_item_rgb": "0,0,0",
         "regulatory_class_item_rgb": REGULATORY_CLASS_COLORS,
         "master_dhs_count": len(elements),
         "context_metrics": context_metrics,
@@ -243,8 +267,8 @@ def build_catalog_beds(
             "master_bed": sha256_file(master_bed),
             "summit_bed": sha256_file(summit_bed),
             "context_matrix": sha256_file(context_matrix),
-            "active_tables": {
-                context: sha256_file(active_paths[context]) for context in contexts
+            "context_element_tables": {
+                context: sha256_file(element_paths[context]) for context in contexts
             },
         },
         "outputs": outputs,
@@ -342,6 +366,16 @@ def mean_unionbedg_rows(
             yield chrom, start, end, mean_value
 
 
+def centered_extension_flanks(target_width: int) -> tuple[int, int]:
+    """Return left/right additions that expand a one-base event to target width."""
+
+    if target_width < 1:
+        raise ValueError("Target width must be positive")
+    left = target_width // 2
+    right = target_width - left - 1
+    return left, right
+
+
 def _coverage_bedgraph(
     *,
     unit_path: Path,
@@ -349,7 +383,10 @@ def _coverage_bedgraph(
     scale: float,
     output_path: Path,
     threads: int,
+    centered_extension_bp: int | None = None,
 ) -> None:
+    if centered_extension_bp is not None and centered_extension_bp < 1:
+        raise ValueError("Centered extension must be positive")
     with output_path.open("wb") as output_handle:
         decompressor = subprocess.Popen(
             ["pigz", "-p", str(max(1, threads)), "-dc", str(unit_path)],
@@ -357,6 +394,30 @@ def _coverage_bedgraph(
             stderr=subprocess.PIPE,
         )
         assert decompressor.stdout is not None
+        expander = None
+        coverage_input = decompressor.stdout
+        if centered_extension_bp is not None:
+            left, right = centered_extension_flanks(centered_extension_bp)
+            expander = subprocess.Popen(
+                [
+                    "bedtools",
+                    "slop",
+                    "-l",
+                    str(left),
+                    "-r",
+                    str(right),
+                    "-g",
+                    str(chrom_sizes_path),
+                    "-i",
+                    "stdin",
+                ],
+                stdin=coverage_input,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            coverage_input.close()
+            assert expander.stdout is not None
+            coverage_input = expander.stdout
         coverage = subprocess.Popen(
             [
                 "bedtools",
@@ -369,11 +430,11 @@ def _coverage_bedgraph(
                 "-g",
                 str(chrom_sizes_path),
             ],
-            stdin=decompressor.stdout,
+            stdin=coverage_input,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        decompressor.stdout.close()
+        coverage_input.close()
         assert coverage.stdout is not None
         sorter = subprocess.Popen(
             [
@@ -390,12 +451,21 @@ def _coverage_bedgraph(
         )
         coverage.stdout.close()
         _, coverage_stderr = coverage.communicate()
+        expander_stderr = b""
+        if expander is not None:
+            _, expander_stderr = expander.communicate()
         _, decompressor_stderr = decompressor.communicate()
         _, sorter_stderr = sorter.communicate()
-    if decompressor.returncode or coverage.returncode or sorter.returncode:
+    if (
+        decompressor.returncode
+        or (expander is not None and expander.returncode)
+        or coverage.returncode
+        or sorter.returncode
+    ):
         raise RuntimeError(
             f"Could not make coverage for {unit_path}: "
             + decompressor_stderr.decode(errors="replace")
+            + expander_stderr.decode(errors="replace")
             + coverage_stderr.decode(errors="replace")
             + sorter_stderr.decode(errors="replace")
         )
@@ -422,12 +492,15 @@ def build_context_mean_bigwig(
     context: str,
     output_bigwig: Path,
     output_metrics: Path,
+    atac_extension_bp: int = ATAC_BROWSER_EXTENSION_BP,
     threads: int = 2,
 ) -> dict[str, Any]:
     """Write the mean of per-library background-TMM normalized coverage tracks."""
 
     if assay not in {"atac", "h3k27ac"}:
         raise ValueError(f"Unsupported track assay: {assay}")
+    if atac_extension_bp < 1:
+        raise ValueError("ATAC browser extension must be positive")
     library_ids = list(unit_paths)
     factors = read_track_factors(
         factor_path=factor_path,
@@ -452,6 +525,9 @@ def build_context_mean_bigwig(
                     scale=float(factors[library_id]["scale"]),
                     output_path=bedgraph,
                     threads=threads,
+                    centered_extension_bp=(
+                        atac_extension_bp if assay == "atac" else None
+                    ),
                 )
                 bedgraphs.append(bedgraph)
 
@@ -535,17 +611,30 @@ def build_context_mean_bigwig(
         if temporary_bigwig is not None and temporary_bigwig.exists():
             temporary_bigwig.unlink()
 
-    unit_semantics = "Tn5 insertion records" if assay == "atac" else "ChIP fragments"
+    unit_semantics = (
+        f"Tn5 insertion records expanded to centered "
+        f"{atac_extension_bp}-bp intervals"
+        if assay == "atac"
+        else "ChIP fragments"
+    )
     metrics = {
         "status": "ok",
-        "schema_version": 1,
-        "method": "mean_background_tmm_normalized_coverage_v1",
+        "schema_version": 2,
+        "method": "mean_background_tmm_normalized_browser_coverage_v2",
         "assay": assay,
         "context": context,
         "unit_semantics": unit_semantics,
+        "atac_insertion_extension_bp": (
+            atac_extension_bp if assay == "atac" else None
+        ),
         "value_definition": (
             "arithmetic mean across accepted libraries of basewise coverage "
-            "multiplied by 1e6/effective_library_size"
+            "multiplied by 1e6/effective_library_size; ATAC insertions are "
+            f"expanded to centered, chromosome-clipped "
+            f"{atac_extension_bp}-bp intervals before coverage"
+            if assay == "atac"
+            else "arithmetic mean across accepted libraries of basewise "
+            "fragment coverage multiplied by 1e6/effective_library_size"
         ),
         "normalization_method": TMM_BACKGROUND_METHOD,
         "library_n": len(library_ids),

@@ -67,7 +67,7 @@
 \title{\textbf{Drosophila cCRE Pipeline}\\[0.3em]
 \large Detailed implementation and scientific reasoning}
 \author{drosophila-cCREs project}
-\date{Repository documentation revision: 2026-07-29}
+\date{Repository documentation revision: 2026-07-30}
 
 \begin{document}
 
@@ -101,8 +101,8 @@ The pipeline has two related scientific goals:
   from reproducible ATAC accessibility evidence across the contexts named in
   the input table; and
   \item annotate every master DHS in every context with accessibility,
-  H3K27ac, an activity score, TSS proximity, and a guarded active/inactive
-  interpretation.
+H3K27ac, a high-component posterior probability, TSS proximity, blacklist
+  overlap, and a guarded high/low interpretation.
 \end{enumerate}
 
 The public interface is accession-first.  Users provide public accessions and
@@ -285,8 +285,11 @@ The workflow:
   \item writes the configured autosome list used for background normalization.
 \end{enumerate}
 
-The blacklist is used during final BAM filtering.  The TSS BED supports ATAC
-TSS enrichment and regulatory-class annotation.  The
+The blacklist is retained as an annotation reference rather than used to
+discard alignments.  At the catalog stage, master-DHS overlap with it is
+reported as a binary flag, an overlapping-base count, and a fraction of the
+master interval.  The TSS BED supports ATAC TSS enrichment and
+regulatory-class annotation.  The
 autosome list excludes sex chromosomes and mitochondrial DNA from the TMM
 background matrix.
 
@@ -345,14 +348,23 @@ is then performed once over the merged library.  The final filter applies:
   alignments;
   \item proper-pair and mapped-mate requirements for paired-end libraries;
   \item duplicate exclusion when \texttt{remove\_duplicates=true};
-  \item mitochondrial-contig removal by default; and
-  \item removal of alignments overlapping the reference blacklist.
+  \item mitochondrial-contig removal by default.
 \end{itemize}
+
+Blacklist-overlapping alignments are deliberately retained so that the same
+unfiltered signal supports peak calling and quantitative annotation.  The
+resulting elements can then be removed, retained, or sensitivity-filtered by
+their recorded overlap rather than disappearing before inspection.
 
 The result is a coordinate-sorted final BAM and BAI.  Flagstat, stats, and
 idxstats summaries are calculated for every biological library.  At the
 \stage{alignment} boundary the workflow exports a checksummed final-BAM
 manifest; newly generated rows have \texttt{qc\_status=pending\_review}.
+They use the \texttt{short-read-processing-final-v2} contract, which records
+this blacklist-retaining behavior.  A v1 BAM cannot be relabeled as v2 because
+reads removed by the old contract cannot be recovered; adopting v2 requires
+reprocessing from FASTQs.  Master-bundle manifests record the input filtering
+contract as well, so a v1 master cannot silently enter a v2 catalog.
 
 Duplicate marking before technical-run merging would miss molecules duplicated
 across lanes.  Conversely, merging biological replicates would erase the
@@ -580,7 +592,9 @@ assay across the atlas for TMM estimation.
 
 Each unit BED has a separately checked total count.  This same unit definition
 feeds master-interval counts, 10-kb background counts, H3K27ac summit windows,
-and normalized browser coverage.
+and normalized browser coverage.  The browser representation expands ATAC
+insertion units to 150-bp intervals, as described below, without changing the
+one-base units used for counting and normalization.
 
 ATAC accessibility is naturally measured by insertion events, whereas
 H3K27ac enrichment is naturally measured by immunoprecipitated fragments.
@@ -719,7 +733,7 @@ explicit evidence requirements.  Retaining unsupported assignments with
 warnings is preferable to silently discarding data or falsely presenting the
 fit as validated.
 
-\section{Regulatory classes and active elements}
+\section{Regulatory classes and posterior activity}
 
 The representative summit is compared with the nearest reference TSS on the
 same contig.  Ties retain all tied TSS identifiers.  Classes are descriptive:
@@ -737,12 +751,15 @@ Class & Absolute summit--TSS distance \\
 \end{tabular}
 \end{center}
 
-An active element is a master DHS that is a member of the context and is
-assigned to the high H3K27ac mixture component.  The active definition does
-not require \texttt{mixture\_supported=1}; unsupported fits remain present but
-are visibly flagged in tables, BED names, plots, summaries, and the final
-report.  Continuous ATAC, H3K27ac, posterior probability, and combined
-activity values are retained for analyses that should not use a binary call.
+For each positive-signal context member, the catalog reports
+\filep{mixture_high_posterior_probability}, the fitted probability of the
+high H3K27ac component.  The \texttt{high}/\texttt{low} component and the
+binary \texttt{mixture\_high\_posterior} field are derived at probability 0.5
+for summaries; they do not filter the main catalog or the context-element
+exports.  Unsupported fits remain visibly flagged in tables, BED names,
+plots, summaries, and the final report.  A context member with zero H3K27ac
+has a blank posterior and is labeled
+\texttt{accessible\_no\_h3k27ac\_signal}.
 
 TSS distance provides a reproducible structural annotation, not proof of
 enhancer function or target-gene identity.  Likewise, a high H3K27ac component
@@ -754,12 +771,21 @@ appropriate input for later quantitative scoring and uncertainty-aware work.
 \subsection{Tabular catalog}
 
 The long catalog contains one master-DHS/context row.  It includes master
-coordinates, membership, nearest TSS, regulatory class, normalized ATAC,
-all H3K27ac window summaries, mixture diagnostics and posterior, activity
-state, and the max-window geometric activity.  The wide catalog contains one
-row per master DHS with context-prefixed membership, signal, mixture, warning,
-and activity fields.  Each context also receives a compressed table of high
-component active elements and a regulatory-class/mixture summary.
+coordinates, membership, nearest-TSS distance and identifiers, regulatory
+class, blacklist overlap flag/base count/fraction, normalized ATAC, all
+H3K27ac window summaries, mixture diagnostics and posterior, activity state,
+and the max-window geometric activity.  The wide catalog contains one row per
+master DHS with the TSS and blacklist annotations shared once and the
+membership, signal, mixture, warning, and activity fields prefixed by context.
+Each context also receives a compressed table containing every context member,
+including low-component and zero-signal elements, plus a
+regulatory-class/mixture summary.
+
+These columns make downstream definitions explicit.  For example, an analysis
+can require \texttt{blacklist\_overlap=0}, choose a high-component posterior
+threshold such as 0.9, and apply its own absolute
+\texttt{nearest\_tss\_distance\_bp} boundary.  The pipeline does not claim that
+one such threshold is universally appropriate.
 
 \subsection{Portable BED and BigWig tracks}
 
@@ -769,34 +795,45 @@ The catalog creates:
   \item a portable copy of the global master BED;
   \item a context DHS BED containing master coordinates for context-matrix
   members, rather than the wider pooled source-peak boundaries;
-  \item an active-element BED9 whose thick one-base interval marks the summit,
-  score is the high-component posterior scaled to 0--1,000, item RGB encodes
-  regulatory class, and name records a mixture warning; and
+  \item a context-element BED9 containing every context member.  Its thick
+  one-base interval marks the summit, score is the high-component posterior
+  scaled to 0--1,000 (zero where no posterior applies), item RGB encodes the
+  regulatory class except that blacklist overlaps are black, and the name
+  records TSS distance, posterior, component, guardrail status, and blacklist
+  status; and
   \item one mean ATAC and one mean H3K27ac BigWig for every context.
 \end{itemize}
 
 For each accepted library, basewise coverage is scaled by
 \(10^6/E_{\ell}\), using the same assay-specific background-TMM effective size
-as the tables.  Context tracks are arithmetic means of these scaled library
-tracks.  ATAC BigWigs show Tn5 insertion coverage and H3K27ac BigWigs show
-fragment coverage.  JSON sidecars record libraries, factors, scale values,
-inputs, and output checksums.
+as the tables.  Before ATAC browser coverage is calculated, every shifted
+one-base insertion is expanded to a centered, chromosome-clipped 150-bp
+interval.  Context tracks are arithmetic means of the scaled library pileups.
+This makes accessible regions easier to inspect than isolated one-base events,
+while retaining the insertion-based library definition and the same 150-bp
+representation used for the MACS3 branch.  H3K27ac BigWigs show normalized
+fragment coverage without additional extension.  Per-library bedGraphs exist
+only as temporary construction files; JSON sidecars record libraries, factors,
+scale values, representation, inputs, and output checksums.
 
 \subsection{IGV sessions}
 
 Each context session at
 \filep{activity/catalog/igv/<context>.xml} loads five relative resources:
-the global master registry first, followed by mean ATAC, mean H3K27ac, context
-DHSs, and active elements.  The aggregate
+the global master registry first, followed by the mean 150-bp ATAC pileup, mean
+H3K27ac, context DHSs, and posterior-scored candidate elements.  The genome
+gene track is enabled, so the master registry is the first custom track
+immediately below the gene/GTF annotation.  The aggregate
 \filep{activity/catalog/all-contexts.igv.xml} loads the master once and the four
 context-specific tracks for every context.  Relative paths make the bundle
 portable as long as the XML, \filep{bed/}, and \filep{tracks/} remain together.
 
 The standalone \filep{src/build_igv_session.py} builds a compact cross-run view.
-The global master DHS registry is first.  Each context then contributes, in
-order, its background-TMM mean ATAC Tn5-insertion signal, pooled ATAC qpois
-signal, background-TMM mean H3K27ac fragment coverage, context DHSs, and
-active cCREs.  The unscaled, depth-dependent pooled MACS3 pileup remains an
+The global master DHS registry is the first custom track below the gene/GTF
+annotation.  Each context then contributes, in order, its background-TMM mean
+150-bp ATAC Tn5 pileup, pooled ATAC qpois signal, background-TMM mean H3K27ac
+fragment coverage, context DHSs, and posterior-scored candidate cCREs.  The
+unscaled, depth-dependent pooled MACS3 pileup remains an
 auditable master-calling result but is intentionally absent from this compact
 comparative session.
 Replicate-level H3K27ac signal, H3K27ac peaks, and intermediate ATAC peak
@@ -887,7 +924,7 @@ Quantification &
 \filep{master_dhs_activity.tsv.gz}, metrics and provenance JSON \\
 Catalog &
 \filep{activity/catalog/master_elements_long.tsv.gz},
-\filep{master_elements_wide.tsv.gz}, \filep{active/},
+\filep{master_elements_wide.tsv.gz}, \filep{elements/},
 \filep{mixture_models.tsv}, \filep{regulatory_element_summary.tsv}, metrics,
 provenance, and mixture plots \\
 Browser bundle &
@@ -971,8 +1008,10 @@ Parameter & Default & Interpretation \\
 \endhead
 Trim quality / minimum length & 20 / 20 bp & Read-level cleanup before alignment \\
 Bowtie2 preset / paired maximum & very-sensitive / 2,000 bp & Alignment sensitivity and allowed concordant span \\
-MAPQ / duplicate / mitochondrial filtering & 30 / remove / remove & Final biological-library BAM contract \\
+MAPQ / duplicate / mitochondrial filtering & 30 / remove / remove & Final biological-library BAM contract; blacklist alignments are retained \\
+Blacklist handling & annotate only & Master-DHS overlap flag, base count, and interval fraction \\
 ATAC short-fragment maximum & 150 bp, strict & Requires \(0<|\mathrm{TLEN}|<150\) \\
+ATAC browser extension & 150 bp & Centered Tn5 insertion pileup recorded in the resolved semantic configuration \\
 ATAC MACS3 q-value & 0.10 & Lenient candidate stage before geometric refinement \\
 qpois exponent range & 2--325 & Progressive signal thresholds \\
 qpois retained width & 50--400 bp & Final refined component geometry \\
@@ -1025,6 +1064,10 @@ pyBigWig & 0.3.25 & WeasyPrint & 66.0 \\
   \item A high mixture assignment from an unsupported fit is retained for
   transparency but must be interpreted with its warning.  The report exposes
   the exact failed guards.
+  \item A blacklist overlap is a technical warning, not proof that an element
+  is artifactual.  Conversely, retaining the reads can allow blacklist-driven
+  signal to affect peak calling, so sensitivity analyses should state the
+  overlap rule they apply.
   \item TSS-proximity classes are annotation categories.  Distal or proximal
   labels do not establish enhancer function, and promoter proximity does not
   prove regulation of the nearest gene.

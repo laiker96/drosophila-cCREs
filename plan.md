@@ -11,7 +11,7 @@ Build an idempotent, reproducible pipeline that:
 3. applies assay-specific background TMM normalization;
 4. fits guarded two-component H3K27ac mixtures within context-member DHSs;
 5. reports low and high component assignments, explicit guardrail failures,
-   one wide master table, and active element sets per context;
+   one wide master table, and annotated context-member element sets;
 6. renders a final integrated HTML/PDF QC report from frozen upstream and
    current manifests, JSON metrics, tables, and plots.
 
@@ -23,11 +23,11 @@ not part of this design.
 | Stage | Inputs | Durable result |
 |---|---|---|
 | trimming | downloaded FASTQs | trimmed FASTQs and lane QC |
-| alignment | trimmed FASTQs | filtered final BAM/BAI and checksummed manifest |
+| alignment | trimmed FASTQs | quality-filtered, blacklist-retaining final BAM/BAI and checksummed manifest |
 | QC | final BAMs | peaks, FRiP, assay QC, MultiQC, and a `pending_review` BAM manifest |
 | master | fully reviewed ATAC BAM manifest | accepted-library replicate/context evidence, master DHS bundle, and manifest |
 | quantification | master manifest plus accepted ATAC/H3K27ac BAM manifests | raw, CPM/kb and background-TMM activity tables |
-| catalog | completed quantification | guarded mixtures, long/wide catalogs, active sets, BED/BigWig tracks and IGV sessions |
+| catalog | completed quantification | guarded mixtures, posterior/TSS/blacklist-annotated catalogs, mean TMM 150-bp ATAC pileups, BED/BigWig tracks and IGV sessions |
 | report | completed catalog plus frozen upstream QC artifacts | integrated HTML/PDF report and checksummed JSON sidecar |
 
 The output stopping point is not part of the scientific semantic hash. Within
@@ -146,24 +146,26 @@ Use absolute summit-to-nearest-TSS distance:
 - distal enhancer-like: more than 1,000 bp;
 - unclassified: no TSS on the element's contig.
 
-An active element is a context-member DHS assigned to the high component.
-Mixture support is an orthogonal quality flag and never silently removes an
-unsupported assignment.
+The high-component label is derived from posterior probability 0.5 for
+summaries. Context-member exports retain all elements and expose the posterior,
+TSS distance, blacklist overlap, and mixture-support warning for downstream
+filtering.
 
 ## Final outputs
 
 The catalog stage writes:
 
 1. `master_elements_long.tsv.gz`: one element/context row with membership,
-   TSS class, raw/normalized signals, both mixture assignments and warnings;
+   TSS distance/class, blacklist overlap, raw/normalized signals, posterior,
+   mixture assignment, and warnings;
 2. `master_elements_wide.tsv.gz`: one master-element row with context-prefixed
    membership, signal, mixture, warning and activity columns;
-3. `active/<context>.active_elements.tsv.gz`: high-component member DHSs with
-   their promoter/proximal/distal class and guardrail status;
+3. `elements/<context>.elements.tsv.gz`: every context-member DHS with its
+   continuous posterior and structural annotations;
 4. `mixture_models.tsv`: fitted parameters and exact support reasons;
 5. mixture distribution SVG and machine-readable histogram bins;
-6. per-context active-element and context-DHS BED9 tracks plus a copied master
-   BED;
+6. per-context posterior-scored element and context-DHS BED9 tracks plus a
+   copied master BED;
 7. background-TMM-normalized mean ATAC and H3K27ac BigWigs, a portable
    five-track IGV session per context, and one session containing every
    context;
@@ -179,7 +181,7 @@ The final report inventories the accession/sample sheet, reviewed BAM
 manifests, master manifest, resolved upstream configurations, QC metrics,
 quantification outputs, and catalog outputs. It embeds library-yield and FRiP
 plots, H3K27ac cross-correlation summaries, ATAC TSS profiles, master context
-statistics, TMM factors, active TSS-distance classes, and the guarded mixture
+statistics, TMM factors, high-component TSS-distance classes, and the guarded mixture
 plot. Every supplied report input is checksum-validated, and an accompanying
 JSON file records the complete audit trail. Reporting inputs do not affect the
 scientific semantic hash.

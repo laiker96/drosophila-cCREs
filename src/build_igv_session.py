@@ -136,13 +136,13 @@ def build_session(
             catalog_track_root
             / f"{condition}.h3k27ac.mean.background_tmm.bw",
             context_dhs,
-            catalog_bed_root / f"{condition}.active_elements.bed",
+            catalog_bed_root / f"{condition}.elements.bed",
         ]
         _require(inputs)
         specifications = (
             (
                 inputs[0],
-                f"{label} | mean ATAC Tn5 signal (background-TMM)",
+                f"{label} | mean ATAC 150-bp Tn5 pileup (background-TMM)",
                 "31,120,180",
                 True,
             ),
@@ -154,7 +154,7 @@ def build_session(
                 True,
             ),
             (inputs[3], f"{label} | context DHSs", "0,145,130", False),
-            (inputs[4], f"{label} | active cCREs", "202,61,52", False),
+            (inputs[4], f"{label} | candidate cCREs (posterior-scored)", "202,61,52", False),
         )
         for path, name, color, signal in specifications:
             add_track(
@@ -180,7 +180,7 @@ def build_catalog_session(
     h3k27ac_bigwig: Path,
     context_dhs_bed: Path,
     master_dhs_bed: Path,
-    active_elements_bed: Path,
+    elements_bed: Path,
     output: Path,
     locus: str = "All",
 ) -> int:
@@ -191,7 +191,7 @@ def build_catalog_session(
         h3k27ac_bigwig,
         context_dhs_bed,
         master_dhs_bed,
-        active_elements_bed,
+        elements_bed,
     ]
     _require(paths)
     session = ET.Element(
@@ -214,7 +214,7 @@ def build_catalog_session(
         ),
         (
             atac_bigwig,
-            f"{label} | mean ATAC Tn5 signal (background-TMM)",
+            f"{label} | mean ATAC 150-bp Tn5 pileup (background-TMM)",
             "31,120,180",
             True,
         ),
@@ -231,8 +231,8 @@ def build_catalog_session(
             False,
         ),
         (
-            active_elements_bed,
-            f"{label} | active cCREs",
+            elements_bed,
+            f"{label} | candidate cCREs (posterior-scored)",
             "202,61,52",
             False,
         ),
@@ -259,7 +259,7 @@ def build_all_contexts_catalog_session(
     h3k27ac_bigwigs: dict[str, Path],
     context_dhs_beds: dict[str, Path],
     master_dhs_bed: Path,
-    active_elements_beds: dict[str, Path],
+    element_beds: dict[str, Path],
     output: Path,
     locus: str = "All",
 ) -> int:
@@ -271,7 +271,7 @@ def build_all_contexts_catalog_session(
         "ATAC BigWigs": atac_bigwigs,
         "H3K27ac BigWigs": h3k27ac_bigwigs,
         "context DHS BEDs": context_dhs_beds,
-        "active-element BEDs": active_elements_beds,
+        "posterior-annotated element BEDs": element_beds,
     }
     expected = set(contexts)
     for label, paths in mappings.items():
@@ -309,7 +309,7 @@ def build_all_contexts_catalog_session(
         for path, name, color, signal in (
             (
                 atac_bigwigs[context],
-                f"{label} | mean ATAC Tn5 signal (background-TMM)",
+                f"{label} | mean ATAC 150-bp Tn5 pileup (background-TMM)",
                 "31,120,180",
                 True,
             ),
@@ -326,8 +326,8 @@ def build_all_contexts_catalog_session(
                 False,
             ),
             (
-                active_elements_beds[context],
-                f"{label} | active cCREs",
+                element_beds[context],
+                f"{label} | candidate cCREs (posterior-scored)",
                 "202,61,52",
                 False,
             ),
@@ -361,7 +361,7 @@ def main() -> int:
         "--catalog-bed-root",
         type=Path,
         required=True,
-        help="activity/catalog/bed directory with all context and active BEDs",
+        help="activity/catalog/bed directory with all context and posterior-annotated BEDs",
     )
     parser.add_argument(
         "--catalog-track-root",

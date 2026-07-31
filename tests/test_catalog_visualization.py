@@ -8,12 +8,13 @@ import pytest
 from short_read_processing.activity_tmm import TMM_BACKGROUND_METHOD, TMM_FACTOR_FIELDS
 from short_read_processing.catalog_visualization import (
     build_catalog_beds,
+    centered_extension_flanks,
     mean_unionbedg_rows,
     read_track_factors,
 )
 
 
-def test_catalog_beds_preserve_membership_classes_and_guardrail_warning(tmp_path):
+def test_catalog_beds_preserve_membership_and_continuous_annotations(tmp_path):
     master = tmp_path / "master.bed"
     summits = tmp_path / "summits.bed"
     matrix = tmp_path / "matrix.tsv"
@@ -30,7 +31,7 @@ def test_catalog_beds_preserve_membership_classes_and_guardrail_warning(tmp_path
         "DHS0000001\tchr1\t10\t40\t20\t1\t1\n"
         "DHS0000002\tchr1\t50\t90\t70\t0\t0\n"
     )
-    active = tmp_path / "ctx.active.tsv.gz"
+    elements = tmp_path / "ctx.elements.tsv.gz"
     fields = [
         "master_dhs_id",
         "chrom",
@@ -40,11 +41,13 @@ def test_catalog_beds_preserve_membership_classes_and_guardrail_warning(tmp_path
         "context",
         "context_membership",
         "regulatory_class",
+        "nearest_tss_distance_bp",
+        "blacklist_overlap",
         "mixture_component",
         "mixture_guardrail_warning",
         "mixture_high_posterior_probability",
     ]
-    with gzip.open(active, "wt", newline="") as handle:
+    with gzip.open(elements, "wt", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
         writer.writeheader()
         writer.writerow(
@@ -57,24 +60,26 @@ def test_catalog_beds_preserve_membership_classes_and_guardrail_warning(tmp_path
                 "context": "ctx",
                 "context_membership": 1,
                 "regulatory_class": "distal_enhancer_like",
-                "mixture_component": "high",
+                "nearest_tss_distance_bp": 1250,
+                "blacklist_overlap": 1,
+                "mixture_component": "low",
                 "mixture_guardrail_warning": 1,
-                "mixture_high_posterior_probability": 0.75,
+                "mixture_high_posterior_probability": 0.25,
             }
         )
     output_master = tmp_path / "bed/master_dhs.bed"
     output_dhs = tmp_path / "bed/ctx.dhs.bed"
-    output_active = tmp_path / "bed/ctx.active_elements.bed"
+    output_elements = tmp_path / "bed/ctx.elements.bed"
     output_manifest = tmp_path / "bed/bed_tracks.json"
 
     result = build_catalog_beds(
         master_bed=master,
         summit_bed=summits,
         context_matrix=matrix,
-        active_paths={"ctx": active},
+        element_paths={"ctx": elements},
         output_master_bed=output_master,
         output_context_dhs={"ctx": output_dhs},
-        output_active_beds={"ctx": output_active},
+        output_element_beds={"ctx": output_elements},
         output_manifest=output_manifest,
     )
 
@@ -82,17 +87,23 @@ def test_catalog_beds_preserve_membership_classes_and_guardrail_warning(tmp_path
     assert output_dhs.read_text().splitlines() == [
         "chr1\t10\t40\tDHS0000001\t0\t.\t20\t21\t0,145,130"
     ]
-    active_fields = output_active.read_text().strip().split("\t")
-    assert active_fields[3] == (
-        "DHS0000001|distal_enhancer_like|high_mixture_warning"
+    element_fields = output_elements.read_text().strip().split("\t")
+    assert element_fields[3] == (
+        "DHS0000001|distal_enhancer_like|tss_distance=1250|"
+        "posterior_high=0.25|low_mixture|warning|blacklist_overlap"
     )
-    assert active_fields[4] == "750"
-    assert active_fields[8] == "69,117,180"
-    assert result["context_metrics"]["ctx"]["active_element_count"] == 1
+    assert element_fields[4] == "250"
+    assert element_fields[8] == "0,0,0"
+    assert result["context_metrics"]["ctx"]["context_element_count"] == 1
     assert json.loads(output_manifest.read_text())["status"] == "ok"
 
 
 def test_track_factors_and_unionbedg_mean_are_exact(tmp_path):
+    assert centered_extension_flanks(150) == (75, 74)
+    assert sum(centered_extension_flanks(150)) + 1 == 150
+    with pytest.raises(ValueError, match="positive"):
+        centered_extension_flanks(0)
+
     factors = tmp_path / "factors.tsv"
     with factors.open("w", newline="") as handle:
         writer = csv.DictWriter(

@@ -424,6 +424,7 @@ if ACTIVITY:
             summits=str(ACTIVITY["master"]["summits_bed"]),
             context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
             tss=str(REFERENCE["tss_bed"]),
+            blacklist=str(REFERENCE["blacklist_bed"]),
             windows=ACTIVITY_REGULATORY_WINDOWS,
             counts=list(ACTIVITY_REGULATORY_WINDOW_COUNTS.values()),
             factors=ACTIVITY_TMM_FACTORS,
@@ -433,14 +434,14 @@ if ACTIVITY:
         output:
             catalog=ACTIVITY_REGULATORY_CATALOG,
             wide=ACTIVITY_REGULATORY_WIDE,
-            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            elements=list(ACTIVITY_REGULATORY_ELEMENTS.values()),
             mixtures=ACTIVITY_REGULATORY_MIXTURES,
             summary=ACTIVITY_REGULATORY_SUMMARY,
             metrics=ACTIVITY_REGULATORY_METRICS,
             provenance=ACTIVITY_REGULATORY_PROVENANCE
         params:
             window_counts=ACTIVITY_REGULATORY_WINDOW_COUNTS,
-            active_paths=ACTIVITY_REGULATORY_ACTIVE,
+            element_paths=ACTIVITY_REGULATORY_ELEMENTS,
             contexts=ACTIVITY_CONTEXTS
         resources:
             mem_mb=12000
@@ -476,7 +477,7 @@ if ACTIVITY:
             master=str(ACTIVITY["master"]["master_bed"]),
             summits=str(ACTIVITY["master"]["summits_bed"]),
             context_matrix=str(ACTIVITY["master"]["context_matrix_tsv"]),
-            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            elements=list(ACTIVITY_REGULATORY_ELEMENTS.values()),
             catalog_metrics=ACTIVITY_REGULATORY_METRICS,
             implementation=str(
                 REPO_ROOT
@@ -487,12 +488,12 @@ if ACTIVITY:
         output:
             master=ACTIVITY_CATALOG_MASTER_BED,
             context_dhs=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
-            active_beds=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            element_beds=list(ACTIVITY_CATALOG_ELEMENT_BEDS.values()),
             manifest=ACTIVITY_CATALOG_BED_MANIFEST
         params:
-            active_paths=ACTIVITY_REGULATORY_ACTIVE,
+            element_paths=ACTIVITY_REGULATORY_ELEMENTS,
             context_dhs_paths=ACTIVITY_CATALOG_CONTEXT_DHS,
-            active_bed_paths=ACTIVITY_CATALOG_ACTIVE_BEDS
+            element_bed_paths=ACTIVITY_CATALOG_ELEMENT_BEDS
         resources:
             mem_mb=3000
         conda:
@@ -531,6 +532,7 @@ if ACTIVITY:
         params:
             context=lambda wc: wc.context,
             assay=lambda wc: wc.assay,
+            atac_extension_bp=int(ACTIVITY["atac_browser_extension_bp"]),
             unit_paths=lambda wc: {
                 library: ACTIVITY_UNIT_BEDS[library]
                 for library in ACTIVITY_CONTEXT_ASSAY_LIBRARIES[
@@ -559,7 +561,7 @@ if ACTIVITY:
             ],
             context_dhs=lambda wc: ACTIVITY_CATALOG_CONTEXT_DHS[wc.context],
             master_dhs=ACTIVITY_CATALOG_MASTER_BED,
-            active_elements=lambda wc: ACTIVITY_CATALOG_ACTIVE_BEDS[wc.context],
+            elements=lambda wc: ACTIVITY_CATALOG_ELEMENT_BEDS[wc.context],
             implementation=str(REPO_ROOT / "src" / "build_igv_session.py")
         output:
             session=f"{ACTIVITY_CATALOG_IGV_ROOT}/{{context}}.xml"
@@ -590,7 +592,7 @@ if ACTIVITY:
             ],
             context_dhs=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
             master_dhs=ACTIVITY_CATALOG_MASTER_BED,
-            active_elements=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            elements=list(ACTIVITY_CATALOG_ELEMENT_BEDS.values()),
             implementation=str(REPO_ROOT / "src" / "build_igv_session.py")
         output:
             session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION
@@ -606,7 +608,7 @@ if ACTIVITY:
                 for context in ACTIVITY_CONTEXTS
             },
             context_dhs_paths=ACTIVITY_CATALOG_CONTEXT_DHS,
-            active_element_paths=ACTIVITY_CATALOG_ACTIVE_BEDS
+            element_paths=ACTIVITY_CATALOG_ELEMENT_BEDS
         resources:
             mem_mb=1000
         conda:
@@ -629,7 +631,7 @@ if ACTIVITY:
             master_metrics=str(ACTIVITY["master"]["stats_json"]),
             catalog=ACTIVITY_REGULATORY_CATALOG,
             wide=ACTIVITY_REGULATORY_WIDE,
-            active=list(ACTIVITY_REGULATORY_ACTIVE.values()),
+            elements=list(ACTIVITY_REGULATORY_ELEMENTS.values()),
             mixtures=ACTIVITY_REGULATORY_MIXTURES,
             summary=ACTIVITY_REGULATORY_SUMMARY,
             catalog_metrics=ACTIVITY_REGULATORY_METRICS,
@@ -639,7 +641,7 @@ if ACTIVITY:
             mixture_plot_metrics=ACTIVITY_REGULATORY_MIXTURE_PLOT_METRICS,
             catalog_master_bed=ACTIVITY_CATALOG_MASTER_BED,
             context_dhs_beds=list(ACTIVITY_CATALOG_CONTEXT_DHS.values()),
-            active_element_beds=list(ACTIVITY_CATALOG_ACTIVE_BEDS.values()),
+            element_beds=list(ACTIVITY_CATALOG_ELEMENT_BEDS.values()),
             bed_track_manifest=ACTIVITY_CATALOG_BED_MANIFEST,
             mean_bigwigs=list(ACTIVITY_CONTEXT_MEAN_BIGWIGS.values()),
             mean_bigwig_metrics=list(
@@ -674,16 +676,16 @@ if ACTIVITY:
                 "catalog_master_dhs_bed": ACTIVITY_CATALOG_MASTER_BED,
                 "catalog_bed_manifest": ACTIVITY_CATALOG_BED_MANIFEST,
                 **{
-                    f"active_elements_{context}": path
-                    for context, path in ACTIVITY_REGULATORY_ACTIVE.items()
+                    f"context_elements_{context}": path
+                    for context, path in ACTIVITY_REGULATORY_ELEMENTS.items()
                 },
                 **{
                     f"context_dhs_bed_{context}": path
                     for context, path in ACTIVITY_CATALOG_CONTEXT_DHS.items()
                 },
                 **{
-                    f"active_elements_bed_{context}": path
-                    for context, path in ACTIVITY_CATALOG_ACTIVE_BEDS.items()
+                    f"context_elements_bed_{context}": path
+                    for context, path in ACTIVITY_CATALOG_ELEMENT_BEDS.items()
                 },
                 **{
                     f"mean_bigwig_{context}_{assay}": path

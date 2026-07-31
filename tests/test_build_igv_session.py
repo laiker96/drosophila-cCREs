@@ -30,7 +30,7 @@ def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path)
                 catalog
                 / f"tracks/{context}.h3k27ac.mean.background_tmm.bw",
                 catalog / f"bed/{context}.dhs.bed",
-                catalog / f"bed/{context}.active_elements.bed",
+                catalog / f"bed/{context}.elements.bed",
             ]
         )
     touch_all(paths)
@@ -51,19 +51,20 @@ def test_session_has_master_then_five_ordered_tracks_per_context(tmp_path: Path)
     tracks = root.findall("./Panel/Track")
     assert counts == (2, 11)
     assert len(resources) == len(tracks) == 11
+    assert resources[0].attrib["path"] == "atac/master/master_dhs.bed"
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
         "Master DHS registry",
-        "E11 | mean ATAC Tn5 signal (background-TMM)",
+        "E11 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "E11 | pooled ATAC qpois signal",
         "E11 | mean H3K27ac signal (background-TMM)",
         "E11 | context DHSs",
-        "E11 | active cCREs",
-        "E5 | mean ATAC Tn5 signal (background-TMM)",
+        "E11 | candidate cCREs (posterior-scored)",
+        "E5 | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "E5 | pooled ATAC qpois signal",
         "E5 | mean H3K27ac signal (background-TMM)",
         "E5 | context DHSs",
-        "E5 | active cCREs",
+        "E5 | candidate cCREs (posterior-scored)",
     ]
 
 
@@ -76,7 +77,7 @@ def test_session_requires_matching_atac_and_catalog_contexts(tmp_path: Path):
             condition / "tracks/e5.MACS3-pileup.unscaled.bw",
             condition / "tracks/e5.qpois.bw",
             tmp_path / "catalog/bed/e11.dhs.bed",
-            tmp_path / "catalog/bed/e11.active_elements.bed",
+            tmp_path / "catalog/bed/e11.elements.bed",
         ]
     )
     output = tmp_path / "session.xml"
@@ -97,7 +98,7 @@ def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: P
         "h3k27ac_bigwig": tmp_path / "catalog/tracks/ctx.h3k27ac.bw",
         "context_dhs_bed": tmp_path / "catalog/bed/ctx.dhs.bed",
         "master_dhs_bed": tmp_path / "catalog/bed/master_dhs.bed",
-        "active_elements_bed": tmp_path / "catalog/bed/ctx.active_elements.bed",
+        "elements_bed": tmp_path / "catalog/bed/ctx.elements.bed",
     }
     touch_all(list(inputs.values()))
     output = tmp_path / "catalog/igv/ctx.xml"
@@ -115,13 +116,14 @@ def test_catalog_session_has_relative_mean_signal_and_element_tracks(tmp_path: P
     resources = root.findall("./Resources/Resource")
     tracks = root.findall("./Panel/Track")
     assert count == len(resources) == len(tracks) == 5
+    assert resources[0].attrib["path"] == "../bed/master_dhs.bed"
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
         "Master DHS registry",
-        "CTX | mean ATAC Tn5 signal (background-TMM)",
+        "CTX | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX | mean H3K27ac fragment coverage (background-TMM)",
         "CTX | context DHSs (master coordinates)",
-        "CTX | active cCREs",
+        "CTX | candidate cCREs (posterior-scored)",
     ]
 
 
@@ -140,11 +142,11 @@ def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path
         context: tmp_path / f"catalog/bed/{context}.dhs.bed"
         for context in contexts
     }
-    active = {
-        context: tmp_path / f"catalog/bed/{context}.active_elements.bed"
+    elements = {
+        context: tmp_path / f"catalog/bed/{context}.elements.bed"
         for context in contexts
     }
-    touch_all([master, *atac.values(), *h3k27ac.values(), *context_dhs.values(), *active.values()])
+    touch_all([master, *atac.values(), *h3k27ac.values(), *context_dhs.values(), *elements.values()])
     output = tmp_path / "catalog/all-contexts.igv.xml"
 
     count = build_all_contexts_catalog_session(
@@ -154,7 +156,7 @@ def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path
         h3k27ac_bigwigs=h3k27ac,
         context_dhs_beds=context_dhs,
         master_dhs_bed=master,
-        active_elements_beds=active,
+        element_beds=elements,
         output=output,
     )
 
@@ -164,17 +166,18 @@ def test_all_contexts_catalog_session_contains_every_context_once(tmp_path: Path
     resources = root.findall("./Resources/Resource")
     tracks = root.findall("./Panel/Track")
     assert count == len(resources) == len(tracks) == 9
+    assert resources[0].attrib["path"] == "bed/master_dhs.bed"
     assert all((output.parent / item.attrib["path"]).is_file() for item in resources)
     assert [track.attrib["name"] for track in tracks] == [
         "Master DHS registry",
-        "CTX_A | mean ATAC Tn5 signal (background-TMM)",
+        "CTX_A | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX_A | mean H3K27ac fragment coverage (background-TMM)",
         "CTX_A | context DHSs (master coordinates)",
-        "CTX_A | active cCREs",
-        "CTX_B | mean ATAC Tn5 signal (background-TMM)",
+        "CTX_A | candidate cCREs (posterior-scored)",
+        "CTX_B | mean ATAC 150-bp Tn5 pileup (background-TMM)",
         "CTX_B | mean H3K27ac fragment coverage (background-TMM)",
         "CTX_B | context DHSs (master coordinates)",
-        "CTX_B | active cCREs",
+        "CTX_B | candidate cCREs (posterior-scored)",
     ]
 
 
@@ -193,8 +196,8 @@ def test_all_contexts_catalog_session_requires_complete_context_mappings(tmp_pat
                 for context in ("ctx_a", "ctx_b")
             },
             master_dhs_bed=tmp_path / "master.bed",
-            active_elements_beds={
-                context: tmp_path / f"{context}.active.bed"
+            element_beds={
+                context: tmp_path / f"{context}.elements.bed"
                 for context in ("ctx_a", "ctx_b")
             },
             output=tmp_path / "all-contexts.igv.xml",

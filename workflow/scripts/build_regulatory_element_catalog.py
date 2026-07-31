@@ -10,6 +10,7 @@ metrics = build_regulatory_catalog(
     summit_bed=Path(str(snakemake.input.summits)),
     context_matrix=Path(str(snakemake.input.context_matrix)),
     tss_bed=Path(str(snakemake.input.tss)),
+    blacklist_bed=Path(str(snakemake.input.blacklist)),
     window_table=Path(str(snakemake.input.windows)),
     window_count_paths={
         str(library): Path(str(path))
@@ -20,9 +21,9 @@ metrics = build_regulatory_catalog(
     contexts=list(snakemake.params.contexts),
     output_catalog=Path(str(snakemake.output.catalog)),
     output_wide=Path(str(snakemake.output.wide)),
-    output_active_paths={
+    output_element_paths={
         str(context): Path(str(path))
-        for context, path in dict(snakemake.params.active_paths).items()
+        for context, path in dict(snakemake.params.element_paths).items()
     },
     output_mixtures=Path(str(snakemake.output.mixtures)),
     output_summary=Path(str(snakemake.output.summary)),

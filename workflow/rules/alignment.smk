@@ -72,8 +72,7 @@ rule merge_and_mark_duplicates:
 
 rule filter_bam:
     input:
-        bam=f"{WORK_ROOT}/alignment/{{sample}}.marked.bam",
-        blacklist=str(REFERENCE["blacklist_bed"])
+        bam=f"{WORK_ROOT}/alignment/{{sample}}.marked.bam"
     output:
         bam=f"{RESULT_ROOT}/bam/{{sample}}.final.bam",
         bai=f"{RESULT_ROOT}/bam/{{sample}}.final.bam.bai"
@@ -100,7 +99,6 @@ rule filter_bam:
         samtools view -@ {threads} -h -q {params.mapq} {params.required} -F {params.excluded} {input.bam:q} \
           | awk -v mt={params.mitochondrial:q} -v remove_mt={params.remove_mito} 'BEGIN{{OFS="\t"}} /^@/ {{print; next}} remove_mt == 0 || $3 != mt {{print}}' \
           | samtools view -u - \
-          | bedtools intersect -v -abam stdin -b {input.blacklist:q} \
           | samtools sort -@ {threads} -o {output.bam:q} - 2> {log:q}
         samtools index -@ {threads} {output.bam:q} {output.bai:q}
         samtools quickcheck -v {output.bam:q}

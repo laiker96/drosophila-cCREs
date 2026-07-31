@@ -10,7 +10,8 @@ The production path has three phases separated by an explicit manual QC gate:
 2. review every library, then construct the master DHS set from accepted ATAC
    libraries only;
 3. quantify accepted ATAC/H3K27ac BAMs, normalize with background TMM, fit the
-   guarded H3K27ac mixtures, and write regulatory-element catalogs.
+   guarded H3K27ac mixtures, and write posterior- and blacklist-annotated
+   regulatory-element catalogs.
 
 There is no external regulatory-element reference or quantile-normalization
 branch. Strict reuse of a checksummed master-DHS bundle is supported.
@@ -130,11 +131,11 @@ two biological ATAC libraries per context.
 | Stage | Completed result |
 |---|---|
 | `trimming` | raw/trimmed FastQC, Cutadapt metrics, trimmed FASTQs |
-| `alignment` | filtered final BAM/BAI, alignment QC, final-BAM manifest |
+| `alignment` | quality-filtered, blacklist-retaining final BAM/BAI, alignment QC, final-BAM manifest |
 | `qc` | peaks, FRiP and assay QC, MultiQC |
 | `master` | replicate-supported context peaks and master DHS bundle/manifest |
 | `quantification` | raw, CPM/kb, background-TMM factors and normalized master-element signals |
-| `catalog` | max-window H3K27ac mixtures, long/wide catalogs, active sets, BED/BigWig tracks, and IGV sessions |
+| `catalog` | max-window H3K27ac mixtures, annotated long/wide/context tables, BED/BigWig tracks, and IGV sessions |
 | `report` | integrated, checksummed HTML/PDF QC report spanning inputs through the catalog |
 
 Snakemake owns completeness. Re-running the same `project`/`run_id` resumes
@@ -215,7 +216,9 @@ This first run:
 
 1. downloads immutable FASTQs with checksums and resume state;
 2. runs lane-level QC/trimming/alignment;
-3. merges technical runs by `library_id`, marks duplicates, and filters BAMs;
+3. merges technical runs by `library_id`, marks duplicates, and applies MAPQ,
+   alignment-flag, duplicate, and mitochondrial filters while retaining reads
+   that overlap the reference blacklist;
 4. calls replicate peaks and produces FRiP, ATAC TSS/fragment, H3K27ac
    cross-correlation, and MultiQC outputs;
 5. exports a final-BAM manifest whose new libraries are `pending_review` and a
@@ -231,6 +234,15 @@ phantompeakqualtools fragment-shift estimates, NSC, RSC, and quality tag.
 For paired-end data, FRiP counts one valid same-chromosome fragment per read
 pair in the denominator and one fragment overlapping any called peak in the
 numerator. For single-end data, the corresponding unit is one filtered read.
+
+Newly generated manifests use the `short-read-processing-final-v2` contract.
+Unlike v1, v2 does not remove blacklist-overlapping alignments. The catalog
+instead annotates each master DHS with `blacklist_overlap`,
+`blacklist_overlap_bp`, and `blacklist_overlap_fraction`. A v1 BAM cannot be
+converted into a true v2 BAM because the removed reads cannot be recovered;
+rebuild from the accession/FASTQ phase when adopting this policy.
+Master-bundle manifests also record their input filtering contract, preventing
+an older blacklist-filtered master from being silently combined with v2 BAMs.
 
 Copy the generated table outside the Snakemake result namespace, then edit only
 the final three review columns. Set `qc_decision` to `pass` or `fail`; a failed
@@ -400,10 +412,31 @@ Distance is measured from the master DHS summit to the nearest reference TSS:
 | `distal_enhancer_like` | >1,000 bp |
 | `unclassified_no_tss_on_contig` | no TSS on that contig |
 
-An active element is an open DHS assigned to the high H3K27ac component. This
-binary annotation is intended for an encyclopedia-style catalog; continuous
-ATAC, H3K27ac, and combined activity values remain the appropriate inputs for
-ABC scoring.
+For positive H3K27ac signal at a context-member DHS,
+`mixture_high_posterior_probability` is the fitted probability of membership
+in the high component. `mixture_component` and `mixture_high_posterior` are
+derived at 0.5 for summaries, but they do not filter the catalog or the
+per-context element exports. Zero-signal members have a blank posterior and
+`activity_state=accessible_no_h3k27ac_signal`.
+
+The long and wide tables also retain the absolute summit-to-nearest-TSS
+distance and the blacklist overlap annotations. Users can therefore choose a
+posterior threshold, a TSS-distance definition, and a blacklist-overlap policy
+for each downstream analysis rather than accepting a fixed enhancer list.
+
+For example, this writes context-member, distal candidates with posterior at
+least 0.9 and no blacklist overlap while discovering columns from the header:
+
+```bash
+gzip -dc results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz |
+awk -F '\t' 'BEGIN {OFS=FS}
+NR==1 {for (i=1; i<=NF; i++) column[$i]=i; print; next}
+$(column["context_membership"]) == 1 &&
+$(column["mixture_high_posterior_probability"]) != "" &&
+$(column["mixture_high_posterior_probability"]) >= 0.9 &&
+$(column["nearest_tss_distance_bp"]) > 1000 &&
+$(column["blacklist_overlap"]) == 0' > distal.posterior-0.9.tsv
+```
 
 ## Browser tracks and IGV sessions
 
@@ -411,23 +444,31 @@ The catalog stage creates a self-contained visualization bundle for every
 context. The context DHS BED uses the master-DHS coordinates for rows with
 `context_matrix` membership equal to one; it is therefore directly aligned
 with the catalog rather than reproducing the wider upstream pooled-peak
-boundaries. The active-element BED is BED9: the thick one-base interval marks
-the representative summit, the score is the high-component posterior scaled
-to 0--1,000, and item RGB distinguishes promoter-associated, proximal,
-distal, and unclassified elements. Its name records any mixture-guardrail
-warning.
+boundaries. The context-element BED retains every member. It is BED9: the
+thick one-base interval marks the representative summit, the score is the
+high-component posterior scaled to 0--1,000 (zero when the posterior is not
+applicable), and item RGB distinguishes the TSS-distance classes. Blacklist
+overlaps are black. The name records the exact TSS distance, posterior,
+mixture component, guardrail status, and blacklist-overlap status.
 
 For each assay and context, every accepted library is first scaled by
 `1e6 / effective_library_size` using the same assay-specific background-TMM
-factor as the activity table. The context BigWig is the arithmetic mean of
-those basewise tracks. ATAC values represent Tn5 insertion coverage;
-H3K27ac values represent inferred fragment coverage. Consequently the browser
-signals and quantitative catalog share the same library selection and
-normalization, while retaining their assay-specific unit semantics.
+factor as the activity table. For browser display, each shifted one-base ATAC
+insertion is expanded to a centered, chromosome-clipped 150-bp interval before
+coverage is calculated. The context BigWig is the arithmetic mean of those
+scaled library pileups. This is denser than displaying isolated cut sites while
+preserving the insertion-based library definition and the 150-bp representation
+used by MACS3. H3K27ac BigWigs remain mean normalized fragment coverage.
+Temporary per-library bedGraphs are removed; only the context BigWig and its
+JSON sidecar are retained. The resolved activity configuration records
+`atac_browser_extension_bp: 150`, so the representation participates in the
+run's semantic digest.
 
 Opening `activity/catalog/igv/<context>.xml` loads five relative, portable
-resources: the global master-DHS registry first, followed by mean ATAC, mean
-H3K27ac, context DHSs, and active elements. Opening
+resources: the global master-DHS registry first, followed by the mean ATAC
+150-bp pileup, mean H3K27ac, context DHSs, and posterior-scored candidate
+elements. With the genome gene track enabled, the master registry is the first
+custom track immediately below the gene/GTF annotation. Opening
 `activity/catalog/all-contexts.igv.xml` loads the master registry once plus
 those four context-specific tracks for every context, so the complete atlas can
 be compared in one session. Keep the session XML, `bed/`, and `tracks/`
@@ -444,9 +485,10 @@ python src/build_igv_session.py results/<project>/<master-run>/atac \
   --output results/<project>/igv/pipeline-results.xml --genome dm6
 ```
 
-The master registry is the first track. It is followed, for each context, by
-the background-TMM mean ATAC Tn5-insertion signal, pooled ATAC qpois signal,
-background-TMM mean H3K27ac fragment coverage, context DHSs, and active cCREs.
+The master registry is the first custom track immediately below IGV's
+gene/GTF annotation. It is followed, for each context, by the background-TMM
+mean 150-bp ATAC Tn5 pileup, pooled ATAC qpois signal, background-TMM mean
+H3K27ac fragment coverage, context DHSs, and posterior-scored candidate cCREs.
 The raw pooled MACS3 ATAC pileup is deliberately omitted because it is
 unscaled and depth-dependent; it remains an auditable master-calling output.
 Replicate H3K27ac signal, H3K27ac peaks, and intermediate ATAC candidates are
@@ -484,7 +526,7 @@ Catalog:
 ```text
 results/<project>/<run_id>/activity/catalog/master_elements_long.tsv.gz
 results/<project>/<run_id>/activity/catalog/master_elements_wide.tsv.gz
-results/<project>/<run_id>/activity/catalog/active/<context>.active_elements.tsv.gz
+results/<project>/<run_id>/activity/catalog/elements/<context>.elements.tsv.gz
 results/<project>/<run_id>/activity/catalog/mixture_models.tsv
 results/<project>/<run_id>/activity/catalog/regulatory_element_summary.tsv
 results/<project>/<run_id>/activity/catalog/h3k27ac_mixture_distributions.svg
@@ -492,7 +534,7 @@ results/<project>/<run_id>/activity/catalog/regulatory_element_metrics.json
 results/<project>/<run_id>/activity/catalog/regulatory_element_provenance.json
 results/<project>/<run_id>/activity/catalog/bed/master_dhs.bed
 results/<project>/<run_id>/activity/catalog/bed/<context>.dhs.bed
-results/<project>/<run_id>/activity/catalog/bed/<context>.active_elements.bed
+results/<project>/<run_id>/activity/catalog/bed/<context>.elements.bed
 results/<project>/<run_id>/activity/catalog/bed/bed_tracks.json
 results/<project>/<run_id>/activity/catalog/tracks/<context>.atac.mean.background_tmm.bw
 results/<project>/<run_id>/activity/catalog/tracks/<context>.h3k27ac.mean.background_tmm.bw
@@ -511,14 +553,15 @@ results/<project>/<run_id>/activity/report/integrated_qc_report.json
 
 The report includes frozen input and output inventories with checksums, BAM QC
 and FRiP statistics, H3K27ac cross-correlation, ATAC TSS plots, master-registry
-statistics, TMM factors, active-element TSS classes, mixture fits and exact
+statistics, TMM factors, high-component TSS classes, mixture fits and exact
 guardrail warnings. The JSON sidecar records every report input and output hash.
 
 The long table contains one master-element/context row and reports both mixture
-components. The wide table contains one row per master element with
-context-prefixed membership, signal, mixture, warning, and activity columns.
-Each per-context active file contains the high-component rows, including
-unsupported-fit assignments with their explicit warning fields. The BED and
+components, continuous posterior, TSS distance, and blacklist overlap. The
+wide table contains one row per master element with context-prefixed
+membership, signal, mixture, warning, and activity columns plus the shared TSS
+and blacklist annotations. Each per-context element file contains every
+context member, including low-component and zero-signal rows. The BED and
 mean-signal sidecars are also explicit report inputs, so their paths and
 checksums appear in the integrated audit trail.
 
