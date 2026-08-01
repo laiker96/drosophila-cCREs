@@ -107,6 +107,26 @@ PACKED_ORCHESTRATION="$BUNDLE_ROOT/orchestration.tar.gz"
 PACKED_CONDA_ENVS="$BUNDLE_ROOT/conda-envs"
 BUNDLE_CHECKSUMS="$BUNDLE_ROOT/offline-bundle.sha256"
 
+finalize_packed_prefix() {
+    local target="$1"
+    local ready_file="$2"
+    local unpack_python
+    if [[ ! -f "$target/bin/conda-unpack" ]]; then
+        echo "Packed environment lacks conda-unpack: $target" >&2
+        exit 2
+    fi
+    if [[ -x "$target/bin/python" ]]; then
+        unpack_python="$target/bin/python"
+    elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+        unpack_python="$REPO_ROOT/.venv/bin/python"
+    else
+        echo "No Python interpreter is available to finalize: $target" >&2
+        exit 2
+    fi
+    "$unpack_python" "$target/bin/conda-unpack"
+    touch "$ready_file"
+}
+
 install_packed_prefix() {
     local archive="$1"
     local target="$2"
@@ -118,12 +138,7 @@ install_packed_prefix() {
             return
         fi
         echo "Finalizing an unpacked environment: $target"
-        if [[ ! -x "$target/bin/python" ]] || [[ ! -f "$target/bin/conda-unpack" ]]; then
-            echo "Incomplete packed environment cannot be finalized: $target" >&2
-            exit 2
-        fi
-        "$target/bin/python" "$target/bin/conda-unpack"
-        touch "$ready_file"
+        finalize_packed_prefix "$target" "$ready_file"
         return
     fi
     if [[ -e "$target" ]]; then
@@ -141,10 +156,7 @@ install_packed_prefix() {
         exit 2
     fi
     mv "$temporary" "$target"
-    if [[ -f "$target/bin/conda-unpack" ]]; then
-        "$target/bin/python" "$target/bin/conda-unpack"
-    fi
-    touch "$ready_file"
+    finalize_packed_prefix "$target" "$ready_file"
 }
 
 echo "[$(date --iso-8601=seconds)] host=$HOST_SHORT job=$SLURM_JOB_ID"
