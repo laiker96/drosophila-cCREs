@@ -60,7 +60,7 @@ raise_open_file_limit() {
     fi
 }
 
-for command_name in curl flock install tar; do
+for command_name in curl flock install sha256sum tar; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Required bootstrap command is unavailable: $command_name" >&2
         exit 127
@@ -101,11 +101,59 @@ export CONDA_ENVS_PATH="$REPO_ROOT/.micromamba/envs"
 export CONDARC="$REPO_ROOT/.condarc"
 export XDG_CACHE_HOME="$REPO_ROOT/.cache"
 MICROMAMBA="$REPO_ROOT/.micromamba/bin/micromamba"
+BUNDLE_ROOT="$REPO_ROOT/.cluster-bootstrap/atlas-offline"
+BUNDLED_MICROMAMBA="$BUNDLE_ROOT/tool/bin/micromamba"
+PACKED_ORCHESTRATION="$BUNDLE_ROOT/orchestration.tar.gz"
+PACKED_CONDA_ENVS="$BUNDLE_ROOT/conda-envs"
+BUNDLE_CHECKSUMS="$BUNDLE_ROOT/offline-bundle.sha256"
+
+install_packed_prefix() {
+    local archive="$1"
+    local target="$2"
+    local ready_file="$3"
+    local temporary="${target}.tmp-${SLURM_JOB_ID}"
+    if [[ -f "$ready_file" ]] && [[ -d "$target/conda-meta" ]]; then
+        echo "Packed environment already ready: $target"
+        return
+    fi
+    if [[ -e "$target" ]]; then
+        echo "Incomplete packed environment already exists: $target" >&2
+        exit 2
+    fi
+    if [[ -e "$temporary" ]]; then
+        echo "Stale staging path exists: $temporary" >&2
+        exit 2
+    fi
+    mkdir -p "$temporary"
+    tar -xzf "$archive" -C "$temporary"
+    if [[ ! -d "$temporary/conda-meta" ]]; then
+        echo "Packed environment lacks conda-meta: $archive" >&2
+        exit 2
+    fi
+    mv "$temporary" "$target"
+    if [[ -x "$target/bin/conda-unpack" ]]; then
+        env PATH="$target/bin:$PATH" "$target/bin/conda-unpack"
+    fi
+    touch "$ready_file"
+}
 
 echo "[$(date --iso-8601=seconds)] host=$HOST_SHORT job=$SLURM_JOB_ID"
 echo "repo=$REPO_ROOT"
 
-if [[ ! -x "$MICROMAMBA" ]]; then
+OFFLINE_BUNDLE=false
+if [[ -f "$BUNDLE_CHECKSUMS" ]] && [[ -f "$PACKED_ORCHESTRATION" ]]; then
+    echo "Verifying the staged offline environment bundle."
+    (
+        cd "$BUNDLE_ROOT"
+        sha256sum --check "$(basename "$BUNDLE_CHECKSUMS")"
+    )
+    OFFLINE_BUNDLE=true
+    export CONDA_OFFLINE=true
+fi
+
+if [[ ! -x "$MICROMAMBA" ]] && [[ -x "$BUNDLED_MICROMAMBA" ]]; then
+    install -m 0755 "$BUNDLED_MICROMAMBA" "$MICROMAMBA"
+elif [[ ! -x "$MICROMAMBA" ]] && [[ "$OFFLINE_BUNDLE" != true ]]; then
     echo "Installing Micromamba inside the repository."
     curl --fail --location --retry 5 \
         https://micro.mamba.pm/api/micromamba/linux-64/latest \
@@ -117,7 +165,15 @@ if [[ -e "$REPO_ROOT/.venv" ]] && [[ ! -d "$REPO_ROOT/.venv/conda-meta" ]]; then
     echo "$REPO_ROOT/.venv exists but is not a Conda environment; move it aside first." >&2
     exit 2
 fi
-if [[ -d "$REPO_ROOT/.venv/conda-meta" ]]; then
+if [[ "$OFFLINE_BUNDLE" == true ]] && [[ ! -d "$REPO_ROOT/.venv/conda-meta" ]]; then
+    echo "Installing the packed orchestration environment."
+    install_packed_prefix \
+        "$PACKED_ORCHESTRATION" \
+        "$REPO_ROOT/.venv" \
+        "$REPO_ROOT/.venv/.atlas_packed_ready"
+elif [[ "$OFFLINE_BUNDLE" == true ]]; then
+    echo "Reusing the existing packed orchestration environment."
+elif [[ -d "$REPO_ROOT/.venv/conda-meta" ]]; then
     echo "Updating the repository orchestration environment."
     "$MICROMAMBA" install --yes --prefix "$REPO_ROOT/.venv" \
         --file "$REPO_ROOT/environment.yml" --channel-priority strict
@@ -125,6 +181,19 @@ else
     echo "Creating the repository orchestration environment."
     "$MICROMAMBA" create --yes --prefix "$REPO_ROOT/.venv" \
         --file "$REPO_ROOT/environment.yml" --channel-priority strict
+fi
+
+if [[ "$OFFLINE_BUNDLE" == true ]]; then
+    if ! compgen -G "$PACKED_CONDA_ENVS/*.tar.gz" >/dev/null; then
+        echo "Offline bundle contains no packed Snakemake environments." >&2
+        exit 2
+    fi
+    for archive in "$PACKED_CONDA_ENVS"/*.tar.gz; do
+        env_name="$(basename "$archive" .tar.gz)"
+        target="$REPO_ROOT/.snakemake/conda/$env_name"
+        ready_file="$REPO_ROOT/.snakemake/conda/${env_name}.env_setup_done"
+        install_packed_prefix "$archive" "$target" "$ready_file"
+    done
 fi
 
 mapfile -t RULE_ENVS < <(find "$REPO_ROOT/workflow/envs" -maxdepth 1 \
