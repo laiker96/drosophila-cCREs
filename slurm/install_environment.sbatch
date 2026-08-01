@@ -60,7 +60,7 @@ raise_open_file_limit() {
     fi
 }
 
-for command_name in curl flock install sha256sum tar; do
+for command_name in awk curl flock install sha256sum tar; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Required bootstrap command is unavailable: $command_name" >&2
         exit 127
@@ -105,6 +105,7 @@ BUNDLE_ROOT="$REPO_ROOT/.cluster-bootstrap/atlas-offline"
 BUNDLED_MICROMAMBA="$BUNDLE_ROOT/tool/bin/micromamba"
 PACKED_ORCHESTRATION="$BUNDLE_ROOT/orchestration.tar.gz"
 PACKED_CONDA_ENVS="$BUNDLE_ROOT/conda-envs"
+PACKED_ENV_MAP="$BUNDLE_ROOT/conda-env-map.tsv"
 BUNDLE_CHECKSUMS="$BUNDLE_ROOT/offline-bundle.sha256"
 
 finalize_packed_prefix() {
@@ -206,19 +207,6 @@ else
 fi
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
-if [[ "$OFFLINE_BUNDLE" == true ]]; then
-    if ! compgen -G "$PACKED_CONDA_ENVS/*.tar.gz" >/dev/null; then
-        echo "Offline bundle contains no packed Snakemake environments." >&2
-        exit 2
-    fi
-    for archive in "$PACKED_CONDA_ENVS"/*.tar.gz; do
-        env_name="$(basename "$archive" .tar.gz)"
-        target="$REPO_ROOT/.snakemake/conda/$env_name"
-        ready_file="$REPO_ROOT/.snakemake/conda/${env_name}.env_setup_done"
-        install_packed_prefix "$archive" "$target" "$ready_file"
-    done
-fi
-
 mapfile -t RULE_ENVS < <(find "$REPO_ROOT/workflow/envs" -maxdepth 1 \
     -type f -name '*.yaml' -print | sort)
 if (( ${#RULE_ENVS[@]} == 0 )); then
@@ -240,6 +228,83 @@ ENV_SNAKEFILE="$JOB_TMP/install-rule-envs.smk"
         printf '    shell: "touch {output}"\n'
     done
 } > "$ENV_SNAKEFILE"
+
+if [[ "$OFFLINE_BUNDLE" == true ]]; then
+    if [[ ! -f "$PACKED_ENV_MAP" ]]; then
+        echo "Offline bundle lacks its Snakemake environment map: $PACKED_ENV_MAP" >&2
+        exit 2
+    fi
+    declare -A PACKED_ARCHIVE_BY_ENV=()
+    while IFS=$'\t' read -r mapped_env mapped_archive extra; do
+        if [[ -z "$mapped_env" ]] || [[ -z "$mapped_archive" ]] || [[ -n "$extra" ]]; then
+            echo "Invalid offline environment-map row: $mapped_env $mapped_archive $extra" >&2
+            exit 2
+        fi
+        if [[ -n "${PACKED_ARCHIVE_BY_ENV[$mapped_env]+present}" ]]; then
+            echo "Duplicate offline environment mapping: $mapped_env" >&2
+            exit 2
+        fi
+        if [[ "$mapped_env" == */* ]]; then
+            echo "Offline environment-map keys must be basenames: $mapped_env" >&2
+            exit 2
+        fi
+        case "$mapped_archive" in
+            conda-envs/*/*.tar.gz)
+                echo "Invalid packed environment path: $mapped_archive" >&2
+                exit 2
+                ;;
+            conda-envs/*.tar.gz) ;;
+            *)
+                echo "Invalid packed environment path: $mapped_archive" >&2
+                exit 2
+                ;;
+        esac
+        PACKED_ARCHIVE_BY_ENV["$mapped_env"]="$mapped_archive"
+    done < "$PACKED_ENV_MAP"
+
+    ENV_LIST="$JOB_TMP/conda-envs.tsv"
+    "$REPO_ROOT/.venv/bin/snakemake" \
+        --snakefile "$ENV_SNAKEFILE" \
+        --cores 1 \
+        --software-deployment-method conda \
+        --conda-prefix "$REPO_ROOT/.snakemake/conda" \
+        --conda-frontend conda \
+        --list-conda-envs \
+        > "$ENV_LIST"
+
+    installed_env_count=0
+    while IFS=$'\t' read -r env_path target; do
+        env_name="$(basename "$env_path")"
+        mapped_archive="${PACKED_ARCHIVE_BY_ENV[$env_name]:-}"
+        if [[ -z "$mapped_archive" ]]; then
+            echo "No packed environment mapped for $env_name" >&2
+            exit 2
+        fi
+        archive="$BUNDLE_ROOT/$mapped_archive"
+        if [[ ! -f "$archive" ]]; then
+            echo "Mapped packed environment does not exist: $archive" >&2
+            exit 2
+        fi
+        if [[ "$target" != /* ]]; then
+            target="$REPO_ROOT/$target"
+        fi
+        case "$target" in
+            "$REPO_ROOT/.snakemake/conda/"*) ;;
+            *)
+                echo "Snakemake environment target is outside the repository: $target" >&2
+                exit 2
+                ;;
+        esac
+        ready_file="${target}.env_setup_done"
+        install_packed_prefix "$archive" "$target" "$ready_file"
+        install -m 0644 "$env_path" "${target}.yaml"
+        (( installed_env_count += 1 ))
+    done < <(awk -F '\t' 'NR > 1 {print $1 "\t" $3}' "$ENV_LIST")
+    if (( installed_env_count != ${#RULE_ENVS[@]} )); then
+        echo "Expected ${#RULE_ENVS[@]} packed environments, installed $installed_env_count" >&2
+        exit 2
+    fi
+fi
 
 echo "Pre-creating ${#RULE_ENVS[@]} Snakemake rule environments."
 "$REPO_ROOT/.venv/bin/snakemake" \
