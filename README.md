@@ -222,9 +222,13 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
 
 This first run:
 
-1. downloads immutable FASTQs with checksums and resume state; the default
-   `--backend auto` keeps successful ENA files and converts only ENA-failed
-   runs through SRA Toolkit, while `--backend ena` disables that fallback;
+1. downloads immutable FASTQs with checksums and resume state; after aria2
+   validates an ENA checksum, an atomic `.verified.json` sidecar records the
+   expected checksum and file metadata. A restart skips only unchanged files
+   whose record still matches, and revalidates files with missing or stale
+   records. The default `--backend auto` keeps successful ENA files and
+   converts only ENA-failed runs through SRA Toolkit, while `--backend ena`
+   disables that fallback;
 2. runs lane-level QC/trimming/alignment;
 3. merges technical runs by `library_id`, marks duplicates, and applies MAPQ,
    alignment-flag, duplicate, and mitochondrial filters while retaining reads

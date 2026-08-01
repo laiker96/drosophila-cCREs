@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +34,96 @@ class _EnaDownloadError(AcquisitionError):
     def __init__(self, message: str, failed_files: list[FilePlan]) -> None:
         super().__init__(message)
         self.failed_files = failed_files
+
+
+_VERIFICATION_SCHEMA_VERSION = 1
+
+
+def _verification_path(item: FilePlan) -> Path:
+    return item.path.with_name(item.path.name + ".verified.json")
+
+
+def _verified_ena_file(item: FilePlan) -> bool:
+    """Return whether an unchanged FASTQ has a matching checksum record."""
+
+    if not item.md5 or not item.path.is_file():
+        return False
+    try:
+        stat = item.path.stat()
+        record = json.loads(_verification_path(item).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    return (
+        record.get("schema_version") == _VERIFICATION_SCHEMA_VERSION
+        and record.get("algorithm") == "md5"
+        and record.get("expected_md5") == item.md5.lower()
+        and record.get("expected_size_bytes") == item.size_bytes
+        and record.get("observed_size_bytes") == stat.st_size
+        and record.get("ctime_ns") == stat.st_ctime_ns
+        and record.get("mtime_ns") == stat.st_mtime_ns
+    )
+
+
+def _record_ena_verification(item: FilePlan) -> None:
+    """Atomically record checksum validation already performed by aria2."""
+
+    if not item.md5:
+        return
+    stat = item.path.stat()
+    record = {
+        "algorithm": "md5",
+        "ctime_ns": stat.st_ctime_ns,
+        "expected_md5": item.md5.lower(),
+        "expected_size_bytes": item.size_bytes,
+        "mtime_ns": stat.st_mtime_ns,
+        "observed_size_bytes": stat.st_size,
+        "schema_version": _VERIFICATION_SCHEMA_VERSION,
+    }
+    marker = _verification_path(item)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=marker.name + ".",
+            suffix=".tmp",
+            dir=marker.parent,
+            delete=False,
+        ) as handle:
+            json.dump(record, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_path = Path(handle.name)
+        os.replace(temporary_path, marker)
+    finally:
+        if temporary_path:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _record_completed_ena_files(
+    files: Iterable[FilePlan], failed_files: Iterable[FilePlan]
+) -> None:
+    failed_paths = {item.path for item in failed_files}
+    recorded: set[Path] = set()
+    for item in files:
+        if item.path in failed_paths or item.path in recorded:
+            continue
+        recorded.add(item.path)
+        control = item.path.with_name(item.path.name + ".aria2")
+        if (
+            item.path.is_file()
+            and not control.exists()
+            and item.path.stat().st_size > 0
+            and (
+                item.size_bytes is None
+                or item.path.stat().st_size == item.size_bytes
+            )
+        ):
+            _record_ena_verification(item)
 
 
 def _require_executable(name: str) -> str:
@@ -172,18 +263,22 @@ def _run_aria2_with_checksum_retries(
         pending = _pending_ena_files(
             files, verify_checksums=completed.returncode == 32
         )
-        if completed.returncode == 0 and not pending:
+        session_failures = (
+            _failed_ena_files_from_session(session_path, files)
+            if session_path
+            else []
+        )
+        failed_paths = {item.path for item in pending + session_failures}
+        failed_files = [item for item in files if item.path in failed_paths]
+        if completed.returncode in {0, 32} or session_failures:
+            _record_completed_ena_files(files, failed_files)
+        if completed.returncode == 0 and not failed_files:
             return
         if completed.returncode not in {0, 32} or attempt == checksum_retries:
-            failed_files = (
-                _failed_ena_files_from_session(session_path, files)
-                if session_path
-                else []
-            )
             raise _EnaDownloadError(
                 f"aria2c FASTQ download or post-download validation failed with exit code "
                 f"{completed.returncode} after {attempt + 1} attempt(s)",
-                failed_files or pending,
+                failed_files,
             )
         retry_files = pending or files
         input_path.write_text(_aria2_input(retry_files), encoding="utf-8")
@@ -197,12 +292,25 @@ def _run_aria2_with_checksum_retries(
 def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
     if not plans:
         return
-    aria2c = _require_executable("aria2c")
-    files = [item for plan in plans for item in plan.files]
-    if not files:
+    all_files = [item for plan in plans for item in plan.files]
+    if not all_files:
         raise AcquisitionError("ENA download was selected but no FASTQ files were resolved")
 
-    _discard_untracked_partial_files(files)
+    _discard_untracked_partial_files(all_files)
+    files = [item for item in all_files if not _verified_ena_file(item)]
+    reused = len(all_files) - len(files)
+    if reused:
+        print(
+            f"Reusing {reused} unchanged, checksum-verified ENA FASTQ file(s)",
+            flush=True,
+        )
+    attempted_paths = {item.path for item in files}
+    if not files:
+        for plan in plans:
+            plan.status = "existing"
+        return
+
+    aria2c = _require_executable("aria2c")
     input_text = _aria2_input(files)
     output_root = Path(os.path.commonpath([str(plan.run_dir.parent) for plan in plans]))
     output_root.mkdir(parents=True, exist_ok=True)
@@ -257,11 +365,19 @@ def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
         if session_path:
             session_path.unlink(missing_ok=True)
 
-    missing = [str(item.path) for item in files if not item.path.is_file() or item.path.stat().st_size == 0]
+    missing = [
+        str(item.path)
+        for item in all_files
+        if not item.path.is_file() or item.path.stat().st_size == 0
+    ]
     if missing:
         raise AcquisitionError("Download completed without expected FASTQ files:\n  " + "\n  ".join(missing))
     for plan in plans:
-        plan.status = "downloaded"
+        plan.status = (
+            "downloaded"
+            if any(item.path in attempted_paths for item in plan.files)
+            else "existing"
+        )
 
 
 def _gzip_fastq(path: Path, *, threads: int) -> Path:

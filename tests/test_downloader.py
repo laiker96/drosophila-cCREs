@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import os
 import subprocess
 
 import pytest
@@ -9,7 +10,10 @@ from short_read_processing.downloader import (
     DownloadOptions,
     _discard_untracked_partial_files,
     _download_one_sra,
+    _record_ena_verification,
     _run_aria2_with_checksum_retries,
+    _verified_ena_file,
+    download_ena,
     download_plans,
 )
 
@@ -21,6 +25,87 @@ def _file_plan(path: Path, size: int) -> FilePlan:
         size_bytes=size,
         path=path,
     )
+
+
+def _checksummed_file_plan(path: Path, content: bytes) -> FilePlan:
+    return FilePlan(
+        url=f"https://example.org/{path.name}",
+        md5=hashlib.md5(content).hexdigest(),
+        size_bytes=len(content),
+        path=path,
+    )
+
+
+def test_checksum_record_reuses_only_unchanged_fastq(tmp_path):
+    item = _checksummed_file_plan(tmp_path / "reads.fastq.gz", b"correct")
+    item.path.write_bytes(b"correct")
+
+    _record_ena_verification(item)
+
+    assert _verified_ena_file(item)
+    stat = item.path.stat()
+    os.utime(
+        item.path,
+        ns=(stat.st_atime_ns, stat.st_mtime_ns + 1),
+    )
+    assert not _verified_ena_file(item)
+
+
+def test_download_ena_queues_only_unverified_fastqs(tmp_path, monkeypatch):
+    existing_item = _checksummed_file_plan(
+        tmp_path / "existing" / "existing.fastq.gz", b"existing"
+    )
+    pending_item = _checksummed_file_plan(
+        tmp_path / "pending" / "pending.fastq.gz", b"pending"
+    )
+    existing_item.path.parent.mkdir(parents=True)
+    pending_item.path.parent.mkdir(parents=True)
+    existing_item.path.write_bytes(b"existing")
+    pending_item.path.write_bytes(b"pending")
+    _record_ena_verification(existing_item)
+    plans = [
+        RunPlan(
+            requested_accession="SRR111111",
+            experiment_accession="SRX999999",
+            run_accession="SRR111111",
+            library_layout="SINGLE",
+            backend="ena",
+            run_dir=existing_item.path.parent,
+            files=[existing_item],
+        ),
+        RunPlan(
+            requested_accession="SRR222222",
+            experiment_accession="SRX999999",
+            run_accession="SRR222222",
+            library_layout="SINGLE",
+            backend="ena",
+            run_dir=pending_item.path.parent,
+            files=[pending_item],
+        ),
+    ]
+
+    def fake_run(command):
+        input_option = next(
+            item for item in command if item.startswith("--input-file=")
+        )
+        input_text = Path(input_option.split("=", 1)[1]).read_text()
+        assert pending_item.path.name in input_text
+        assert existing_item.path.name not in input_text
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "short_read_processing.downloader._require_executable", lambda name: name
+    )
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
+
+    download_ena(
+        plans,
+        DownloadOptions(file_jobs=1, connections=1, sra_jobs=1, threads=1),
+    )
+
+    assert [plan.status for plan in plans] == ["existing", "downloaded"]
+    assert _verified_ena_file(existing_item)
+    assert _verified_ena_file(pending_item)
 
 
 def test_discards_size_mismatched_file_without_aria2_state(tmp_path):
@@ -100,6 +185,30 @@ def test_checksum_failure_stops_after_configured_retries(tmp_path, monkeypatch):
         )
 
     assert len(attempts) == 3
+
+
+def test_unexplained_aria_failure_does_not_record_fastq(tmp_path, monkeypatch):
+    item = _checksummed_file_plan(tmp_path / "complete.fastq.gz", b"complete")
+    item.path.write_bytes(b"complete")
+    input_path = tmp_path / "aria2-input.txt"
+    input_path.write_text("initial\n")
+    session_path = tmp_path / "aria2.session"
+
+    monkeypatch.setattr(
+        "short_read_processing.downloader.subprocess.run",
+        lambda command: subprocess.CompletedProcess(command, 22),
+    )
+
+    with pytest.raises(AcquisitionError, match="exit code 22"):
+        _run_aria2_with_checksum_retries(
+            ["aria2c", f"--input-file={input_path}"],
+            input_path=input_path,
+            files=[item],
+            checksum_retries=0,
+            session_path=session_path,
+        )
+
+    assert not _verified_ena_file(item)
 
 
 def test_checksum_retry_restarts_complete_size_corrupt_file(tmp_path, monkeypatch):
@@ -197,7 +306,9 @@ def test_auto_backend_falls_back_only_failed_ena_runs(tmp_path, monkeypatch):
         for item in plan.files:
             item.path.parent.mkdir(parents=True, exist_ok=True)
             item.path.write_bytes(b"ok")
+            item.md5 = hashlib.md5(b"ok").hexdigest()
 
+    failed_file = failed.files[0]
     failed_url = failed.files[0].url
 
     def fake_run(command):
@@ -243,6 +354,8 @@ def test_auto_backend_falls_back_only_failed_ena_runs(tmp_path, monkeypatch):
     assert received_sra == [direct_sra, failed]
     assert len(aria2_commands) == 1
     assert any(item.startswith("--save-session=") for item in aria2_commands[0])
+    assert all(_verified_ena_file(item) for item in complete.files)
+    assert not _verified_ena_file(failed_file)
 
 
 def test_explicit_ena_backend_does_not_fall_back(tmp_path, monkeypatch):

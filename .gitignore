@@ -22,6 +22,7 @@ references/
 *.aria2
 *.fastq
 *.fastq.gz
+*.fastq.gz.verified.json
 *.fq
 *.fq.gz
 *.bam

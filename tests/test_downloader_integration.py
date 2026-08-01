@@ -7,7 +7,12 @@ from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, Thread
 import pytest
 
 from short_read_processing.accessions import FilePlan, RunPlan
-from short_read_processing.downloader import DownloadOptions, download_ena, download_plans
+from short_read_processing.downloader import (
+    DownloadOptions,
+    _verified_ena_file,
+    download_ena,
+    download_plans,
+)
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -69,6 +74,14 @@ def test_real_aria2_download_and_checksum(tmp_path):
 
     assert destination.read_bytes() == payload
     assert plan.status == "downloaded"
+    assert _verified_ena_file(plan.files[0])
+
+    download_ena(
+        [plan],
+        DownloadOptions(file_jobs=2, connections=4, sra_jobs=1, threads=2),
+    )
+
+    assert plan.status == "existing"
 
 
 @pytest.mark.skipif(shutil.which("aria2c") is None, reason="aria2c is not installed")

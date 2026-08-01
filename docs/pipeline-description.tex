@@ -316,12 +316,19 @@ silent reuse of a similarly named but different reference.
 
 Run and experiment accessions are normalized and experiments are expanded to
 their constituent runs.  Acquisition produces immutable compressed FASTQs and
-a manifest with resolved paths, layout, and checksums.  Resume state is
-preserved, and SRA-derived files are promoted only after conversion and
-compression complete.  In the default \texttt{--backend auto} mode, runs whose
-direct ENA FASTQs fail transfer or integrity validation are converted with SRA
-Toolkit; ENA files from other runs that completed successfully remain in
-place.  Explicit \texttt{--backend ena} mode disables this failover.  The
+a manifest with resolved paths, layout, and checksums.  After \software{aria2}
+validates an ENA MD5, the downloader atomically writes a small
+\texttt{.verified.json} sidecar containing the expected checksum, expected and
+observed sizes, and file modification metadata.  A restart skips the expensive
+rehash only when that record still matches both the newly resolved ENA
+metadata and the current file; a missing or stale record sends the FASTQ back
+through \software{aria2} integrity validation.  Successfully validated files
+receive their records even when another URL in the same batch fails.
+SRA-derived files are promoted only after conversion and compression complete.
+In the default \texttt{--backend auto} mode, runs whose direct ENA FASTQs fail
+transfer or integrity validation are converted with SRA Toolkit; ENA files
+from other runs that completed successfully remain in place.  Explicit
+\texttt{--backend ena} mode disables this failover.  The
 \texttt{--skip-download} path reuses an existing manifest after validation.
 
 \subsection{Raw and trimmed read assessment}
