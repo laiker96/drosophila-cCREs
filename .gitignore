@@ -12,7 +12,6 @@ __pycache__/
 # Runtime logs, intermediate files, and results
 logs/
 results/
-slurm/
 work/
 tests/workflow_results/
 
