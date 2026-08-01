@@ -318,8 +318,11 @@ Run and experiment accessions are normalized and experiments are expanded to
 their constituent runs.  Acquisition produces immutable compressed FASTQs and
 a manifest with resolved paths, layout, and checksums.  Resume state is
 preserved, and SRA-derived files are promoted only after conversion and
-compression complete.  The \texttt{--skip-download} path reuses an existing
-manifest after validation.
+compression complete.  In the default \texttt{--backend auto} mode, runs whose
+direct ENA FASTQs fail transfer or integrity validation are converted with SRA
+Toolkit; ENA files from other runs that completed successfully remain in
+place.  Explicit \texttt{--backend ena} mode disables this failover.  The
+\texttt{--skip-download} path reuses an existing manifest after validation.
 
 \subsection{Raw and trimmed read assessment}
 

@@ -24,6 +24,7 @@ class DownloadOptions:
     threads: int
     keep_sra_cache: bool = False
     checksum_retries: int = 3
+    ena_fallback: bool = False
 
 
 def _require_executable(name: str) -> str:
@@ -90,8 +91,16 @@ def _discard_untracked_partial_files(files: Iterable[FilePlan]) -> list[Path]:
     return discarded
 
 
-def _pending_ena_files(files: Iterable[FilePlan]) -> list[FilePlan]:
-    """Return files that aria2 still marks incomplete after a failed pass."""
+def _pending_ena_files(
+    files: Iterable[FilePlan], *, verify_checksums: bool = False
+) -> list[FilePlan]:
+    """Return files that aria2 still marks incomplete after a failed pass.
+
+    Aria2 verifies every supplied checksum during a normal download.  Rehash
+    complete files here only after aria2 explicitly reports a checksum error;
+    doing so after an unrelated HTTP failure needlessly rereads the full data
+    set before the failed runs can use the SRA fallback.
+    """
 
     pending = []
     seen = set()
@@ -111,7 +120,7 @@ def _pending_ena_files(files: Iterable[FilePlan]) -> list[FilePlan]:
         ):
             pending.append(item)
             continue
-        if item.md5:
+        if verify_checksums and item.md5:
             digest = hashlib.md5()
             with item.path.open("rb") as handle:
                 while chunk := handle.read(1024 * 1024):
@@ -135,7 +144,9 @@ def _run_aria2_with_checksum_retries(
 ) -> None:
     for attempt in range(checksum_retries + 1):
         completed = subprocess.run(command)
-        pending = _pending_ena_files(files)
+        pending = _pending_ena_files(
+            files, verify_checksums=completed.returncode == 32
+        )
         if completed.returncode == 0 and not pending:
             return
         if completed.returncode not in {0, 32} or attempt == checksum_retries:
@@ -273,10 +284,11 @@ def _download_one_sra(plan: RunPlan, *, threads: int, keep_cache: bool) -> None:
         [prefetch, plan.run_accession, "--max-size", "u", "--output-directory", str(cache_dir)],
         label=f"prefetch {plan.run_accession}",
     )
+    prefetched_run = cache_dir / plan.run_accession
     _run(
         [
             fasterq_dump,
-            str(cache_dir),
+            str(prefetched_run),
             "--split-files",
             "--threads",
             str(max(1, threads)),
@@ -344,5 +356,30 @@ def download_sra(plans: list[RunPlan], options: DownloadOptions) -> None:
 def download_plans(plans: list[RunPlan], options: DownloadOptions) -> None:
     """Download ENA plans in one aria2 queue, then concurrent SRA fallbacks."""
 
-    download_ena([plan for plan in plans if plan.backend == "ena"], options)
-    download_sra([plan for plan in plans if plan.backend == "sra"], options)
+    ena_plans = [plan for plan in plans if plan.backend == "ena"]
+    sra_plans = [plan for plan in plans if plan.backend == "sra"]
+    try:
+        download_ena(ena_plans, options)
+    except AcquisitionError as error:
+        if not options.ena_fallback:
+            raise
+        failed_plans = [
+            plan for plan in ena_plans if _pending_ena_files(plan.files)
+        ]
+        if not failed_plans:
+            raise
+        failed_ids = ", ".join(plan.run_accession for plan in failed_plans)
+        print(
+            f"ENA FASTQ download failed for {failed_ids}; "
+            f"falling back to SRA Toolkit ({error})",
+            flush=True,
+        )
+        for plan in ena_plans:
+            if plan not in failed_plans:
+                plan.status = "downloaded"
+        for plan in failed_plans:
+            plan.backend = "sra"
+            plan.files = []
+        sra_plans.extend(failed_plans)
+
+    download_sra(sra_plans, options)

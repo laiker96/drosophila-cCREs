@@ -6,9 +6,11 @@ import pytest
 
 from short_read_processing.accessions import AcquisitionError, FilePlan, RunPlan
 from short_read_processing.downloader import (
+    DownloadOptions,
     _discard_untracked_partial_files,
     _download_one_sra,
     _run_aria2_with_checksum_retries,
+    download_plans,
 )
 
 
@@ -128,37 +130,121 @@ def test_checksum_retry_restarts_complete_size_corrupt_file(tmp_path, monkeypatc
     assert failed.path.read_bytes() == b"correct"
 
 
-def test_success_exit_still_rechecks_and_retries_corrupt_file(tmp_path, monkeypatch):
-    failed = FilePlan(
-        url="https://example.org/failed.fastq.gz",
+def test_success_exit_trusts_aria2_checksum_verification(tmp_path, monkeypatch):
+    verified = FilePlan(
+        url="https://example.org/verified.fastq.gz",
         md5=hashlib.md5(b"correct").hexdigest(),
         size_bytes=7,
-        path=tmp_path / "failed.fastq.gz",
+        path=tmp_path / "verified.fastq.gz",
     )
-    failed.path.write_bytes(b"corrupt")
+    verified.path.write_bytes(b"correct")
     input_path = tmp_path / "aria2-input.txt"
     input_path.write_text("initial\n")
     attempts = []
 
     def fake_run(command):
         attempts.append(command)
-        if len(attempts) == 1:
-            return subprocess.CompletedProcess(command, 0)
-        assert not failed.path.exists()
-        failed.path.write_bytes(b"correct")
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
 
+    def unexpected_rehash(*args, **kwargs):
+        raise AssertionError("successful aria2 downloads must not be rehashed")
+
+    monkeypatch.setattr("short_read_processing.downloader.hashlib.md5", unexpected_rehash)
+
     _run_aria2_with_checksum_retries(
         ["aria2c", f"--input-file={input_path}"],
         input_path=input_path,
-        files=[failed],
+        files=[verified],
         checksum_retries=1,
     )
 
-    assert len(attempts) == 2
-    assert failed.path.read_bytes() == b"correct"
+    assert len(attempts) == 1
+    assert verified.path.read_bytes() == b"correct"
+
+
+def _run_plan(tmp_path, run, *, backend="ena"):
+    run_dir = tmp_path / run
+    files = [
+        _file_plan(run_dir / f"{run}_1.fastq.gz", 2),
+        _file_plan(run_dir / f"{run}_2.fastq.gz", 2),
+    ]
+    return RunPlan(
+        requested_accession=run,
+        experiment_accession="SRX999999",
+        run_accession=run,
+        library_layout="PAIRED",
+        backend=backend,
+        run_dir=run_dir,
+        files=files if backend == "ena" else [],
+    )
+
+
+def test_auto_backend_falls_back_only_failed_ena_runs(tmp_path, monkeypatch):
+    complete = _run_plan(tmp_path, "SRR111111")
+    failed = _run_plan(tmp_path, "SRR222222")
+    direct_sra = _run_plan(tmp_path, "SRR333333", backend="sra")
+    received_sra = []
+
+    def fake_download_ena(plans, options):
+        for item in complete.files:
+            item.path.parent.mkdir(parents=True, exist_ok=True)
+            item.path.write_bytes(b"ok")
+        failed.files[1].path.parent.mkdir(parents=True, exist_ok=True)
+        failed.files[1].path.write_bytes(b"ok")
+        raise AcquisitionError("aria2c failed with exit code 22")
+
+    def fake_download_sra(plans, options):
+        received_sra.extend(plans)
+        for plan in plans:
+            plan.status = "downloaded"
+
+    monkeypatch.setattr("short_read_processing.downloader.download_ena", fake_download_ena)
+    monkeypatch.setattr("short_read_processing.downloader.download_sra", fake_download_sra)
+
+    download_plans(
+        [complete, failed, direct_sra],
+        DownloadOptions(
+            file_jobs=1,
+            connections=1,
+            sra_jobs=1,
+            threads=1,
+            ena_fallback=True,
+        ),
+    )
+
+    assert complete.backend == "ena"
+    assert complete.status == "downloaded"
+    assert failed.backend == "sra"
+    assert failed.files == []
+    assert received_sra == [direct_sra, failed]
+
+
+def test_explicit_ena_backend_does_not_fall_back(tmp_path, monkeypatch):
+    failed = _run_plan(tmp_path, "SRR222222")
+
+    def fake_download_ena(plans, options):
+        raise AcquisitionError("aria2c failed with exit code 22")
+
+    def unexpected_download_sra(plans, options):
+        raise AssertionError("explicit ENA mode must not use SRA Toolkit")
+
+    monkeypatch.setattr("short_read_processing.downloader.download_ena", fake_download_ena)
+    monkeypatch.setattr(
+        "short_read_processing.downloader.download_sra", unexpected_download_sra
+    )
+
+    with pytest.raises(AcquisitionError, match="exit code 22"):
+        download_plans(
+            [failed],
+            DownloadOptions(
+                file_jobs=1,
+                connections=1,
+                sra_jobs=1,
+                threads=1,
+            ),
+        )
 
 
 def test_sra_download_stages_fastqs_before_completion(tmp_path, monkeypatch):
@@ -179,7 +265,14 @@ def test_sra_download_stages_fastqs_before_completion(tmp_path, monkeypatch):
     )
 
     def fake_run(command, *, label):
+        if label.startswith("prefetch"):
+            output = Path(command[command.index("--output-directory") + 1])
+            (output / "SRR123456").mkdir(parents=True)
         if label.startswith("fasterq-dump"):
+            expected = (
+                tmp_path / "raw" / ".sra-cache" / "SRR123456" / "SRR123456"
+            )
+            assert Path(command[1]) == expected
             output = Path(command[command.index("--outdir") + 1])
             (output / "SRR123456_1.fastq").write_bytes(b"r1")
             (output / "SRR123456_2.fastq").write_bytes(b"r2")

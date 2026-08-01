@@ -38,7 +38,10 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
         "--backend",
         choices=("auto", "ena", "sra"),
         default="auto",
-        help="Prefer ENA compressed FASTQs, or force ENA/SRA Toolkit (default: auto)",
+        help=(
+            "Prefer ENA compressed FASTQs with per-run SRA Toolkit failover, "
+            "or force ENA/SRA Toolkit (default: auto)"
+        ),
     )
     parser.add_argument(
         "--resolve-jobs",
@@ -143,6 +146,7 @@ def execute_download(accessions: Sequence[str], args: argparse.Namespace) -> Pat
         sra_jobs=args.sra_jobs,
         threads=args.threads,
         keep_sra_cache=args.keep_sra_cache,
+        ena_fallback=args.backend == "auto",
     )
     download_plans(plans, options)
     write_manifest(manifest, plans)
