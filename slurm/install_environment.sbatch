@@ -112,8 +112,18 @@ install_packed_prefix() {
     local target="$2"
     local ready_file="$3"
     local temporary="${target}.tmp-${SLURM_JOB_ID}"
-    if [[ -f "$ready_file" ]] && [[ -d "$target/conda-meta" ]]; then
-        echo "Packed environment already ready: $target"
+    if [[ -d "$target/conda-meta" ]]; then
+        if [[ -f "$ready_file" ]]; then
+            echo "Packed environment already ready: $target"
+            return
+        fi
+        echo "Finalizing an unpacked environment: $target"
+        if [[ ! -x "$target/bin/python" ]] || [[ ! -f "$target/bin/conda-unpack" ]]; then
+            echo "Incomplete packed environment cannot be finalized: $target" >&2
+            exit 2
+        fi
+        "$target/bin/python" "$target/bin/conda-unpack"
+        touch "$ready_file"
         return
     fi
     if [[ -e "$target" ]]; then
@@ -131,8 +141,8 @@ install_packed_prefix() {
         exit 2
     fi
     mv "$temporary" "$target"
-    if [[ -x "$target/bin/conda-unpack" ]]; then
-        env PATH="$target/bin:$PATH" "$target/bin/conda-unpack"
+    if [[ -f "$target/bin/conda-unpack" ]]; then
+        "$target/bin/python" "$target/bin/conda-unpack"
     fi
     touch "$ready_file"
 }
@@ -165,7 +175,7 @@ if [[ -e "$REPO_ROOT/.venv" ]] && [[ ! -d "$REPO_ROOT/.venv/conda-meta" ]]; then
     echo "$REPO_ROOT/.venv exists but is not a Conda environment; move it aside first." >&2
     exit 2
 fi
-if [[ "$OFFLINE_BUNDLE" == true ]] && [[ ! -d "$REPO_ROOT/.venv/conda-meta" ]]; then
+if [[ "$OFFLINE_BUNDLE" == true ]] && [[ ! -f "$REPO_ROOT/.venv/.atlas_packed_ready" ]]; then
     echo "Installing the packed orchestration environment."
     install_packed_prefix \
         "$PACKED_ORCHESTRATION" \
