@@ -204,6 +204,7 @@ else
     "$MICROMAMBA" create --yes --prefix "$REPO_ROOT/.venv" \
         --file "$REPO_ROOT/environment.yml" --channel-priority strict
 fi
+export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
 if [[ "$OFFLINE_BUNDLE" == true ]]; then
     if ! compgen -G "$PACKED_CONDA_ENVS/*.tar.gz" >/dev/null; then
