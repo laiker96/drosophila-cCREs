@@ -15,7 +15,12 @@ from short_read_processing.downloader import (
 
 
 def _file_plan(path: Path, size: int) -> FilePlan:
-    return FilePlan(url="https://example.org/reads.fastq.gz", md5="", size_bytes=size, path=path)
+    return FilePlan(
+        url=f"https://example.org/{path.name}",
+        md5="",
+        size_bytes=size,
+        path=path,
+    )
 
 
 def test_discards_size_mismatched_file_without_aria2_state(tmp_path):
@@ -186,21 +191,38 @@ def test_auto_backend_falls_back_only_failed_ena_runs(tmp_path, monkeypatch):
     failed = _run_plan(tmp_path, "SRR222222")
     direct_sra = _run_plan(tmp_path, "SRR333333", backend="sra")
     received_sra = []
+    aria2_commands = []
 
-    def fake_download_ena(plans, options):
-        for item in complete.files:
+    for plan in (complete, failed):
+        for item in plan.files:
             item.path.parent.mkdir(parents=True, exist_ok=True)
             item.path.write_bytes(b"ok")
-        failed.files[1].path.parent.mkdir(parents=True, exist_ok=True)
-        failed.files[1].path.write_bytes(b"ok")
-        raise AcquisitionError("aria2c failed with exit code 22")
+
+    failed_url = failed.files[0].url
+
+    def fake_run(command):
+        aria2_commands.append(command)
+        session_option = next(
+            item for item in command if item.startswith("--save-session=")
+        )
+        session_path = Path(session_option.split("=", 1)[1])
+        session_path.write_text(
+            f"{failed_url}\n"
+            f"  dir={failed.run_dir}\n"
+            f"  out={failed.files[0].path.name}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 22)
 
     def fake_download_sra(plans, options):
         received_sra.extend(plans)
         for plan in plans:
             plan.status = "downloaded"
 
-    monkeypatch.setattr("short_read_processing.downloader.download_ena", fake_download_ena)
+    monkeypatch.setattr(
+        "short_read_processing.downloader._require_executable", lambda name: name
+    )
+    monkeypatch.setattr("short_read_processing.downloader.subprocess.run", fake_run)
     monkeypatch.setattr("short_read_processing.downloader.download_sra", fake_download_sra)
 
     download_plans(
@@ -219,6 +241,8 @@ def test_auto_backend_falls_back_only_failed_ena_runs(tmp_path, monkeypatch):
     assert failed.backend == "sra"
     assert failed.files == []
     assert received_sra == [direct_sra, failed]
+    assert len(aria2_commands) == 1
+    assert any(item.startswith("--save-session=") for item in aria2_commands[0])
 
 
 def test_explicit_ena_backend_does_not_fall_back(tmp_path, monkeypatch):

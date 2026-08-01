@@ -27,6 +27,14 @@ class DownloadOptions:
     ena_fallback: bool = False
 
 
+class _EnaDownloadError(AcquisitionError):
+    """An ENA batch failure with the files aria2 reported as unfinished."""
+
+    def __init__(self, message: str, failed_files: list[FilePlan]) -> None:
+        super().__init__(message)
+        self.failed_files = failed_files
+
+
 def _require_executable(name: str) -> str:
     executable = shutil.which(name)
     if not executable:
@@ -135,14 +143,31 @@ def _pending_ena_files(
     return pending
 
 
+def _failed_ena_files_from_session(
+    session_path: Path, files: Iterable[FilePlan]
+) -> list[FilePlan]:
+    """Map aria2's saved error/unfinished URIs back to resolved FASTQs."""
+
+    if not session_path.is_file():
+        return []
+    failed_urls: set[str] = set()
+    for line in session_path.read_text(encoding="utf-8").splitlines():
+        if line and not line[0].isspace():
+            failed_urls.update(uri for uri in line.split("\t") if uri)
+    return [item for item in files if item.url in failed_urls]
+
+
 def _run_aria2_with_checksum_retries(
     command: list[str],
     *,
     input_path: Path,
     files: list[FilePlan],
     checksum_retries: int,
+    session_path: Path | None = None,
 ) -> None:
     for attempt in range(checksum_retries + 1):
+        if session_path:
+            session_path.unlink(missing_ok=True)
         completed = subprocess.run(command)
         pending = _pending_ena_files(
             files, verify_checksums=completed.returncode == 32
@@ -150,9 +175,15 @@ def _run_aria2_with_checksum_retries(
         if completed.returncode == 0 and not pending:
             return
         if completed.returncode not in {0, 32} or attempt == checksum_retries:
-            raise AcquisitionError(
+            failed_files = (
+                _failed_ena_files_from_session(session_path, files)
+                if session_path
+                else []
+            )
+            raise _EnaDownloadError(
                 f"aria2c FASTQ download or post-download validation failed with exit code "
-                f"{completed.returncode} after {attempt + 1} attempt(s)"
+                f"{completed.returncode} after {attempt + 1} attempt(s)",
+                failed_files or pending,
             )
         retry_files = pending or files
         input_path.write_text(_aria2_input(retry_files), encoding="utf-8")
@@ -176,6 +207,7 @@ def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
     output_root = Path(os.path.commonpath([str(plan.run_dir.parent) for plan in plans]))
     output_root.mkdir(parents=True, exist_ok=True)
     input_path: Path | None = None
+    session_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -187,10 +219,14 @@ def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
         ) as handle:
             handle.write(input_text)
             input_path = Path(handle.name)
+        session_path = input_path.with_suffix(input_path.suffix + ".session")
 
         command = [
             aria2c,
             f"--input-file={input_path}",
+            f"--save-session={session_path}",
+            "--save-session-interval=0",
+            "--save-not-found=true",
             f"--max-concurrent-downloads={max(1, options.file_jobs)}",
             f"--max-connection-per-server={max(1, min(options.connections, 16))}",
             f"--split={max(1, min(options.connections, 16))}",
@@ -213,10 +249,13 @@ def download_ena(plans: list[RunPlan], options: DownloadOptions) -> None:
             input_path=input_path,
             files=files,
             checksum_retries=max(0, options.checksum_retries),
+            session_path=session_path,
         )
     finally:
         if input_path:
             input_path.unlink(missing_ok=True)
+        if session_path:
+            session_path.unlink(missing_ok=True)
 
     missing = [str(item.path) for item in files if not item.path.is_file() or item.path.stat().st_size == 0]
     if missing:
@@ -363,9 +402,20 @@ def download_plans(plans: list[RunPlan], options: DownloadOptions) -> None:
     except AcquisitionError as error:
         if not options.ena_fallback:
             raise
-        failed_plans = [
-            plan for plan in ena_plans if _pending_ena_files(plan.files)
-        ]
+        failed_paths = {
+            item.path
+            for item in getattr(error, "failed_files", [])
+        }
+        if failed_paths:
+            failed_plans = [
+                plan
+                for plan in ena_plans
+                if any(item.path in failed_paths for item in plan.files)
+            ]
+        else:
+            failed_plans = [
+                plan for plan in ena_plans if _pending_ena_files(plan.files)
+            ]
         if not failed_plans:
             raise
         failed_ids = ", ".join(plan.run_accession for plan in failed_plans)
