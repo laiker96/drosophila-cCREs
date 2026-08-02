@@ -67,12 +67,12 @@ rule trim_pe:
         python workflow/scripts/validate_fastq.py --paired \
           "$temporary/R1.fastq.gz" "$temporary/R2.fastq.gz" >> {log:q} 2>&1
         python -m json.tool "$temporary/cutadapt.json" >/dev/null
-        cp "$temporary/R1.fastq.gz" "$staged_r1"
-        cp "$temporary/R2.fastq.gz" "$staged_r2"
-        cp "$temporary/cutadapt.json" "$staged_json"
-        python workflow/scripts/validate_fastq.py --paired \
-          "$staged_r1" "$staged_r2" >> {log:q} 2>&1
-        python -m json.tool "$staged_json" >/dev/null
+        python workflow/scripts/copy_verified.py \
+          "$temporary/R1.fastq.gz" "$staged_r1" >> {log:q} 2>&1
+        python workflow/scripts/copy_verified.py \
+          "$temporary/R2.fastq.gz" "$staged_r2" >> {log:q} 2>&1
+        python workflow/scripts/copy_verified.py \
+          "$temporary/cutadapt.json" "$staged_json" >> {log:q} 2>&1
         mv "$staged_r1" {output.r1:q}
         mv "$staged_r2" {output.r2:q}
         mv "$staged_json" {output.json:q}
@@ -117,10 +117,10 @@ rule trim_se:
           {input.r1:q} > {log:q} 2>&1
         python workflow/scripts/validate_fastq.py "$temporary/SE.fastq.gz" >> {log:q} 2>&1
         python -m json.tool "$temporary/cutadapt.json" >/dev/null
-        cp "$temporary/SE.fastq.gz" "$staged_r1"
-        cp "$temporary/cutadapt.json" "$staged_json"
-        python workflow/scripts/validate_fastq.py "$staged_r1" >> {log:q} 2>&1
-        python -m json.tool "$staged_json" >/dev/null
+        python workflow/scripts/copy_verified.py \
+          "$temporary/SE.fastq.gz" "$staged_r1" >> {log:q} 2>&1
+        python workflow/scripts/copy_verified.py \
+          "$temporary/cutadapt.json" "$staged_json" >> {log:q} 2>&1
         mv "$staged_r1" {output.r1:q}
         mv "$staged_json" {output.json:q}
         """

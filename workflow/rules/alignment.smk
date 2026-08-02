@@ -37,7 +37,8 @@ rule align_lane:
         samtools sort -@ {params.workers} \
           -o "$temporary/coordsort.bam" "$temporary/fixmate.bam" 2>> {log:q}
         samtools quickcheck -v "$temporary/coordsort.bam" 2>> {log:q}
-        cp "$temporary/coordsort.bam" "$staged"
+        python workflow/scripts/copy_verified.py \
+          "$temporary/coordsort.bam" "$staged" >> {log:q} 2>&1
         samtools quickcheck -v "$staged" 2>> {log:q}
         mv "$staged" {output.bam:q}
         """
@@ -70,7 +71,8 @@ rule merge_and_mark_duplicates:
         samtools markdup -@ {params.workers} \
           "$temporary/merged.bam" "$temporary/marked.bam" >> {log:q} 2>&1
         samtools quickcheck -v "$temporary/marked.bam" 2>> {log:q}
-        cp "$temporary/marked.bam" "$staged"
+        python workflow/scripts/copy_verified.py \
+          "$temporary/marked.bam" "$staged" >> {log:q} 2>&1
         samtools quickcheck -v "$staged" 2>> {log:q}
         mv "$staged" {output.bam:q}
         """
