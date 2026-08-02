@@ -23,8 +23,9 @@ rule align_lane:
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
-        temporary=$(mktemp -d $(dirname {output.bam:q})/.{wildcards.sample}.{wildcards.lane}.XXXXXX)
-        trap 'rm -rf "$temporary"' EXIT
+        temporary=$(mktemp -d "${{TMPDIR:-/tmp}}/align.{wildcards.sample}.{wildcards.lane}.XXXXXX")
+        staged={output.bam:q}.partial.$$
+        trap 'rm -rf "$temporary"; rm -f "$staged"' EXIT
         bowtie2 {params.preset} {params.layout} -x {params.index:q} {params.reads} \
           --rg-id {wildcards.sample:q}.{wildcards.lane:q} --rg SM:{wildcards.sample:q} \
           -p {params.workers} 2> {log:q} \
@@ -36,7 +37,9 @@ rule align_lane:
         samtools sort -@ {params.workers} \
           -o "$temporary/coordsort.bam" "$temporary/fixmate.bam" 2>> {log:q}
         samtools quickcheck -v "$temporary/coordsort.bam" 2>> {log:q}
-        mv "$temporary/coordsort.bam" {output.bam:q}
+        cp "$temporary/coordsort.bam" "$staged"
+        samtools quickcheck -v "$staged" 2>> {log:q}
+        mv "$staged" {output.bam:q}
         """
 
 
@@ -59,14 +62,17 @@ rule merge_and_mark_duplicates:
     shell:
         r"""
         mkdir -p $(dirname {output.bam:q}) $(dirname {log:q})
-        temporary=$(mktemp -d $(dirname {output.bam:q})/.{wildcards.sample}.markdup.XXXXXX)
-        trap 'rm -rf "$temporary"' EXIT
+        temporary=$(mktemp -d "${{TMPDIR:-/tmp}}/markdup.{wildcards.sample}.XXXXXX")
+        staged={output.bam:q}.partial.$$
+        trap 'rm -rf "$temporary"; rm -f "$staged"' EXIT
         samtools merge -f -@ {params.workers} \
           -o "$temporary/merged.bam" {input.bams:q} > {log:q} 2>&1
         samtools markdup -@ {params.workers} \
           "$temporary/merged.bam" "$temporary/marked.bam" >> {log:q} 2>&1
         samtools quickcheck -v "$temporary/marked.bam" 2>> {log:q}
-        mv "$temporary/marked.bam" {output.bam:q}
+        cp "$temporary/marked.bam" "$staged"
+        samtools quickcheck -v "$staged" 2>> {log:q}
+        mv "$staged" {output.bam:q}
         """
 
 

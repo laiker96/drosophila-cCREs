@@ -52,11 +52,31 @@ rule trim_pe:
     conda:
         "../envs/read_qc.yaml"
     shell:
-        "mkdir -p $(dirname {output.r1:q}) $(dirname {output.json:q}) $(dirname {log:q}) && "
-        "cutadapt -j {threads} -a {params.adapter_r1:q} -A {params.adapter_r2:q} "
-        "-q {params.quality} -m {params.minimum_length} -e {params.error_rate} "
-        "-O {params.minimum_overlap} --json {output.json:q} "
-        "-o {output.r1:q} -p {output.r2:q} {input.r1:q} {input.r2:q} > {log:q} 2>&1"
+        r"""
+        mkdir -p $(dirname {output.r1:q}) $(dirname {output.json:q}) $(dirname {log:q})
+        temporary=$(mktemp -d "${{TMPDIR:-/tmp}}/trim.{wildcards.sample}.{wildcards.lane}.XXXXXX")
+        staged_r1={output.r1:q}.partial.$$
+        staged_r2={output.r2:q}.partial.$$
+        staged_json={output.json:q}.partial.$$
+        trap 'rm -rf "$temporary"; rm -f "$staged_r1" "$staged_r2" "$staged_json"' EXIT
+        cutadapt -j {threads} -a {params.adapter_r1:q} -A {params.adapter_r2:q} \
+          -q {params.quality} -m {params.minimum_length} -e {params.error_rate} \
+          -O {params.minimum_overlap} --json "$temporary/cutadapt.json" \
+          -o "$temporary/R1.fastq.gz" -p "$temporary/R2.fastq.gz" \
+          {input.r1:q} {input.r2:q} > {log:q} 2>&1
+        python workflow/scripts/validate_fastq.py --paired \
+          "$temporary/R1.fastq.gz" "$temporary/R2.fastq.gz" >> {log:q} 2>&1
+        python -m json.tool "$temporary/cutadapt.json" >/dev/null
+        cp "$temporary/R1.fastq.gz" "$staged_r1"
+        cp "$temporary/R2.fastq.gz" "$staged_r2"
+        cp "$temporary/cutadapt.json" "$staged_json"
+        python workflow/scripts/validate_fastq.py --paired \
+          "$staged_r1" "$staged_r2" >> {log:q} 2>&1
+        python -m json.tool "$staged_json" >/dev/null
+        mv "$staged_r1" {output.r1:q}
+        mv "$staged_r2" {output.r2:q}
+        mv "$staged_json" {output.json:q}
+        """
 
 
 rule trim_se:
@@ -85,10 +105,25 @@ rule trim_se:
     conda:
         "../envs/read_qc.yaml"
     shell:
-        "mkdir -p $(dirname {output.r1:q}) $(dirname {output.json:q}) $(dirname {log:q}) && "
-        "cutadapt -j {threads} -a {params.adapter:q} -q {params.quality} "
-        "-m {params.minimum_length} -e {params.error_rate} -O {params.minimum_overlap} "
-        "--json {output.json:q} -o {output.r1:q} {input.r1:q} > {log:q} 2>&1"
+        r"""
+        mkdir -p $(dirname {output.r1:q}) $(dirname {output.json:q}) $(dirname {log:q})
+        temporary=$(mktemp -d "${{TMPDIR:-/tmp}}/trim.{wildcards.sample}.{wildcards.lane}.XXXXXX")
+        staged_r1={output.r1:q}.partial.$$
+        staged_json={output.json:q}.partial.$$
+        trap 'rm -rf "$temporary"; rm -f "$staged_r1" "$staged_json"' EXIT
+        cutadapt -j {threads} -a {params.adapter:q} -q {params.quality} \
+          -m {params.minimum_length} -e {params.error_rate} -O {params.minimum_overlap} \
+          --json "$temporary/cutadapt.json" -o "$temporary/SE.fastq.gz" \
+          {input.r1:q} > {log:q} 2>&1
+        python workflow/scripts/validate_fastq.py "$temporary/SE.fastq.gz" >> {log:q} 2>&1
+        python -m json.tool "$temporary/cutadapt.json" >/dev/null
+        cp "$temporary/SE.fastq.gz" "$staged_r1"
+        cp "$temporary/cutadapt.json" "$staged_json"
+        python workflow/scripts/validate_fastq.py "$staged_r1" >> {log:q} 2>&1
+        python -m json.tool "$staged_json" >/dev/null
+        mv "$staged_r1" {output.r1:q}
+        mv "$staged_json" {output.json:q}
+        """
 
 
 rule fastqc_trimmed:
