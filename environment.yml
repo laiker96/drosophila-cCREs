@@ -6,7 +6,6 @@ dependencies:
   - python=3.11
   - conda=26.1.1
   - snakemake-minimal=9.23.1
-  - snakemake-executor-plugin-slurm=2.7.1
   - pyyaml=6.0.3
   - pandas=2.3.3
   - jsonschema=4.26.0

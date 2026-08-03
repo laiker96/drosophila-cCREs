@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Copy a file and retry until the destination checksum matches the source."""
 
-from __future__ import annotations
-
 import argparse
 import hashlib
 import os

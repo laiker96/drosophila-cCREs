@@ -2,8 +2,8 @@
 #SBATCH --job-name=atlas-after-review
 #SBATCH --partition=cpu
 #SBATCH --exclude=nodo3
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
 #SBATCH --time=7-00:00:00
 #SBATCH --propagate=NONE
 #SBATCH --output=slurm-%x-%j.out
@@ -56,24 +56,23 @@ MASTER_RUN_ID="${MASTER_RUN_ID:-master-v1}"
 FINAL_RUN_ID="${FINAL_RUN_ID:-catalog-v1}"
 GENOME="${GENOME:-dm6}"
 CONFIG_ROOT="${CONFIG_ROOT:-$REPO_ROOT/configs/cluster}"
-WORKER_PARTITION="${WORKER_PARTITION:-cpu}"
-TOTAL_CORES="${TOTAL_CORES:-256}"
-MAX_JOBS="${MAX_JOBS:-50}"
-MAX_THREADS="${MAX_THREADS:-16}"
+TOTAL_CORES="${TOTAL_CORES:-${SLURM_CPUS_PER_TASK:-8}}"
+TOTAL_MEMORY_MB="${TOTAL_MEMORY_MB:-${SLURM_MEM_PER_NODE:-32768}}"
+MAX_JOBS="${MAX_JOBS:-$TOTAL_CORES}"
+MAX_THREADS="${MAX_THREADS:-$TOTAL_CORES}"
 REVIEW_ROOT="${REVIEW_ROOT:-$REPO_ROOT/data/reviewed}"
 ATAC_REVIEW="${ATAC_REVIEW:-$REVIEW_ROOT/atlas-atac.library-review.tsv}"
 H3_REVIEW="${H3_REVIEW:-$REVIEW_ROOT/atlas-h3k27ac.library-review.tsv}"
 ATAC_REVIEWED_MANIFEST="${ATAC_REVIEWED_MANIFEST:-$REVIEW_ROOT/atlas-atac.reviewed.tsv}"
 H3_REVIEWED_MANIFEST="${H3_REVIEWED_MANIFEST:-$REVIEW_ROOT/atlas-h3k27ac.reviewed.tsv}"
 
-for identifier in "$PROJECT" "$QC_RUN_ID" "$MASTER_RUN_ID" "$FINAL_RUN_ID" \
-    "$WORKER_PARTITION"; do
+for identifier in "$PROJECT" "$QC_RUN_ID" "$MASTER_RUN_ID" "$FINAL_RUN_ID"; do
     if [[ ! "$identifier" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
         echo "Invalid identifier: $identifier" >&2
         exit 2
     fi
 done
-for value in "$TOTAL_CORES" "$MAX_JOBS" "$MAX_THREADS" "$OPEN_FILE_LIMIT" \
+for value in "$TOTAL_CORES" "$TOTAL_MEMORY_MB" "$MAX_JOBS" "$MAX_THREADS" "$OPEN_FILE_LIMIT" \
     "$MIN_OPEN_FILE_LIMIT"; do
     if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "Expected a positive integer, got: $value" >&2
@@ -120,7 +119,7 @@ for required_file in "$ATAC_REVIEW" "$H3_REVIEW" "$ATAC_FINAL_MANIFEST" \
 done
 
 cd "$REPO_ROOT"
-mkdir -p logs/slurm/rules "$CONFIG_ROOT" "$REVIEW_ROOT" .cache
+mkdir -p logs/slurm "$CONFIG_ROOT" "$REVIEW_ROOT" .cache
 exec > >(tee -a "$REPO_ROOT/logs/slurm/run-after-review-${SLURM_JOB_ID}.log") 2>&1
 
 raise_open_file_limit
@@ -151,31 +150,27 @@ export XDG_CACHE_HOME="$REPO_ROOT/.cache"
 export PYTHONNOUSERSITE=1
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
-PROFILE_DIR="$JOB_TMP/slurm-profile"
+PROFILE_DIR="$JOB_TMP/local-profile"
 mkdir -p "$PROFILE_DIR"
 cat > "$PROFILE_DIR/config.yaml" <<EOF
-executor: slurm
-local-cores: 1
+executor: local
 software-deployment-method:
   - conda
 conda-prefix: "$REPO_ROOT/.snakemake/conda"
 conda-frontend: conda
+resources:
+  mem_mb: $TOTAL_MEMORY_MB
 default-resources:
   mem_mb: 2000
-  runtime: 720
-  slurm_partition: "'$WORKER_PARTITION'"
-  slurm_extra: "'--exclude=nodo3 --propagate=NOFILE'"
 latency-wait: 180
-max-jobs-per-second: 2
 printshellcmds: true
 show-failed-logs: true
 rerun-incomplete: true
-slurm-logdir: "$REPO_ROOT/logs/slurm/rules"
 EOF
 
 echo "[$(date --iso-8601=seconds)] host=$HOST_SHORT job=$SLURM_JOB_ID"
 echo "repo=$REPO_ROOT project=$PROJECT master_run=$MASTER_RUN_ID final_run=$FINAL_RUN_ID"
-echo "worker_partition=$WORKER_PARTITION worker_exclusion=nodo3 jobs=$MAX_JOBS cores=$TOTAL_CORES nofile=$(ulimit -Sn)"
+echo "execution=single-node jobs=$MAX_JOBS cores=$TOTAL_CORES mem_mb=$TOTAL_MEMORY_MB nofile=$(ulimit -Sn)"
 
 echo "Applying the completed manual review tables."
 "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/src/review_final_bam_manifest.py" \

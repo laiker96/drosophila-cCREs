@@ -54,6 +54,10 @@ and takes longer than a restart. Keep `.venv`, `.micromamba`, `.cache`, and the
 rule environments inside the repository; do not create project environments
 under a shared home-directory prefix.
 
+The project runs Snakemake with its local executor, including when that command
+is launched inside a site-specific `sbatch` allocation. The orchestration
+environment therefore does not install Snakemake's SLURM executor plugin.
+
 ### Prepare and validate the input table
 
 Create a CSV or TSV with `accession`, `library_id`, `assay`, and `context`

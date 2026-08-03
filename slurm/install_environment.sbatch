@@ -160,6 +160,28 @@ install_packed_prefix() {
     finalize_packed_prefix "$target" "$ready_file"
 }
 
+install_conda_activation_wrapper() {
+    local activate="$REPO_ROOT/.venv/bin/activate"
+    local conda_sh="$REPO_ROOT/.venv/etc/profile.d/conda.sh"
+    local temporary="${activate}.tmp-${SLURM_JOB_ID}"
+    if [[ ! -f "$conda_sh" ]]; then
+        echo "Conda shell initialization is missing: $conda_sh" >&2
+        exit 2
+    fi
+    if [[ "$REPO_ROOT" == *"'"* ]] || [[ "$REPO_ROOT" == *$'\n'* ]]; then
+        echo "Repository path cannot contain a quote or newline: $REPO_ROOT" >&2
+        exit 2
+    fi
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf "_CONDA_ROOT='%s'\n" "$REPO_ROOT/.venv"
+        printf '%s\n' '. "$_CONDA_ROOT/etc/profile.d/conda.sh" || return $?'
+        printf '%s\n' 'conda activate "$@"'
+    } > "$temporary"
+    chmod 0755 "$temporary"
+    mv -f -- "$temporary" "$activate"
+}
+
 echo "[$(date --iso-8601=seconds)] host=$HOST_SHORT job=$SLURM_JOB_ID"
 echo "repo=$REPO_ROOT"
 
@@ -205,6 +227,7 @@ else
     "$MICROMAMBA" create --yes --prefix "$REPO_ROOT/.venv" \
         --file "$REPO_ROOT/environment.yml" --channel-priority strict
 fi
+install_conda_activation_wrapper
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
 mapfile -t RULE_ENVS < <(find "$REPO_ROOT/workflow/envs" -maxdepth 1 \
@@ -215,6 +238,7 @@ if (( ${#RULE_ENVS[@]} == 0 )); then
 fi
 
 ENV_SNAKEFILE="$JOB_TMP/install-rule-envs.smk"
+ENV_LIST="$JOB_TMP/conda-envs.tsv"
 {
     echo "rule all:"
     echo "    input:"
@@ -262,7 +286,6 @@ if [[ "$OFFLINE_BUNDLE" == true ]]; then
         PACKED_ARCHIVE_BY_ENV["$mapped_env"]="$mapped_archive"
     done < "$PACKED_ENV_MAP"
 
-    ENV_LIST="$JOB_TMP/conda-envs.tsv"
     "$REPO_ROOT/.venv/bin/snakemake" \
         --snakefile "$ENV_SNAKEFILE" \
         --cores 1 \
@@ -315,6 +338,47 @@ echo "Pre-creating ${#RULE_ENVS[@]} Snakemake rule environments."
     --conda-frontend conda \
     --conda-create-envs-only \
     --printshellcmds
+
+if [[ ! -s "$ENV_LIST" ]]; then
+    "$REPO_ROOT/.venv/bin/snakemake" \
+        --snakefile "$ENV_SNAKEFILE" \
+        --cores 1 \
+        --software-deployment-method conda \
+        --conda-prefix "$REPO_ROOT/.snakemake/conda" \
+        --conda-frontend conda \
+        --list-conda-envs \
+        > "$ENV_LIST"
+fi
+mapfile -t READ_QC_TARGETS < <(
+    awk -F '\t' 'NR > 1 && $1 ~ /(^|\/)read_qc\.yaml$/ {print $3}' "$ENV_LIST"
+)
+if (( ${#READ_QC_TARGETS[@]} != 1 )); then
+    echo "Expected one resolved read_qc environment, found ${#READ_QC_TARGETS[@]}." >&2
+    exit 2
+fi
+READ_QC_TARGET="${READ_QC_TARGETS[0]}"
+if [[ "$READ_QC_TARGET" != /* ]]; then
+    READ_QC_TARGET="$REPO_ROOT/$READ_QC_TARGET"
+fi
+if ! ACTIVATION_REPORT="$(
+    bash -c '
+        set -euo pipefail
+        source "$1" "$2"
+        printf "%s\t%s\t%s\n" \
+            "$CONDA_PREFIX" "$(command -v fastqc)" "$(command -v cutadapt)"
+    ' bash "$REPO_ROOT/.venv/bin/activate" "$READ_QC_TARGET"
+)"; then
+    echo "The read_qc environment cannot be activated: $READ_QC_TARGET" >&2
+    exit 2
+fi
+IFS=$'\t' read -r ACTIVATED_PREFIX FASTQC_PATH CUTADAPT_PATH <<< "$ACTIVATION_REPORT"
+if [[ "$ACTIVATED_PREFIX" != "$READ_QC_TARGET" ]] \
+    || [[ "$FASTQC_PATH" != "$READ_QC_TARGET/bin/fastqc" ]] \
+    || [[ "$CUTADAPT_PATH" != "$READ_QC_TARGET/bin/cutadapt" ]]; then
+    echo "The read_qc environment activated incorrectly: $ACTIVATION_REPORT" >&2
+    exit 2
+fi
+echo "Verified read_qc activation: fastqc=$FASTQC_PATH cutadapt=$CUTADAPT_PATH"
 
 "$REPO_ROOT/.venv/bin/python" --version
 "$REPO_ROOT/.venv/bin/conda" --version

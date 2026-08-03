@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Strictly validate FASTQ structure and character ranges."""
 
-from __future__ import annotations
-
 import argparse
 import gzip
 from pathlib import Path

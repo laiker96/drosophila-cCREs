@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=atlas-to-review
 #SBATCH --partition=cpu
-#SBATCH --exclude=nodo3
+#SBATCH --exclude=nodo3,nodo4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --time=7-00:00:00
@@ -20,7 +20,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     exit 97
 fi
 case "$HOST_SHORT" in
-    nodo3|cranex*|cluster|cluster.*|login*)
+    nodo3|nodo4|cranex*|cluster|cluster.*|login*)
         echo "Refusing to download or process on forbidden host $HOST_SHORT." >&2
         exit 97
         ;;
@@ -56,10 +56,10 @@ GENOME="${GENOME:-dm6}"
 RAW_ROOT="${RAW_ROOT:-$REPO_ROOT/data/raw/drosophila-atlas}"
 MANIFEST="${MANIFEST:-$RAW_ROOT/download_manifest.tsv}"
 CONFIG_ROOT="${CONFIG_ROOT:-$REPO_ROOT/configs/cluster}"
-WORKER_PARTITION="${WORKER_PARTITION:-cpu}"
-TOTAL_CORES="${TOTAL_CORES:-256}"
-MAX_JOBS="${MAX_JOBS:-50}"
-MAX_THREADS="${MAX_THREADS:-16}"
+TOTAL_CORES="${TOTAL_CORES:-${SLURM_CPUS_PER_TASK:-8}}"
+TOTAL_MEMORY_MB="${TOTAL_MEMORY_MB:-${SLURM_MEM_PER_NODE:-16384}}"
+MAX_JOBS="${MAX_JOBS:-$TOTAL_CORES}"
+MAX_THREADS="${MAX_THREADS:-$TOTAL_CORES}"
 DOWNLOAD_BACKEND="${DOWNLOAD_BACKEND:-auto}"
 RESOLVE_JOBS="${RESOLVE_JOBS:-8}"
 FILE_JOBS="${FILE_JOBS:-4}"
@@ -68,13 +68,13 @@ CHECKSUM_RETRIES="${CHECKSUM_RETRIES:-5}"
 SRA_JOBS="${SRA_JOBS:-2}"
 DOWNLOAD_THREADS="${DOWNLOAD_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
 
-for identifier in "$PROJECT" "$QC_RUN_ID" "$WORKER_PARTITION"; do
+for identifier in "$PROJECT" "$QC_RUN_ID"; do
     if [[ ! "$identifier" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
         echo "Invalid identifier: $identifier" >&2
         exit 2
     fi
 done
-for value in "$TOTAL_CORES" "$MAX_JOBS" "$MAX_THREADS" "$RESOLVE_JOBS" \
+for value in "$TOTAL_CORES" "$TOTAL_MEMORY_MB" "$MAX_JOBS" "$MAX_THREADS" "$RESOLVE_JOBS" \
     "$FILE_JOBS" "$CONNECTIONS" "$CHECKSUM_RETRIES" "$SRA_JOBS" "$DOWNLOAD_THREADS" \
     "$OPEN_FILE_LIMIT" "$MIN_OPEN_FILE_LIMIT"; do
     if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
@@ -106,7 +106,7 @@ if [[ ! -x "$REPO_ROOT/.venv/bin/python" ]] \
 fi
 
 cd "$REPO_ROOT"
-mkdir -p logs/slurm/rules "$RAW_ROOT" "$CONFIG_ROOT" .cache
+mkdir -p logs/slurm "$RAW_ROOT" "$CONFIG_ROOT" .cache
 exec > >(tee -a "$REPO_ROOT/logs/slurm/run-to-review-${SLURM_JOB_ID}.log") 2>&1
 
 raise_open_file_limit
@@ -137,31 +137,27 @@ export XDG_CACHE_HOME="$REPO_ROOT/.cache"
 export PYTHONNOUSERSITE=1
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 
-PROFILE_DIR="$JOB_TMP/slurm-profile"
+PROFILE_DIR="$JOB_TMP/local-profile"
 mkdir -p "$PROFILE_DIR"
 cat > "$PROFILE_DIR/config.yaml" <<EOF
-executor: slurm
-local-cores: 1
+executor: local
 software-deployment-method:
   - conda
 conda-prefix: "$REPO_ROOT/.snakemake/conda"
 conda-frontend: conda
+resources:
+  mem_mb: $TOTAL_MEMORY_MB
 default-resources:
   mem_mb: 2000
-  runtime: 720
-  slurm_partition: "'$WORKER_PARTITION'"
-  slurm_extra: "'--exclude=nodo3 --propagate=NOFILE'"
 latency-wait: 180
-max-jobs-per-second: 2
 printshellcmds: true
 show-failed-logs: true
 rerun-incomplete: true
-slurm-logdir: "$REPO_ROOT/logs/slurm/rules"
 EOF
 
 echo "[$(date --iso-8601=seconds)] host=$HOST_SHORT job=$SLURM_JOB_ID"
 echo "repo=$REPO_ROOT project=$PROJECT run=$QC_RUN_ID genome=$GENOME"
-echo "worker_partition=$WORKER_PARTITION worker_exclusion=nodo3 jobs=$MAX_JOBS cores=$TOTAL_CORES nofile=$(ulimit -Sn)"
+echo "execution=single-node jobs=$MAX_JOBS cores=$TOTAL_CORES mem_mb=$TOTAL_MEMORY_MB nofile=$(ulimit -Sn)"
 
 PIPELINE_COMMAND=(
     "$REPO_ROOT/.venv/bin/python"
@@ -189,6 +185,10 @@ PIPELINE_COMMAND=(
     --snakemake-arg=--retries
     --snakemake-arg=2
 )
+if [[ -f "$MANIFEST" ]]; then
+    echo "Reusing completed download manifest: $MANIFEST"
+    PIPELINE_COMMAND+=(--skip-download)
+fi
 printf 'Running:'
 printf ' %q' "${PIPELINE_COMMAND[@]}"
 printf '\n'
