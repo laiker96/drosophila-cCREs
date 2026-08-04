@@ -212,6 +212,29 @@ if CONTACTS:
             "../scripts/build_active_contact_enhancer_gene_candidates.py"
 
 
+    rule build_nearest_active_promoter_gene_candidates:
+        input:
+            nodes=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nodes.tsv.gz"
+        output:
+            candidates=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nearest_active_promoter_gene_candidates.tsv.gz",
+            metrics=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nearest_active_promoter_gene_candidates.metrics.json"
+        params:
+            element_posterior_threshold=float(
+                CONTACTS.get("candidate_element_posterior_threshold", 0.5)
+            )
+        wildcard_constraints:
+            context=wildcard_regex(CONTACT_CONTEXTS)
+        threads: 1
+        resources:
+            mem_mb=4000
+        conda:
+            "../envs/contacts.yaml"
+        log:
+            f"{RESULT_ROOT}/logs/activity/links/{{context}}.nearest-active-promoter.log"
+        script:
+            "../scripts/build_nearest_active_promoter_gene_candidates.py"
+
+
     rule build_active_distance_enhancer_gene_candidates:
         input:
             nodes=f"{CONTACT_LINK_ROOT}/contexts/{{context}}.nodes.tsv.gz",
@@ -245,6 +268,9 @@ if CONTACTS:
             context_metrics=list(CONTACT_LINK_CONTEXT_METRICS.values()),
             candidate_metrics=list(
                 CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values()
+            ),
+            nearest_candidate_metrics=list(
+                CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS.values()
             ),
             distance_candidate_metrics=list(
                 CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values()

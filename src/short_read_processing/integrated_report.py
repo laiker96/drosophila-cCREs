@@ -335,6 +335,7 @@ def build_integrated_qc_report(
     factors = _read_tsv(current_files["normalization_factors"])
     mixtures = _read_tsv(current_files["mixture_models"])
     summary = _read_tsv(current_files["regulatory_element_summary"])
+    nearest_tss_metrics = _read_json(current_files["nearest_tss_enhancer_metrics"])
     contact_metrics = (
         _read_json(current_files["contact_graph_metrics"])
         if "contact_graph_metrics" in current_files
@@ -497,6 +498,17 @@ def build_integrated_qc_report(
         ],
         color="#df8f44",
     )
+    nearest_active_counts = nearest_tss_metrics.get(
+        "enhancer_with_active_nearest_promoter_by_context", {}
+    )
+    nearest_tss_section = f"""
+<section class="stage"><h2>6. Default nearest-TSS enhancer candidates</h2>
+{_cards([('Enhancers', nearest_tss_metrics.get('enhancer_count')), ('Enhancers with tied nearest TSSs', nearest_tss_metrics.get('nearest_tss_tie_element_count')), ('No same-chromosome TSS', nearest_tss_metrics.get('no_same_chromosome_promoter_count')), ('Assignment', 'nearest annotated TSS')])}
+<p>This contact-independent branch has one row per proximal or distal enhancer. It retains every exact nearest-distance TSS tie in that row, reports gene and transcript identifiers, and adds per-context element activity plus whether any tied nearest promoter is active. Promoter activity requires a context-member master-DHS summit within inclusive ±500 bp of the exact TSS and H3K27ac posterior at or above the configured threshold. Enhancers are not filtered by H3K27ac posterior in this atlas-wide table.</p>
+{_bar_chart('Enhancers whose nearest promoter is active by context', [(context, float(nearest_active_counts.get(context, 0))) for context in contexts], color='#3b8f6f')}
+</section>
+"""
+
     contact_section = ""
     if contact_metrics is not None:
         contact_rows = [
@@ -510,15 +522,16 @@ def build_integrated_qc_report(
                 values["element_promoter_edge_count"],
                 values["element_gene_candidate_count"],
                 values.get("active_contact_enhancer_gene_candidate_count", 0),
+                values.get("nearest_active_promoter_gene_candidate_count", 0),
                 values.get("active_distance_enhancer_gene_candidate_count", 0),
             ]
             for context, values in sorted(contact_metrics["contexts"].items())
         ]
         contact_section = f"""
-<section class="stage"><h2>6. Context contact links and candidate genes</h2>
-{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count')), ('Focused observed-contact candidates', contact_metrics.get('active_contact_enhancer_gene_candidate_count')), ('Focused distance candidates', contact_metrics.get('active_distance_enhancer_gene_candidate_count'))])}
-<p>Observed contexts use the merged, ICE-balanced contact matrix. Contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity. Focused distance tables require an active promoter and report nearest-active and nearest-annotated TSS baselines without assigning an observed/expected value.</p>
-{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates', 'Focused observed', 'Focused distance'], contact_rows, compact=True)}
+<section class="stage"><h2>7. Optional context contact links and candidate genes</h2>
+{_cards([('Observed contact contexts', contact_metrics.get('observed_context_count')), ('Distance-model contexts', contact_metrics.get('powerlaw_context_count')), ('Element–promoter edges', contact_metrics.get('element_promoter_edge_count')), ('Element–gene candidates', contact_metrics.get('element_gene_candidate_count')), ('Focused observed-contact candidates', contact_metrics.get('active_contact_enhancer_gene_candidate_count')), ('Nearest-active-promoter candidates', contact_metrics.get('nearest_active_promoter_gene_candidate_count')), ('Focused distance candidates', contact_metrics.get('active_distance_enhancer_gene_candidate_count'))])}
+<p>This opt-in branch uses merged, ICE-balanced contact matrices for observed contexts. Configured contexts without a defensible map use the atlas-wide contact-decay model and remain explicitly labeled as distance-model evidence. Candidate scores combine contact weight with the promoter's context-resolved ATAC/H3K27ac activity. The per-context nearest-active-TSS projection inside this branch is supplementary; the wide default table above is independent of contact processing. Focused distance tables remain power-law rankings rather than measured contacts.</p>
+{_table(['Context', 'Strategy', 'Assay', 'Match', 'Resolution bp', 'Active promoters', 'Element–promoter edges', 'Element–gene candidates', 'Focused observed', 'Nearest active TSS', 'Focused distance'], contact_rows, compact=True)}
 </section>
 """
 
@@ -602,9 +615,11 @@ def build_integrated_qc_report(
 <h3>H3K27ac member-DHS distributions and fitted mixtures</h3><div class="mixture">{mixture_svg}</div>
 </section>
 
+{nearest_tss_section}
+
 {contact_section}
 
-<section class="stage"><h2>{'7' if contact_metrics is not None else '6'}. Outputs and audit trail</h2>
+<section class="stage"><h2>{'8' if contact_metrics is not None else '7'}. Outputs and audit trail</h2>
 <p>Every listed artifact is an explicit workflow input to this report. Sizes and checksum prefixes make the report auditable without embedding the large count tables themselves.</p>
 {_table(['Output', 'Path', 'Bytes', 'SHA-256 prefix'], output_inventory, compact=True)}
 </section>
@@ -616,7 +631,7 @@ def build_integrated_qc_report(
     metrics = {
         "status": "ok",
         "schema_version": 2,
-        "method": "integrated_regulatory_catalog_contact_qc_report_v2",
+        "method": "integrated_regulatory_catalog_links_qc_report_v5",
         "project": config["project"],
         "run_id": config["run_id"],
         "contexts": contexts,
@@ -628,6 +643,7 @@ def build_integrated_qc_report(
         "mixture_warning_count": sum(
             row["mixture_supported"] != "1" for row in mixtures
         ),
+        "nearest_tss_links": nearest_tss_metrics,
         "contact_links": contact_metrics,
         "warnings": warnings,
         "pdf_renderer": {"implementation": "WeasyPrint", "version": renderer_version},

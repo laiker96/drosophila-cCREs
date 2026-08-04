@@ -677,6 +677,30 @@ ACTIVITY_REPORT_TARGETS = (
     else []
 )
 
+NEAREST_TSS_LINKS = config.get("nearest_tss_links")
+NEAREST_TSS_LINK_ROOT = f"{ACTIVITY_ROOT}/links/nearest_tss"
+NEAREST_TSS_PROMOTERS = f"{NEAREST_TSS_LINK_ROOT}/promoters.tsv.gz"
+NEAREST_TSS_PROMOTER_METRICS = (
+    f"{NEAREST_TSS_LINK_ROOT}/promoters.metrics.json"
+)
+NEAREST_TSS_ENHANCER_CANDIDATES = (
+    f"{NEAREST_TSS_LINK_ROOT}/enhancer_nearest_tss_candidates_wide.tsv.gz"
+)
+NEAREST_TSS_ENHANCER_METRICS = (
+    f"{NEAREST_TSS_LINK_ROOT}/enhancer_nearest_tss_candidates_wide.metrics.json"
+)
+NEAREST_TSS_LINK_TARGETS = (
+    ACTIVITY_CATALOG_TARGETS
+    + [
+        NEAREST_TSS_PROMOTERS,
+        NEAREST_TSS_PROMOTER_METRICS,
+        NEAREST_TSS_ENHANCER_CANDIDATES,
+        NEAREST_TSS_ENHANCER_METRICS,
+    ]
+    if NEAREST_TSS_LINKS
+    else []
+)
+
 CONTACTS = config.get("contacts")
 CONTACT_SOURCE_MANIFEST = str(CONTACTS["source_manifest"]) if CONTACTS else ""
 CONTACT_SOURCE_ROWS = (
@@ -771,6 +795,20 @@ CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS = {
     )
     for context in CONTACT_CONTEXTS
 }
+CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.nearest_active_promoter_gene_candidates.tsv.gz"
+    )
+    for context in CONTACT_CONTEXTS
+}
+CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS = {
+    context: (
+        f"{CONTACT_LINK_ROOT}/contexts/"
+        f"{context}.nearest_active_promoter_gene_candidates.metrics.json"
+    )
+    for context in CONTACT_CONTEXTS
+}
 CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES = {
     context: (
         f"{CONTACT_LINK_ROOT}/contexts/"
@@ -792,7 +830,7 @@ CONTACT_LINK_CONTEXT_METRICS = {
 CONTACT_LINK_METRICS = f"{CONTACT_LINK_ROOT}/contact_graph_metrics.json"
 CONTACT_LINK_PROVENANCE = f"{CONTACT_LINK_ROOT}/contact_graph_provenance.json"
 CONTACT_LINK_TARGETS = (
-    ACTIVITY_CATALOG_TARGETS
+    NEAREST_TSS_LINK_TARGETS
     + list(CONTACT_NORMALIZED.values())
     + list(CONTACT_NORMALIZED_METRICS.values())
     + [
@@ -804,6 +842,8 @@ CONTACT_LINK_TARGETS = (
         *CONTACT_LINK_CONTEXT_GENES.values(),
         *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
         *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
+        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES.values(),
+        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS.values(),
         *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
         *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
         *CONTACT_LINK_CONTEXT_METRICS.values(),
@@ -811,7 +851,7 @@ CONTACT_LINK_TARGETS = (
         CONTACT_LINK_PROVENANCE,
     ]
     if CONTACTS
-    else []
+    else NEAREST_TSS_LINK_TARGETS
 )
 
 CALLPEAK_NARROW = [
@@ -1120,24 +1160,36 @@ STAGE_CHECKPOINT_ARTIFACTS = {
         **named_artifacts(
             [
                 *ACTIVITY_CATALOG_CHECKPOINT_FILES,
-                CONTACT_SOURCE_MANIFEST,
-                *CONTACT_NORMALIZED.values(),
-                *CONTACT_NORMALIZED_METRICS.values(),
-                CONTACT_POWERLAW,
-                CONTACT_PROMOTERS,
-                CONTACT_PROMOTER_METRICS,
-                *CONTACT_LINK_CONTEXT_NODES.values(),
-                *CONTACT_LINK_CONTEXT_EDGES.values(),
-                *CONTACT_LINK_CONTEXT_GENES.values(),
-                *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
-                *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
-                *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
-                *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
-                *CONTACT_LINK_CONTEXT_METRICS.values(),
-                CONTACT_LINK_METRICS,
-                CONTACT_LINK_PROVENANCE,
+                NEAREST_TSS_PROMOTERS,
+                NEAREST_TSS_PROMOTER_METRICS,
+                NEAREST_TSS_ENHANCER_CANDIDATES,
+                NEAREST_TSS_ENHANCER_METRICS,
+                *(
+                    [
+                        CONTACT_SOURCE_MANIFEST,
+                        *CONTACT_NORMALIZED.values(),
+                        *CONTACT_NORMALIZED_METRICS.values(),
+                        CONTACT_POWERLAW,
+                        CONTACT_PROMOTERS,
+                        CONTACT_PROMOTER_METRICS,
+                        *CONTACT_LINK_CONTEXT_NODES.values(),
+                        *CONTACT_LINK_CONTEXT_EDGES.values(),
+                        *CONTACT_LINK_CONTEXT_GENES.values(),
+                        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_GENES.values(),
+                        *CONTACT_LINK_CONTEXT_ACTIVE_CONTACT_METRICS.values(),
+                        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_GENES.values(),
+                        *CONTACT_LINK_CONTEXT_NEAREST_ACTIVE_PROMOTER_METRICS.values(),
+                        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_GENES.values(),
+                        *CONTACT_LINK_CONTEXT_ACTIVE_DISTANCE_METRICS.values(),
+                        *CONTACT_LINK_CONTEXT_METRICS.values(),
+                        CONTACT_LINK_METRICS,
+                        CONTACT_LINK_PROVENANCE,
+                    ]
+                    if CONTACTS
+                    else []
+                ),
             ],
-            "contact_link_artifact",
+            "link_artifact",
         ),
     },
     "report": {
@@ -1151,6 +1203,7 @@ STAGE_CHECKPOINT_PARAMETERS = {
     "assay": ASSAY,
     "atac_qpois": config.get("atac_qpois"),
     "catalog_import": CATALOG_IMPORT,
+    "nearest_tss_links": NEAREST_TSS_LINKS,
     "contacts": CONTACTS,
     "peak_callers": {
         sample: SAMPLES[sample]["peak_caller"]
@@ -1162,10 +1215,10 @@ STANDARD_FINAL_TARGETS = MASTER_TARGETS
 if OUTPUT_STAGE == "report":
     FINAL_TARGETS = (
         ACTIVITY_REPORT_TARGETS
-        + (CONTACT_LINK_TARGETS if CONTACTS and START_STAGE != "report" else [])
+        + (CONTACT_LINK_TARGETS if START_STAGE != "report" else [])
         + (
             [STAGE_CHECKPOINT_MANIFESTS["links"]]
-            if CONTACTS and START_STAGE != "report"
+            if START_STAGE != "report"
             else []
         )
     )
@@ -1212,5 +1265,6 @@ include: "rules/peaks.smk"
 include: "rules/atac_peaks.smk"
 include: "rules/atac_consensus.smk"
 include: "rules/activity.smk"
+include: "rules/links.smk"
 include: "rules/contacts.smk"
 include: "rules/qc.smk"

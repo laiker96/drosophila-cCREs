@@ -10,6 +10,9 @@ metrics, _provenance = aggregate_link_metrics(
     candidate_metric_paths=[
         Path(str(path)) for path in snakemake.input.candidate_metrics
     ],
+    nearest_candidate_metric_paths=[
+        Path(str(path)) for path in snakemake.input.nearest_candidate_metrics
+    ],
     distance_candidate_metric_paths=[
         Path(str(path)) for path in snakemake.input.distance_candidate_metrics
     ],

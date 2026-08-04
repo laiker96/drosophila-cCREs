@@ -172,6 +172,35 @@ def _reference_config(genome: str, reference_root: Path, path_base: Path) -> dic
     }
 
 
+def _nearest_tss_link_config(
+    *, genome: str, reference: dict[str, Any], path_base: Path
+) -> dict[str, Any]:
+    """Freeze the contact-independent nearest-TSS link defaults."""
+
+    annotation_url = str(reference["preparation"]["annotation"]["url"])
+    annotation_name = annotation_url.rsplit("/", 1)[-1]
+    reference_fasta = Path(str(reference["fasta"]))
+    if not reference_fasta.is_absolute():
+        reference_fasta = path_base / reference_fasta
+    annotation = reference_fasta.parent / "sources" / annotation_name
+    return {
+        "schema_version": 1,
+        "promoter_annotation": _display_path(annotation, path_base),
+        "promoter_annotation_checksum": str(
+            reference["preparation"]["annotation"]["checksum"]
+        ),
+        "chromosome_scope": "all_annotation_chromosomes_in_chrom_sizes",
+        "promoter_width_bp": 1000,
+        "promoter_posterior_threshold": 0.5,
+        "enhancer_classes": [
+            "proximal_enhancer_like",
+            "distal_enhancer_like",
+        ],
+        "promoter_activity": "summit_within_500bp_max_v2",
+        "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
+    }
+
+
 def _peak_config(row: dict[str, Any], layout: str) -> dict[str, object]:
     assay = str(row["assay"])
 
@@ -865,6 +894,7 @@ def generate_activity_config(
     output_stage: str = "report",
     start_stage: str = "master",
     report_source_roots: list[Path] | None = None,
+    include_contacts: bool = False,
 ) -> Path:
     """Generate one resolved master-DHS quantification/catalog configuration."""
 
@@ -1012,6 +1042,11 @@ def generate_activity_config(
         },
         "provenance": provenance,
     }
+    config["nearest_tss_links"] = _nearest_tss_link_config(
+        genome=genome,
+        reference=config["reference"],
+        path_base=path_base,
+    )
     contact_config = (
         default_dm6_contact_config(
             contexts=contexts,
@@ -1021,15 +1056,15 @@ def generate_activity_config(
             / "atlas_contact_sources.tsv",
             path_base=path_base,
         )
-        if genome == "dm6"
+        if include_contacts and genome == "dm6"
         else None
     )
     if contact_config is not None:
         config["contacts"] = contact_config
-    elif output_stage == "links" or start_stage == "links":
+    elif include_contacts:
         raise AcquisitionError(
-            "The links stage is available only for the complete canonical dm6 atlas "
-            "context set"
+            "The optional contact branch is available only for the complete "
+            "canonical dm6 atlas context set"
         )
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1049,6 +1084,7 @@ def generate_catalog_links_config(
     path_base: Path,
     schema_path: Path = DEFAULT_SCHEMA,
     genome: str = "dm6",
+    include_contacts: bool = False,
 ) -> Path:
     """Generate a links-only configuration from a frozen catalog bundle."""
 
@@ -1107,6 +1143,11 @@ def generate_catalog_links_config(
             ],
         },
     }
+    config["nearest_tss_links"] = _nearest_tss_link_config(
+        genome=genome,
+        reference=config["reference"],
+        path_base=path_base,
+    )
     contact_config = (
         default_dm6_contact_config(
             contexts=catalog["contexts"],
@@ -1116,15 +1157,16 @@ def generate_catalog_links_config(
             / "atlas_contact_sources.tsv",
             path_base=path_base,
         )
-        if genome == "dm6"
+        if include_contacts and genome == "dm6"
         else None
     )
-    if contact_config is None:
+    if include_contacts and contact_config is None:
         raise AcquisitionError(
-            "The links stage is available only for the complete canonical dm6 atlas "
-            "context set"
+            "The optional contact branch is available only for the complete "
+            "canonical dm6 atlas context set"
         )
-    config["contacts"] = contact_config
+    if contact_config is not None:
+        config["contacts"] = contact_config
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{project}.catalog-to-links.yaml"
@@ -1214,6 +1256,11 @@ def generate_resume_config(
     if contacts:
         for key in ("source_manifest", "promoter_annotation"):
             contacts[key] = display(contacts[key])
+    nearest_tss_links = resumed.get("nearest_tss_links")
+    if nearest_tss_links:
+        nearest_tss_links["promoter_annotation"] = display(
+            nearest_tss_links["promoter_annotation"]
+        )
     report = resumed.get("report")
     if report:
         report["source_roots"] = [display(value) for value in report["source_roots"]]

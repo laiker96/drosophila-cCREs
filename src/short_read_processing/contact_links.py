@@ -26,6 +26,7 @@ from .contacts import canonical_chromosome, write_json_atomic
 ATTRIBUTE_RE = re.compile(
     r'(?:^|;\s*)(gene_id|gene_name|transcript_id)\s+"([^"]+)"'
 )
+PROMOTER_SUPPORT_DISTANCE_BP = 500
 
 
 PROMOTER_FIELDS = (
@@ -115,6 +116,35 @@ DISTANCE_MODEL_GENE_FIELDS = GENE_FIELDS + (
     "nearest_tss_gene_ids",
     "nearest_tss_gene_names",
     "nearest_tss_distance_bp",
+)
+
+NEAREST_ACTIVE_PROMOTER_GENE_FIELDS = (
+    "context",
+    "master_dhs_id",
+    "element_chrom",
+    "element_start",
+    "element_end",
+    "element_summit",
+    "regulatory_class",
+    "element_h3k27ac_posterior",
+    "element_combined_activity",
+    "element_blacklist_overlap",
+    "promoter_id",
+    "active_promoter_supporting_element_ids",
+    "active_promoter_supporting_element_count",
+    "active_promoter_associated_element_ids",
+    "active_promoter_associated_element_count",
+    "gene_id",
+    "gene_name",
+    "promoter_tss",
+    "promoter_start",
+    "promoter_end",
+    "distance_bp",
+    "nearest_active_tss_tie_count",
+    "promoter_atac_signal",
+    "promoter_h3k27ac_posterior",
+    "promoter_combined_activity",
+    "evidence_type",
 )
 
 ENHANCER_REGULATORY_CLASSES = {
@@ -271,8 +301,9 @@ def build_promoter_table(
     *,
     annotation: Path,
     chrom_sizes: Path,
-    canonical_chromosomes: list[str],
+    canonical_chromosomes: list[str] | None,
     promoter_width: int,
+    promoter_id_prefix: str = "DM6PROM",
     annotation_checksum: str | None = None,
     output: Path,
     metrics_output: Path,
@@ -281,10 +312,17 @@ def build_promoter_table(
 
     if promoter_width < 1:
         raise ValueError("Promoter width must be positive")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", promoter_id_prefix):
+        raise ValueError("Promoter ID prefix is invalid")
     if annotation_checksum:
         verify_reported_checksum(annotation, annotation_checksum)
-    canonical = {canonical_chromosome(value) for value in canonical_chromosomes}
     sizes = _chrom_sizes(chrom_sizes)
+    selected_chromosomes = (
+        [canonical_chromosome(value) for value in canonical_chromosomes]
+        if canonical_chromosomes is not None
+        else list(sizes)
+    )
+    canonical = set(selected_chromosomes)
     missing = canonical - set(sizes)
     if missing:
         raise ValueError(f"Chromosome sizes lack canonical sequences: {sorted(missing)}")
@@ -321,7 +359,7 @@ def build_promoter_table(
 
     chromosome_order = {
         canonical_chromosome(chromosome): index
-        for index, chromosome in enumerate(canonical_chromosomes)
+        for index, chromosome in enumerate(selected_chromosomes)
     }
     ordered = sorted(
         grouped,
@@ -334,7 +372,7 @@ def build_promoter_table(
         transcripts = sorted(record["transcripts"])
         rows.append(
             {
-                "promoter_id": f"DM6PROM{index:08d}",
+                "promoter_id": f"{promoter_id_prefix}{index:08d}",
                 "gene_id": gene_id,
                 "gene_name": record["gene_name"],
                 "chrom": chromosome,
@@ -356,7 +394,9 @@ def build_promoter_table(
         "chrom_sizes": str(chrom_sizes),
         "chrom_sizes_sha256": sha256_file(chrom_sizes),
         "canonical_chromosomes": canonical_chromosomes,
+        "chromosomes": selected_chromosomes,
         "promoter_width_bp": promoter_width,
+        "promoter_id_prefix": promoter_id_prefix,
         "promoter_count": len(rows),
         "gene_count": len({row["gene_id"] for row in rows}),
         "output": str(output),
@@ -459,45 +499,55 @@ def promoter_activities(
     elements: list[Element],
     posterior_threshold: float,
 ) -> dict[str, PromoterActivity]:
-    """Summarize context-member DHSs overlapping each fixed promoter window."""
+    """Summarize DHSs whose summits lie within 500 bp of each promoter TSS."""
 
     by_chromosome: dict[str, list[Element]] = defaultdict(list)
     for element in elements:
         by_chromosome[element.chrom].append(element)
-    starts: dict[str, list[int]] = {}
+    summits: dict[str, list[int]] = {}
     for chromosome, values in by_chromosome.items():
-        values.sort(key=lambda value: (value.start, value.end, value.master_dhs_id))
-        starts[chromosome] = [value.start for value in values]
+        values.sort(key=lambda value: (value.summit, value.master_dhs_id))
+        summits[chromosome] = [value.summit for value in values]
 
     result = {}
     for promoter in promoters:
         values = by_chromosome.get(promoter.chrom, [])
-        stop = bisect_left(starts.get(promoter.chrom, []), promoter.end)
-        overlaps = [value for value in values[:stop] if value.end > promoter.start]
+        chromosome_summits = summits.get(promoter.chrom, [])
+        start = bisect_left(
+            chromosome_summits, promoter.tss - PROMOTER_SUPPORT_DISTANCE_BP
+        )
+        stop = bisect_right(
+            chromosome_summits, promoter.tss + PROMOTER_SUPPORT_DISTANCE_BP
+        )
+        supporting = values[start:stop]
         posteriors = [
             element.h3k27ac_posterior
-            for element in overlaps
+            for element in supporting
             if element.h3k27ac_posterior is not None
         ]
         posterior = max(posteriors) if posteriors else None
-        combined = max((element.combined_activity for element in overlaps), default=0.0)
+        combined = max(
+            (element.combined_activity for element in supporting), default=0.0
+        )
         activity_score = max(
             (
                 element.combined_activity * element.h3k27ac_posterior
-                for element in overlaps
+                for element in supporting
                 if element.h3k27ac_posterior is not None
             ),
             default=0.0,
         )
         result[promoter.promoter_id] = PromoterActivity(
-            dhs_ids=";".join(element.master_dhs_id for element in overlaps),
-            accessible=int(bool(overlaps)),
-            atac_signal=max((element.atac_signal for element in overlaps), default=0.0),
+            dhs_ids=";".join(element.master_dhs_id for element in supporting),
+            accessible=int(bool(supporting)),
+            atac_signal=max(
+                (element.atac_signal for element in supporting), default=0.0
+            ),
             h3k27ac_posterior=posterior,
             combined_activity=combined,
             activity_score=activity_score,
             active=int(
-                bool(overlaps)
+                bool(supporting)
                 and posterior is not None
                 and posterior >= posterior_threshold
             ),
@@ -821,6 +871,214 @@ def _focused_candidate_elements(
             ):
                 elements[element.master_dhs_id] = element
     return elements, all_element_ids, element_node_count
+
+
+def build_nearest_active_promoter_gene_candidates(
+    *,
+    context: str,
+    nodes_path: Path,
+    element_posterior_threshold: float,
+    output: Path,
+    metrics_output: Path,
+) -> dict[str, Any]:
+    """Assign qualifying enhancers to the nearest supported active TSS."""
+
+    if not 0 <= element_posterior_threshold <= 1:
+        raise ValueError("Candidate element posterior threshold must be in [0, 1]")
+    elements, all_element_ids, element_node_count = _focused_candidate_elements(
+        context=context,
+        nodes_path=nodes_path,
+        element_posterior_threshold=element_posterior_threshold,
+    )
+
+    active_element_ids: set[str] = set()
+    active_promoter_associated_element_ids: set[str] = set()
+    promoter_rows: list[dict[str, Any]] = []
+    seen_promoters: set[str] = set()
+    with _open_text(nodes_path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = set(NODE_FIELDS) - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"{nodes_path} lacks node fields: {sorted(missing)}")
+        rows = list(reader)
+    for row in rows:
+        if row["context"] != context:
+            raise ValueError(
+                f"{nodes_path} contains context {row['context']!r}, "
+                f"expected {context!r}"
+            )
+        if row["node_type"] == "element" and str(row["active"]) == "1":
+            active_element_ids.add(row["master_dhs_id"])
+            if row["regulatory_class"] == "promoter_associated":
+                active_promoter_associated_element_ids.add(row["master_dhs_id"])
+
+    for row in rows:
+        if row["node_type"] != "promoter":
+            continue
+        promoter_id = row["promoter_id"]
+        if promoter_id in seen_promoters:
+            raise ValueError(f"{nodes_path} repeats promoter {promoter_id}")
+        seen_promoters.add(promoter_id)
+        supporting_node_ids = {
+            value for value in row["master_dhs_id"].split(";") if value
+        }
+        unknown = supporting_node_ids - all_element_ids
+        if unknown:
+            raise ValueError(
+                f"{nodes_path} promoter {promoter_id} references unknown elements: "
+                f"{sorted(unknown)}"
+            )
+        if str(row["active"]) != "1":
+            continue
+        supporting_ids = sorted(supporting_node_ids & active_element_ids)
+        if not supporting_ids:
+            raise ValueError(
+                f"{nodes_path} active promoter {promoter_id} lacks an active "
+                "supporting element"
+            )
+        promoter_associated_ids = sorted(
+            supporting_node_ids & active_promoter_associated_element_ids
+        )
+        promoter_rows.append(
+            row
+            | {
+                "active_promoter_supporting_element_ids": ";".join(
+                    supporting_ids
+                ),
+                "active_promoter_supporting_element_count": len(supporting_ids),
+                "active_promoter_associated_element_ids": ";".join(
+                    promoter_associated_ids
+                ),
+                "active_promoter_associated_element_count": len(
+                    promoter_associated_ids
+                ),
+            }
+        )
+
+    promoters_by_chromosome: dict[str, dict[int, list[dict[str, Any]]]] = (
+        defaultdict(lambda: defaultdict(list))
+    )
+    for row in promoter_rows:
+        promoters_by_chromosome[row["chrom"]][int(row["anchor"])].append(row)
+    promoter_tss = {
+        chromosome: sorted(by_tss)
+        for chromosome, by_tss in promoters_by_chromosome.items()
+    }
+    for by_tss in promoters_by_chromosome.values():
+        for values in by_tss.values():
+            values.sort(key=lambda row: row["promoter_id"])
+
+    candidate_count = 0
+    candidate_element_ids: set[str] = set()
+
+    def candidate_rows():
+        nonlocal candidate_count
+        for element in elements.values():
+            coordinates = promoter_tss.get(element.chrom, [])
+            if not coordinates:
+                continue
+            index = bisect_left(coordinates, element.summit)
+            adjacent = []
+            if index < len(coordinates):
+                adjacent.append(coordinates[index])
+            if index:
+                adjacent.append(coordinates[index - 1])
+            minimum_distance = min(
+                abs(coordinate - element.summit) for coordinate in adjacent
+            )
+            nearest_coordinates = sorted(
+                coordinate
+                for coordinate in set(adjacent)
+                if abs(coordinate - element.summit) == minimum_distance
+            )
+            nearest_promoters = [
+                row
+                for coordinate in nearest_coordinates
+                for row in promoters_by_chromosome[element.chrom][coordinate]
+            ]
+            tie_count = len(nearest_promoters)
+            candidate_element_ids.add(element.master_dhs_id)
+            candidate_count += tie_count
+            for promoter in nearest_promoters:
+                yield {
+                    "context": context,
+                    "master_dhs_id": element.master_dhs_id,
+                    "element_chrom": element.chrom,
+                    "element_start": element.start,
+                    "element_end": element.end,
+                    "element_summit": element.summit,
+                    "regulatory_class": element.regulatory_class,
+                    "element_h3k27ac_posterior": _format(
+                        element.h3k27ac_posterior
+                    ),
+                    "element_combined_activity": _format(
+                        element.combined_activity
+                    ),
+                    "element_blacklist_overlap": element.blacklist_overlap,
+                    "promoter_id": promoter["promoter_id"],
+                    "active_promoter_supporting_element_ids": promoter[
+                        "active_promoter_supporting_element_ids"
+                    ],
+                    "active_promoter_supporting_element_count": promoter[
+                        "active_promoter_supporting_element_count"
+                    ],
+                    "active_promoter_associated_element_ids": promoter[
+                        "active_promoter_associated_element_ids"
+                    ],
+                    "active_promoter_associated_element_count": promoter[
+                        "active_promoter_associated_element_count"
+                    ],
+                    "gene_id": promoter["gene_id"],
+                    "gene_name": promoter["gene_name"],
+                    "promoter_tss": promoter["anchor"],
+                    "promoter_start": promoter["start"],
+                    "promoter_end": promoter["end"],
+                    "distance_bp": minimum_distance,
+                    "nearest_active_tss_tie_count": tie_count,
+                    "promoter_atac_signal": promoter["atac_signal"],
+                    "promoter_h3k27ac_posterior": promoter[
+                        "h3k27ac_posterior"
+                    ],
+                    "promoter_combined_activity": promoter["combined_activity"],
+                    "evidence_type": "nearest_active_promoter_tss",
+                }
+
+    _atomic_tsv(output, NEAREST_ACTIVE_PROMOTER_GENE_FIELDS, candidate_rows())
+    metrics = {
+        "schema_version": 1,
+        "context": context,
+        "method": "nearest_active_promoter_gene_candidates_v1",
+        "evidence_type": "nearest_active_promoter_tss",
+        "element_posterior_threshold": element_posterior_threshold,
+        "promoter_activity_definition": (
+            "active flag inherited from the context promoter node"
+        ),
+        "selection": (
+            "proximal_or_distal_enhancer_like and element_h3k27ac_posterior "
+            ">= element threshold; nearest same-chromosome active promoter TSS"
+        ),
+        "distance_limit_bp": None,
+        "exact_distance_ties_retained": True,
+        "contact_or_powerlaw_used": False,
+        "element_node_count": element_node_count,
+        "qualifying_element_count": len(elements),
+        "active_element_count": len(active_element_ids),
+        "active_promoter_associated_element_count": len(
+            active_promoter_associated_element_ids
+        ),
+        "active_promoter_tss_count": len(promoter_rows),
+        "element_with_nearest_active_promoter_count": len(candidate_element_ids),
+        "qualifying_element_without_active_promoter_on_chromosome_count": (
+            len(elements) - len(candidate_element_ids)
+        ),
+        "nearest_active_promoter_gene_candidate_count": candidate_count,
+        "inputs": {
+            "nodes": {"path": str(nodes_path), "sha256": sha256_file(nodes_path)},
+        },
+        "output": {"path": str(output), "sha256": sha256_file(output)},
+    }
+    write_json_atomic(metrics_output, metrics)
+    return metrics
 
 
 def build_active_contact_enhancer_gene_candidates(
@@ -1331,8 +1589,10 @@ def build_context_links(
             else "catalog"
         ),
         "promoter_activity_method": "maximum over context-member master DHSs "
-        "overlapping the fixed promoter window",
-        "link_score": "contact_weight * maximum over overlapping DHSs of "
+        "whose summits are within 500 bp of the promoter TSS",
+        "promoter_support_distance_bp": PROMOTER_SUPPORT_DISTANCE_BP,
+        "promoter_support_distance_inclusive": True,
+        "link_score": "contact_weight * maximum over promoter-supporting DHSs of "
         "(combined_activity * h3k27ac_posterior)",
         "element_node_count": len(elements),
         "promoter_node_count": len(promoters),
@@ -1385,6 +1645,7 @@ def aggregate_link_metrics(
     *,
     context_metric_paths: list[Path],
     candidate_metric_paths: list[Path],
+    nearest_candidate_metric_paths: list[Path],
     distance_candidate_metric_paths: list[Path],
     source_manifest: Path,
     promoter_metrics: Path,
@@ -1409,6 +1670,21 @@ def aggregate_link_metrics(
         raise ValueError("Focused candidate metrics repeat a context")
     if set(candidates_by_context) != {row["context"] for row in contexts}:
         raise ValueError("Focused candidate metrics do not match graph contexts")
+    nearest_candidate_metrics = []
+    for path in nearest_candidate_metric_paths:
+        with path.open(encoding="utf-8") as handle:
+            nearest_candidate_metrics.append(json.load(handle))
+    nearest_candidates_by_context = {
+        row["context"]: row for row in nearest_candidate_metrics
+    }
+    if len(nearest_candidates_by_context) != len(nearest_candidate_metrics):
+        raise ValueError("Nearest-promoter candidate metrics repeat a context")
+    if set(nearest_candidates_by_context) != {
+        row["context"] for row in contexts
+    }:
+        raise ValueError(
+            "Nearest-promoter candidate metrics do not match graph contexts"
+        )
     distance_candidate_metrics = []
     for path in distance_candidate_metric_paths:
         with path.open(encoding="utf-8") as handle:
@@ -1446,6 +1722,10 @@ def aggregate_link_metrics(
             int(row["active_contact_enhancer_gene_candidate_count"])
             for row in candidate_metrics
         ),
+        "nearest_active_promoter_gene_candidate_count": sum(
+            int(row["nearest_active_promoter_gene_candidate_count"])
+            for row in nearest_candidate_metrics
+        ),
         "active_distance_enhancer_gene_candidate_count": sum(
             int(row["active_distance_enhancer_gene_candidate_count"])
             for row in distance_candidate_metrics
@@ -1471,6 +1751,11 @@ def aggregate_link_metrics(
                         "active_contact_enhancer_gene_candidate_count"
                     ]
                 ),
+                "nearest_active_promoter_gene_candidate_count": (
+                    nearest_candidates_by_context[row["context"]][
+                        "nearest_active_promoter_gene_candidate_count"
+                    ]
+                ),
                 "active_distance_enhancer_gene_candidate_count": (
                     distance_candidates_by_context.get(row["context"], {}).get(
                         "active_distance_enhancer_gene_candidate_count", 0
@@ -1488,11 +1773,12 @@ def aggregate_link_metrics(
         *contact_metrics,
         *context_metric_paths,
         *candidate_metric_paths,
+        *nearest_candidate_metric_paths,
         *distance_candidate_metric_paths,
     ]
     provenance = {
         "schema_version": 1,
-        "method": "context_contact_graph_v1",
+        "method": "context_contact_graph_v3",
         "inputs": {
             str(path): {"path": str(path), "sha256": sha256_file(path)}
             for path in inputs

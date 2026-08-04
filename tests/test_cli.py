@@ -237,6 +237,70 @@ def test_accession_stage_requires_qc_review_before_master(monkeypatch, tmp_path)
     assert error.value.code == 2
 
 
+def test_contact_opt_in_is_rejected_outside_new_activity_links_run(
+    monkeypatch, tmp_path
+):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_pipeline.py", str(sheet), "--with-contacts"],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
+
+
+def test_catalog_contact_opt_in_reaches_configuration_generator(
+    monkeypatch, tmp_path
+):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text("placeholder\n")
+    captured = {}
+
+    def fake_generate_catalog_links_config(**kwargs):
+        captured.update(kwargs)
+        output = tmp_path / "resolved.yaml"
+        output.write_text("project: atlas\n")
+        return output
+
+    monkeypatch.setattr(
+        run_pipeline,
+        "generate_catalog_links_config",
+        fake_generate_catalog_links_config,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--from-stage",
+            "catalog",
+            "--until-stage",
+            "links",
+            "--catalog-manifest",
+            str(catalog),
+            "--with-contacts",
+            "--config-only",
+        ],
+    )
+
+    assert run_pipeline_main() == 0
+    assert captured["include_contacts"] is True
+
+
 def test_nonactivity_reuse_stage_rejects_activity_options(monkeypatch, tmp_path):
     sheet = tmp_path / "samples.tsv"
     sheet.write_text(

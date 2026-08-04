@@ -500,7 +500,7 @@ def nearest_tss(
 def regulatory_class(distance: int | None) -> str:
     if distance is None:
         return "unclassified_no_tss_on_contig"
-    if distance <= 250:
+    if distance <= 500:
         return "promoter_associated"
     if distance <= 1000:
         return "proximal_enhancer_like"
@@ -1081,7 +1081,7 @@ def build_regulatory_catalog(
     _atomic_text_if_changed(output_summary, summary_content)
 
     metrics = {
-        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v2",
+        "method": "background_tmm_summit_max3_500bp_guarded_gmm_v3",
         "master_dhs_count": len(elements),
         "context_count": len(contexts),
         "catalog_row_count": len(elements) * len(contexts),
@@ -1118,8 +1118,8 @@ def build_regulatory_catalog(
         },
         "regulatory_class_definition": {
             "coordinate": "absolute master_summit_to_nearest_tss_distance_bp",
-            "promoter_associated": "distance <= 250",
-            "proximal_enhancer_like": "250 < distance <= 1000",
+            "promoter_associated": "distance <= 500",
+            "proximal_enhancer_like": "500 < distance <= 1000",
             "distal_enhancer_like": "distance > 1000",
             "unclassified_no_tss_on_contig": "no TSS on contig",
         },

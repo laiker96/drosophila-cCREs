@@ -649,6 +649,8 @@ if ACTIVITY:
             ),
             igv_sessions=list(ACTIVITY_CONTEXT_IGV_SESSIONS.values()),
             all_contexts_igv_session=ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+            nearest_tss_candidates=NEAREST_TSS_ENHANCER_CANDIDATES,
+            nearest_tss_metrics=NEAREST_TSS_ENHANCER_METRICS,
             contact_link_metrics=(CONTACT_LINK_METRICS if CONTACTS else []),
             contact_link_provenance=(CONTACT_LINK_PROVENANCE if CONTACTS else []),
             implementation=str(REPO_ROOT / "src" / "short_read_processing" / "integrated_report.py")
@@ -702,6 +704,8 @@ if ACTIVITY:
                     for context, path in ACTIVITY_CONTEXT_IGV_SESSIONS.items()
                 },
                 "igv_session_all_contexts": ACTIVITY_ALL_CONTEXTS_IGV_SESSION,
+                "nearest_tss_enhancer_candidates": NEAREST_TSS_ENHANCER_CANDIDATES,
+                "nearest_tss_enhancer_metrics": NEAREST_TSS_ENHANCER_METRICS,
                 **(
                     {
                         "contact_graph_metrics": CONTACT_LINK_METRICS,

@@ -79,6 +79,14 @@ def main() -> int:
     parser.add_argument("--config-only", action="store_true")
     parser.add_argument("--snakemake-dry-run", action="store_true")
     parser.add_argument(
+        "--with-contacts",
+        action="store_true",
+        help=(
+            "Opt into the canonical dm6 Micro-C/Hi-C/power-law branch. "
+            "Nearest-TSS enhancer candidates are generated without this flag."
+        ),
+    )
+    parser.add_argument(
         "--from-stage",
         choices=("accessions", *OUTPUT_STAGES, "final-bam"),
         default="accessions",
@@ -271,6 +279,19 @@ def main() -> int:
         if args.from_stage in {"links", "report"} and not args.checkpoint_manifest:
             parser.error(f"--from-stage {args.from_stage} requires --checkpoint-manifest")
 
+    if args.with_contacts and not (
+        args.catalog_manifest
+        or (
+            args.from_stage in {"master", "quantification"}
+            and not args.checkpoint_manifest
+            and output_stage in {"links", "report"}
+        )
+    ):
+        parser.error(
+            "--with-contacts is valid for a new master/quantification-to-links/report "
+            "configuration or a new catalog-bundle-to-links configuration"
+        )
+
     sample_sheet = args.sample_sheet.resolve()
     if args.from_stage == "alignment" and args.checkpoint_manifest:
         alignment_checkpoint = read_stage_checkpoint(
@@ -340,6 +361,7 @@ def main() -> int:
                 path_base=REPO_ROOT,
                 schema_path=args.schema.resolve(),
                 genome=args.genome,
+                include_contacts=args.with_contacts,
             )
         ]
     elif resume_in_place:
@@ -378,6 +400,7 @@ def main() -> int:
                 report_source_roots=[
                     path.resolve() for path in args.report_source_root
                 ],
+                include_contacts=args.with_contacts,
             )
         ]
     else:

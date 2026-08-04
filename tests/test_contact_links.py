@@ -9,13 +9,16 @@ from short_read_processing.contact_links import (
     DISTANCE_MODEL_GENE_FIELDS,
     EDGE_FIELDS,
     Element,
+    NEAREST_ACTIVE_PROMOTER_GENE_FIELDS,
     NODE_FIELDS,
     _active_contact_enhancer_gene_rows,
     _active_distance_enhancer_gene_rows,
     _atomic_tsv,
+    aggregate_link_metrics,
     build_active_contact_enhancer_gene_candidates,
     build_active_distance_enhancer_gene_candidates,
     build_context_links,
+    build_nearest_active_promoter_gene_candidates,
     build_promoter_table,
     read_context_elements,
 )
@@ -46,6 +49,34 @@ def test_compressed_graph_tables_are_byte_deterministic(tmp_path):
     _atomic_tsv(second, ("node", "score"), [{"node": "x", "score": 1}])
 
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_promoter_table_uses_plus_minus_500_bp_window(tmp_path):
+    annotation = tmp_path / "genes.gtf"
+    annotation.write_text(
+        'chr2L\ttest\ttranscript\t1001\t1300\t.\t+\t.\tgene_id "gene_x"; '
+        'gene_name "x"; transcript_id "tx1";\n',
+        encoding="utf-8",
+    )
+    chrom_sizes = tmp_path / "chrom.sizes"
+    chrom_sizes.write_text("chr2L\t5000\n", encoding="utf-8")
+    promoters = tmp_path / "promoters.tsv.gz"
+
+    result = build_promoter_table(
+        annotation=annotation,
+        chrom_sizes=chrom_sizes,
+        canonical_chromosomes=["chr2L"],
+        promoter_width=1000,
+        annotation_checksum=None,
+        output=promoters,
+        metrics_output=tmp_path / "promoters.json",
+    )
+
+    [promoter] = _read_tsv(promoters)
+    assert promoter["tss"] == "1000"
+    assert promoter["start"] == "500"
+    assert promoter["end"] == "1500"
+    assert result["promoter_width_bp"] == 1000
 
 
 def _read_tsv(path: Path):
@@ -363,6 +394,256 @@ def test_distance_candidate_table_is_derived_from_existing_graph_tables(tmp_path
     assert result["element_with_candidate_count"] == 1
 
 
+def test_nearest_active_promoter_projection_retains_ties_and_supporting_elements(
+    tmp_path,
+):
+    nodes = tmp_path / "nodes.tsv.gz"
+    output = tmp_path / "nearest.tsv.gz"
+    metrics = tmp_path / "nearest.metrics.json"
+
+    def element_node(
+        master_dhs_id,
+        *,
+        chrom,
+        anchor,
+        regulatory_class,
+        posterior,
+        active,
+    ):
+        return {
+            "context": "ctx",
+            "node_id": f"element:{master_dhs_id}",
+            "node_type": "element",
+            "master_dhs_id": master_dhs_id,
+            "chrom": chrom,
+            "start": anchor - 50,
+            "end": anchor + 50,
+            "anchor": anchor,
+            "regulatory_class": regulatory_class,
+            "atac_accessible": 1,
+            "atac_signal": 4,
+            "h3k27ac_posterior": posterior,
+            "combined_activity": 4,
+            "active": active,
+            "blacklist_overlap": 0,
+        }
+
+    def promoter_node(
+        promoter_id,
+        *,
+        master_dhs_id,
+        gene_id,
+        chrom,
+        anchor,
+        active,
+    ):
+        return {
+            "context": "ctx",
+            "node_id": f"promoter:{promoter_id}",
+            "node_type": "promoter",
+            "master_dhs_id": master_dhs_id,
+            "promoter_id": promoter_id,
+            "gene_id": gene_id,
+            "gene_name": gene_id,
+            "chrom": chrom,
+            "start": anchor - 250,
+            "end": anchor + 250,
+            "anchor": anchor,
+            "regulatory_class": "promoter",
+            "atac_accessible": 1,
+            "atac_signal": 5,
+            "h3k27ac_posterior": 0.8,
+            "combined_activity": 5,
+            "active": active,
+            "blacklist_overlap": "",
+        }
+
+    _atomic_tsv(
+        nodes,
+        NODE_FIELDS,
+        [
+            element_node(
+                "DHS_enhancer",
+                chrom="chr2L",
+                anchor=10_000,
+                regulatory_class="distal_enhancer_like",
+                posterior=0.5,
+                active=1,
+            ),
+            element_node(
+                "DHS_without_target",
+                chrom="chr3L",
+                anchor=10_000,
+                regulatory_class="distal_enhancer_like",
+                posterior=0.8,
+                active=1,
+            ),
+            element_node(
+                "DHS_below_threshold",
+                chrom="chr2L",
+                anchor=10_100,
+                regulatory_class="distal_enhancer_like",
+                posterior=0.499,
+                active=0,
+            ),
+            element_node(
+                "DHS_promoter_left",
+                chrom="chr2L",
+                anchor=8_000,
+                regulatory_class="promoter_associated",
+                posterior=0.8,
+                active=1,
+            ),
+            element_node(
+                "DHS_promoter_right",
+                chrom="chr2L",
+                anchor=12_000,
+                regulatory_class="promoter_associated",
+                posterior=0.9,
+                active=1,
+            ),
+            element_node(
+                "DHS_not_promoter_associated",
+                chrom="chr2L",
+                anchor=15_000,
+                regulatory_class="unclassified_no_tss_on_contig",
+                posterior=0.9,
+                active=1,
+            ),
+            promoter_node(
+                "promoter_left",
+                master_dhs_id="DHS_promoter_left",
+                gene_id="gene_left",
+                chrom="chr2L",
+                anchor=8_000,
+                active=1,
+            ),
+            promoter_node(
+                "promoter_right",
+                master_dhs_id="DHS_promoter_right",
+                gene_id="gene_right",
+                chrom="chr2L",
+                anchor=12_000,
+                active=1,
+            ),
+            promoter_node(
+                "promoter_unsupported",
+                master_dhs_id="DHS_not_promoter_associated",
+                gene_id="gene_unsupported",
+                chrom="chr2L",
+                anchor=15_000,
+                active=1,
+            ),
+            promoter_node(
+                "promoter_inactive",
+                master_dhs_id="DHS_promoter_left",
+                gene_id="gene_inactive",
+                chrom="chr2L",
+                anchor=9_900,
+                active=0,
+            ),
+        ],
+    )
+
+    result = build_nearest_active_promoter_gene_candidates(
+        context="ctx",
+        nodes_path=nodes,
+        element_posterior_threshold=0.5,
+        output=output,
+        metrics_output=metrics,
+    )
+
+    rows = _read_tsv(output)
+    assert tuple(rows[0]) == NEAREST_ACTIVE_PROMOTER_GENE_FIELDS
+    assert [row["gene_id"] for row in rows] == ["gene_left", "gene_right"]
+    assert {row["distance_bp"] for row in rows} == {"2000"}
+    assert {row["nearest_active_tss_tie_count"] for row in rows} == {"2"}
+    assert {row["evidence_type"] for row in rows} == {
+        "nearest_active_promoter_tss"
+    }
+    assert {
+        row["active_promoter_supporting_element_ids"] for row in rows
+    } == {"DHS_promoter_left", "DHS_promoter_right"}
+    assert {
+        row["active_promoter_associated_element_ids"] for row in rows
+    } == {"DHS_promoter_left", "DHS_promoter_right"}
+    assert result["qualifying_element_count"] == 2
+    assert result["element_with_nearest_active_promoter_count"] == 1
+    assert result[
+        "qualifying_element_without_active_promoter_on_chromosome_count"
+    ] == 1
+    assert result["nearest_active_promoter_gene_candidate_count"] == 2
+    assert result["contact_or_powerlaw_used"] is False
+
+
+def test_aggregate_metrics_include_nearest_active_promoter_projection(tmp_path):
+    context_metrics = tmp_path / "context.json"
+    candidate_metrics = tmp_path / "contact-candidates.json"
+    nearest_metrics = tmp_path / "nearest-candidates.json"
+    source_manifest = tmp_path / "sources.tsv"
+    promoter_metrics = tmp_path / "promoters.json"
+    powerlaw = tmp_path / "powerlaw.json"
+    output_metrics = tmp_path / "aggregate.json"
+    output_provenance = tmp_path / "aggregate.provenance.json"
+    context_metrics.write_text(
+        json.dumps(
+            {
+                "context": "ctx",
+                "contact_strategy": "observed",
+                "contact_assay": "Micro-C",
+                "contact_match": "matched",
+                "contact_resolution_bp": 5000,
+                "element_node_count": 10,
+                "promoter_node_count": 4,
+                "active_promoter_count": 2,
+                "element_promoter_edge_count": 20,
+                "element_gene_candidate_count": 15,
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate_metrics.write_text(
+        json.dumps(
+            {
+                "context": "ctx",
+                "active_contact_enhancer_gene_candidate_count": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    nearest_metrics.write_text(
+        json.dumps(
+            {
+                "context": "ctx",
+                "nearest_active_promoter_gene_candidate_count": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    for path in (source_manifest, promoter_metrics, powerlaw):
+        path.write_text("test\n", encoding="utf-8")
+
+    metrics, provenance = aggregate_link_metrics(
+        context_metric_paths=[context_metrics],
+        candidate_metric_paths=[candidate_metrics],
+        nearest_candidate_metric_paths=[nearest_metrics],
+        distance_candidate_metric_paths=[],
+        source_manifest=source_manifest,
+        promoter_metrics=promoter_metrics,
+        contact_metrics=[],
+        powerlaw=powerlaw,
+        output_metrics=output_metrics,
+        output_provenance=output_provenance,
+    )
+
+    assert metrics["nearest_active_promoter_gene_candidate_count"] == 5
+    assert metrics["contexts"]["ctx"][
+        "nearest_active_promoter_gene_candidate_count"
+    ] == 5
+    assert provenance["method"] == "context_contact_graph_v3"
+    assert str(nearest_metrics) in provenance["inputs"]
+
+
 def test_legacy_catalog_defaults_missing_blacklist_overlap_to_zero(tmp_path):
     elements = tmp_path / "legacy.tsv"
     legacy_fields = tuple(
@@ -526,7 +807,7 @@ def test_powerlaw_links_prioritize_an_accessible_active_promoter(tmp_path):
     assert result["active_promoter_count"] == 1
 
 
-def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
+def test_promoter_activity_uses_inclusive_500_bp_summit_distance(tmp_path):
     annotation = tmp_path / "genes.gtf"
     annotation.write_text(
         'chr2L\ttest\ttranscript\t1001\t1300\t.\t+\t.\tgene_id "gene_x"; '
@@ -540,14 +821,14 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
         annotation=annotation,
         chrom_sizes=chrom_sizes,
         canonical_chromosomes=["chr2L"],
-        promoter_width=500,
+        promoter_width=1000,
         annotation_checksum=None,
         output=promoters,
         metrics_output=tmp_path / "promoters.json",
     )
 
-    # The summit-aware master registry may retain distinct sites with overlapping
-    # boundaries, so promoter annotation must not assume disjoint intervals.
+    # Support follows summit distance, not whether the broader DHS interval
+    # happens to overlap the promoter window.
     elements = tmp_path / "ctx.elements.tsv.gz"
     rows = []
     rows.append(
@@ -567,9 +848,10 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
             "blacklist_overlap": 0,
         }
     )
-    for identifier, start, end, summit in (
-        ("DHS_1", 850, 1050, 950),
-        ("DHS_2", 950, 1150, 1050),
+    for identifier, start, end, summit, regulatory_class in (
+        ("DHS_left_boundary", 450, 550, 500, "promoter_associated"),
+        ("DHS_right_boundary", 1450, 1550, 1500, "promoter_associated"),
+        ("DHS_overlap_outside", 1450, 1551, 1501, "proximal_enhancer_like"),
     ):
         rows.append(
             {
@@ -580,7 +862,7 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
                 "summit": summit,
                 "context": "ctx",
                 "context_membership": 1,
-                "regulatory_class": "promoter_associated",
+                "regulatory_class": regulatory_class,
                 "atac_normalized_cpm_per_kb": 2,
                 "mixture_high_posterior_probability": 0.8,
                 "activity_state": "active_high_mixture",
@@ -608,7 +890,7 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
         encoding="utf-8",
     )
 
-    build_context_links(
+    result = build_context_links(
         context="ctx",
         context_elements=elements,
         promoters_path=promoters,
@@ -630,4 +912,9 @@ def test_promoter_activity_accepts_overlapping_master_dhs_boundaries(tmp_path):
     promoter_node = next(
         row for row in _read_tsv(tmp_path / "nodes.tsv.gz") if row["node_type"] == "promoter"
     )
-    assert set(promoter_node["master_dhs_id"].split(";")) == {"DHS_1", "DHS_2"}
+    assert promoter_node["master_dhs_id"].split(";") == [
+        "DHS_left_boundary",
+        "DHS_right_boundary",
+    ]
+    assert result["promoter_support_distance_bp"] == 500
+    assert result["promoter_support_distance_inclusive"] is True

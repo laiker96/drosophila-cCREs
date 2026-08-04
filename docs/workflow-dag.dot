@@ -75,11 +75,13 @@ digraph workflow {
     catalog [label="Posterior/TSS/blacklist annotations\nlong, wide, and context catalogs", fillcolor="#f7e4b2"];
     catalogbundle [label="Checksummed completed catalog\ndownstream restart bundle", shape=note, fillcolor="#f7e4b2"];
     browser [label="Mean TMM ATAC + H3 tracks\nDHS/cCRE IGV bundles", fillcolor="#e1f0f7"];
-    contacts [label="Versioned dm6 contact sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
+    nearestwide [label="Default: one row per enhancer\nnearest annotated TSS ties +\ncontext promoter activity", fillcolor="#dbeedc"];
+    contacts [label="Optional --with-contacts\nversioned dm6 sources\n7 observed contexts", shape=note, fillcolor="#e9f5f3"];
     normalizecontacts [label="Exact coarsening + count merge\none ICE balance per context", fillcolor="#d8eeea"];
     decay [label="Context contact decay +\natlas-wide power-law model", fillcolor="#d8eeea"];
-    links [label="Element--promoter graph +\ncomplete gene candidates", fillcolor="#c7e5df"];
+    links [label="Optional element--promoter graph +\ncomplete gene candidates", fillcolor="#c7e5df"];
     focused [label="Enhancer posterior + contact O/E filter\nobserved-contact candidates", fillcolor="#b9ddd6"];
+    nearest [label="Supplement: enhancer posterior +\nnearest active TSS per context", fillcolor="#dbeedc"];
     distancefocused [label="Enhancer posterior + active promoter\ndistance-ranked candidates\nnearest-TSS baselines", fillcolor="#b9ddd6"];
     sources [label="Frozen upstream QC\nartifacts for reporting", shape=note, fillcolor="#f3eef9"];
     report [label="Checksummed HTML/PDF/JSON\nreport checkpoint", fillcolor="#e8e1f5"];
@@ -97,13 +99,18 @@ digraph workflow {
     units -> browser [style=dashed];
     tmm -> browser;
     catalog -> browser;
+    catalog -> nearestwide;
     contacts -> normalizecontacts -> decay -> links;
     links -> focused;
+    links -> nearest;
     links -> distancefocused;
     catalog -> links;
-    catalogbundle -> links [style=dashed, label="restart"];
+    catalogbundle -> nearestwide [style=dashed, label="restart"];
+    catalogbundle -> links [style=dashed, label="optional restart"];
     browser -> report;
+    nearestwide -> report;
     focused -> report;
+    nearest -> report;
     distancefocused -> report;
     sources -> report [style=dashed];
     {rank=same; exact; background; windows;}
@@ -116,5 +123,6 @@ digraph workflow {
   reviewedbam -> validate;
   mastermanifest -> validate;
   reference -> validate [style=dashed, constraint=false];
+  reference -> nearestwide [style=dashed, constraint=false];
   reference -> links [style=dashed, constraint=false];
 }

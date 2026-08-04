@@ -157,6 +157,23 @@ def _activity_config(tmp_path: Path, contexts=("ctx",)) -> dict:
             }
         ],
     }
+    nearest_annotation = tmp_path / "reference" / "nearest.gtf.gz"
+    nearest_annotation.parent.mkdir(exist_ok=True)
+    nearest_annotation.write_bytes(b"annotation")
+    config["nearest_tss_links"] = {
+        "schema_version": 1,
+        "promoter_annotation": str(nearest_annotation),
+        "promoter_annotation_checksum": "sha256:" + "e" * 64,
+        "chromosome_scope": "all_annotation_chromosomes_in_chrom_sizes",
+        "promoter_width_bp": 1000,
+        "promoter_posterior_threshold": 0.5,
+        "enhancer_classes": [
+            "proximal_enhancer_like",
+            "distal_enhancer_like",
+        ],
+        "promoter_activity": "summit_within_500bp_max_v2",
+        "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
+    }
     return config
 
 
@@ -681,8 +698,24 @@ def test_quantification_and_catalog_dry_run_prune_read_processing(tmp_path):
     with pytest.raises(AcquisitionError, match="source-file SHA-256"):
         validate_workflow_config(invalid_report)
 
+    missing_nearest = copy.deepcopy(config)
+    missing_nearest.pop("nearest_tss_links")
+    with pytest.raises(AcquisitionError, match="require nearest_tss_links"):
+        validate_workflow_config(missing_nearest)
+
+    invalid_nearest_method = copy.deepcopy(config)
+    invalid_nearest_method["nearest_tss_links"]["candidate_assignment"] = (
+        "nearest_active_tss_v0"
+    )
+    with pytest.raises(AcquisitionError, match="Unsupported nearest-TSS"):
+        validate_workflow_config(invalid_nearest_method)
+
     config["output_stage"] = "report"
     report_output = _dry_run(tmp_path, config, "report")
+    assert "build_nearest_tss_promoters" in report_output
+    assert "build_nearest_tss_enhancer_candidates" in report_output
+    assert "enhancer_nearest_tss_candidates_wide.tsv.gz" in report_output
+    assert "download_contact_" not in report_output
     assert "build_integrated_qc_report" in report_output
     assert "integrated_qc_report.pdf" in report_output
 
@@ -697,7 +730,7 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
     config = _activity_config(tmp_path, contexts=("observed", "modelled"))
     config["output_stage"] = "links"
     annotation = tmp_path / "reference" / "genes.gtf.gz"
-    annotation.parent.mkdir()
+    annotation.parent.mkdir(exist_ok=True)
     annotation.write_bytes(b"annotation")
     manifest = tmp_path / "contact-sources.tsv"
     manifest.write_text(
@@ -716,15 +749,15 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         "promoter_annotation": str(annotation),
         "promoter_annotation_checksum": "sha256:" + "d" * 64,
         "canonical_chromosomes": ["chr2L"],
-        "promoter_width_bp": 500,
+        "promoter_width_bp": 1000,
         "maximum_distance_bp": 1_000_000,
         "pseudocount_fraction": 0.01,
         "promoter_posterior_threshold": 0.5,
         "candidate_element_posterior_threshold": 0.5,
         "candidate_observed_over_expected_threshold": 1.0,
         "normalization": "merge_counts_then_ice_retry_v2",
-        "promoter_activity": "overlapping_master_dhs_max_v1",
-        "link_score": "contact_weight_x_promoter_activity_posterior_v1",
+        "promoter_activity": "summit_within_500bp_max_v2",
+        "link_score": "contact_weight_x_promoter_activity_posterior_v2",
         "contexts": [
             {
                 "id": "observed",
@@ -748,12 +781,16 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
     output = _dry_run(tmp_path, config, "contact-links")
 
     for expected in (
+        "build_nearest_tss_promoters",
+        "build_nearest_tss_enhancer_candidates",
+        "enhancer_nearest_tss_candidates_wide.tsv.gz",
         "download_contact_cool_gz",
         "standardize_context_contacts",
         "fit_contact_powerlaw",
         "build_contact_promoters",
         "build_context_contact_links",
         "build_active_contact_enhancer_gene_candidates",
+        "build_nearest_active_promoter_gene_candidates",
         "build_active_distance_enhancer_gene_candidates",
         "aggregate_contact_links",
         "observed.element_promoter_edges.tsv.gz",
@@ -761,6 +798,10 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         "observed.active_contact_enhancer_gene_candidates.tsv.gz",
         "modelled.active_contact_enhancer_gene_candidates.tsv.gz",
         "observed.active_contact_enhancer_gene_candidates.metrics.json",
+        "observed.nearest_active_promoter_gene_candidates.tsv.gz",
+        "observed.nearest_active_promoter_gene_candidates.metrics.json",
+        "modelled.nearest_active_promoter_gene_candidates.tsv.gz",
+        "modelled.nearest_active_promoter_gene_candidates.metrics.json",
         "modelled.active_distance_enhancer_gene_candidates.tsv.gz",
         "modelled.active_distance_enhancer_gene_candidates.metrics.json",
         "links.checkpoint.json",
@@ -791,6 +832,20 @@ def test_contact_links_dry_run_downloads_normalizes_and_models(tmp_path):
         AcquisitionError, match="Candidate observed/expected threshold"
     ):
         validate_workflow_config(invalid_enrichment)
+
+    invalid_promoter_width = copy.deepcopy(config)
+    invalid_promoter_width["contacts"]["promoter_width_bp"] = 500
+    with pytest.raises(AcquisitionError, match="must be 1000 bp"):
+        validate_workflow_config(invalid_promoter_width)
+
+    invalid_promoter_activity = copy.deepcopy(config)
+    invalid_promoter_activity["contacts"][
+        "promoter_activity"
+    ] = "overlapping_master_dhs_max_v1"
+    with pytest.raises(
+        AcquisitionError, match="Unsupported contact promoter_activity"
+    ):
+        validate_workflow_config(invalid_promoter_activity)
 
     imported_paths = {}
     for field in ("catalog", "metrics", "provenance", "resolved_config", "manifest"):

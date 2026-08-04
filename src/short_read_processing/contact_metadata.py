@@ -239,14 +239,14 @@ def default_dm6_contact_config(
             reference["preparation"]["annotation"]["checksum"]
         ),
         "canonical_chromosomes": list(DM6_CANONICAL_CONTACT_CHROMOSOMES),
-        "promoter_width_bp": 500,
+        "promoter_width_bp": 1000,
         "maximum_distance_bp": 1_000_000,
         "pseudocount_fraction": 0.01,
         "promoter_posterior_threshold": 0.5,
         "candidate_element_posterior_threshold": 0.5,
         "candidate_observed_over_expected_threshold": 1.0,
         "normalization": "merge_counts_then_ice_retry_v2",
-        "promoter_activity": "overlapping_master_dhs_max_v1",
-        "link_score": "contact_weight_x_promoter_activity_posterior_v1",
+        "promoter_activity": "summit_within_500bp_max_v2",
+        "link_score": "contact_weight_x_promoter_activity_posterior_v2",
         "contexts": [dict(row) for row in DM6_ATLAS_CONTACT_CONTEXTS],
     }

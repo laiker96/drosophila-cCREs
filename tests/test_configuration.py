@@ -1033,7 +1033,7 @@ def test_activity_config_records_and_skips_documented_rejection(tmp_path):
     ]
 
 
-def test_complete_dm6_atlas_config_adds_contact_links(tmp_path):
+def test_complete_dm6_atlas_config_defaults_to_nearest_tss_links(tmp_path):
     sheet_rows = ["accession\tlibrary_id\tassay\tcontext"]
     manifest_rows = []
     accession = 200000
@@ -1067,6 +1067,26 @@ def test_complete_dm6_atlas_config_adds_contact_links(tmp_path):
     config = yaml.safe_load(output.read_text())
 
     assert config["output_stage"] == "links"
+    assert "contacts" not in config
+    assert config["nearest_tss_links"]["candidate_assignment"] == (
+        "nearest_annotated_tss_all_ties_v1"
+    )
+
+    output = generate_activity_config(
+        sample_sheet_path=sheet,
+        final_bam_manifests=[manifest],
+        master_manifest_path=_write_master_manifest(tmp_path),
+        output_dir=tmp_path / "configs",
+        project="activity-test",
+        run_id="links-with-contacts-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        require_files=True,
+        output_stage="links",
+        include_contacts=True,
+    )
+    config = yaml.safe_load(output.read_text())
+
     assert len(config["contacts"]["contexts"]) == 9
     assert {
         row["id"]
@@ -1175,11 +1195,38 @@ def test_catalog_import_generates_a_new_links_only_namespace(tmp_path):
     assert config["catalog_import"]["catalog"].endswith(
         "activity/catalog/master_elements_long.tsv.gz"
     )
+    assert "contacts" not in config
+    assert config["nearest_tss_links"]["enhancer_classes"] == [
+        "proximal_enhancer_like",
+        "distal_enhancer_like",
+    ]
+    validate_workflow_config(config)
+    resolve_input_paths(config, tmp_path)
+
+
+def test_catalog_import_can_opt_into_contact_branch(tmp_path):
+    sheet = tmp_path / "atlas.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\tab\n"
+    )
+    manifest = _write_catalog_bundle_manifest(tmp_path, sheet)
+
+    output = generate_catalog_links_config(
+        sample_sheet_path=sheet,
+        catalog_manifest_path=manifest,
+        output_dir=tmp_path / "configs",
+        project="atlas-links",
+        run_id="from-catalog-contacts-v1",
+        reference_root=tmp_path / "references",
+        path_base=tmp_path,
+        include_contacts=True,
+    )
+    config = yaml.safe_load(output.read_text())
+
     assert {row["id"] for row in config["contacts"]["contexts"]} == set(
         DM6_ATLAS_CONTEXT_IDS
     )
-    validate_workflow_config(config)
-    resolve_input_paths(config, tmp_path)
 
 
 def test_catalog_import_rejects_a_different_sample_sheet(tmp_path):

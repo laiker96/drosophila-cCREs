@@ -122,6 +122,7 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
                 "element_promoter_edge_count": 250,
                 "element_gene_candidate_count": 200,
                 "active_contact_enhancer_gene_candidate_count": 50,
+                "nearest_active_promoter_gene_candidate_count": 40,
                 "active_distance_enhancer_gene_candidate_count": 0,
                 "contexts": {
                     "ctx": {
@@ -133,6 +134,7 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
                         "element_promoter_edge_count": 250,
                         "element_gene_candidate_count": 200,
                         "active_contact_enhancer_gene_candidate_count": 50,
+                        "nearest_active_promoter_gene_candidate_count": 40,
                         "active_distance_enhancer_gene_candidate_count": 0,
                     }
                 },
@@ -141,6 +143,19 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
     )
     contact_provenance = tmp_path / "contact-provenance.json"
     contact_provenance.write_text(json.dumps({"method": "test"}))
+    nearest_candidates = tmp_path / "nearest.tsv.gz"
+    nearest_candidates.write_bytes(b"candidates")
+    nearest_metrics = tmp_path / "nearest.json"
+    nearest_metrics.write_text(
+        json.dumps(
+            {
+                "enhancer_count": 10,
+                "nearest_tss_tie_element_count": 1,
+                "no_same_chromosome_promoter_count": 0,
+                "enhancer_with_active_nearest_promoter_by_context": {"ctx": 8},
+            }
+        )
+    )
 
     config = {
         "project": "atlas",
@@ -175,6 +190,8 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
         "mixture_models": mixtures,
         "regulatory_element_summary": summary,
         "mixture_distributions": mixture_svg,
+        "nearest_tss_enhancer_candidates": nearest_candidates,
+        "nearest_tss_enhancer_metrics": nearest_metrics,
         "contact_graph_metrics": contact_metrics,
         "contact_graph_provenance": contact_provenance,
     }
@@ -223,9 +240,36 @@ def test_integrated_report_discovers_sources_and_writes_deterministic_outputs(tm
 
     assert result["mixture_warning_count"] == 1
     assert result["contact_links"]["observed_context_count"] == 1
-    assert "Context contact links and candidate genes" in output_html.read_text()
+    assert "Default nearest-TSS enhancer candidates" in output_html.read_text()
+    assert "Optional context contact links and candidate genes" in output_html.read_text()
+    assert "Nearest-active-promoter candidates" in output_html.read_text()
     assert "Focused distance candidates" in output_html.read_text()
     assert "insufficient_positive_members" in output_html.read_text()
     assert first_hashes == tuple(
         sha256_file(path) for path in (output_html, output_pdf, output_metrics)
     )
+
+    nearest_only_files = {
+        name: path
+        for name, path in current.items()
+        if not name.startswith("contact_graph_")
+    }
+    nearest_only_html = tmp_path / "nearest-only.html"
+    nearest_only = build_integrated_qc_report(
+        config=config,
+        source_files=[
+            {
+                **discovered[0],
+                "path": str(discovered[0]["path"]),
+                "source_root": str(discovered[0]["source_root"]),
+            }
+        ],
+        current_files=nearest_only_files,
+        output_html=nearest_only_html,
+        output_pdf=tmp_path / "nearest-only.pdf",
+        output_metrics=tmp_path / "nearest-only.json",
+        pdf_renderer=fake_pdf_renderer,
+    )
+    assert nearest_only["contact_links"] is None
+    assert "Default nearest-TSS enhancer candidates" in nearest_only_html.read_text()
+    assert "Optional context contact links" not in nearest_only_html.read_text()

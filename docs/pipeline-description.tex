@@ -14,6 +14,8 @@
 \usepackage{enumitem}
 \usepackage{listings}
 \usepackage{fancyhdr}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,fit,positioning}
 \usepackage[hidelinks]{hyperref}
 
 % Keep the generated PDF stable across identical builds with pdfTeX.
@@ -24,6 +26,8 @@
 \definecolor{pipelineblue}{HTML}{315E7D}
 \definecolor{lightblue}{HTML}{EDF4F8}
 \definecolor{lightgold}{HTML}{FFF7E6}
+\definecolor{lightgreen}{HTML}{EAF5EF}
+\definecolor{lightpurple}{HTML}{F2ECF8}
 \definecolor{codegray}{HTML}{F4F5F6}
 
 \hypersetup{
@@ -67,7 +71,7 @@
 \title{\textbf{Drosophila cCRE Pipeline}\\[0.3em]
 \large Detailed implementation and scientific reasoning}
 \author{drosophila-cCREs project}
-\date{Repository documentation revision: 2026-07-31}
+\date{Repository documentation revision: 2026-08-04}
 
 \begin{document}
 
@@ -82,8 +86,14 @@ element catalog.  The downstream catalog combines ATAC accessibility and
 H3K27ac signal using assay-specific background TMM normalization, guarded
 two-component Gaussian mixture models, portable browser tracks, and IGV
 sessions.  For the canonical dm6 atlas, the workflow also normalizes available
+The default links branch requires no contact NGS data: it assigns every
+enhancer-like catalog element to the nearest annotated TSS, keeps all exact
+ties in one enhancer row, and annotates enhancer and promoter activity across
+all contexts in columns.  An optional branch, enabled explicitly, normalizes
 Micro-C/Hi-C matrices, models contact decay where a context map is absent, and
 builds context-specific element--promoter and element--gene candidate tables.
+Thus nearest distance, observed contacts, and modeled distance evidence remain
+separate products.
 An integrated checksummed report summarizes all stages.  The emphasis is both operational and
 scientific: each section states what the current rules do, why that choice was
 made, and which limitations remain.  This is implementation documentation for
@@ -106,9 +116,10 @@ The pipeline has three related scientific goals:
   \item annotate every master DHS in every context with accessibility,
 H3K27ac, a high-component posterior probability, TSS proximity, blacklist
   overlap, and a guarded high/low interpretation; and
-  \item use matched contact evidence and promoter activity to prioritize
-  candidate genes for context-member elements without turning a ranking into
-  a causal target assignment.
+  \item use the nearest annotated TSS as the default candidate gene, annotate
+  that promoter's activity across contexts, and optionally add matched contact
+  evidence plus an explicitly labeled power-law distance prior where maps are
+  absent, without turning any ranking into a causal target assignment.
 \end{enumerate}
 
 The public interface is accession-first.  Users provide public accessions and
@@ -120,7 +131,8 @@ resource scheduling, rule environments, and restart behavior.
 
 The current workflow includes ATAC-seq processing, TF and histone ChIP-seq
 processing, H3K27ac-based context activity annotation, catalog visualization,
-contact-map normalization, candidate-gene linking, and integrated reporting.
+contact-independent candidate-gene linking, optional contact-map normalization,
+and integrated reporting.
 It does not perform ABC candidate resizing or ABC scoring.  It also does not
 import an external regulatory-element catalog or apply quantile normalization.
 
@@ -222,7 +234,7 @@ master DHS bundle
 \vspace{0.35em}
 \textbf{Invocation 3: accepted BAMs + frozen master $\rightarrow$ catalog/links/report}\\
 validate $\rightarrow$ count $\rightarrow$ normalize $\rightarrow$ annotate
-$\rightarrow$ normalize contacts $\rightarrow$ candidate links $\rightarrow$
+$\rightarrow$ nearest-TSS links [$\rightarrow$ optional contact links] $\rightarrow$
 tracks, IGV sessions, and report
 \end{minipage}}
 \end{center}
@@ -260,7 +272,7 @@ quantification & Checksummed quantification checkpoint &
 \stage{quantification}, \stage{catalog}, \stage{links}, or \stage{report} \\
 catalog & Checksummed catalog checkpoint, or an immutable catalog-bundle manifest &
 \stage{catalog}, \stage{links}, or \stage{report} from a checkpoint; \stage{links} only from a bundle manifest \\
-links & Checksummed contact-link checkpoint & \stage{links} or \stage{report} \\
+links & Checksummed nearest-TSS link checkpoint, with optional contact products & \stage{links} or \stage{report} \\
 report & Checksummed report checkpoint & \stage{report} validation \\
 \bottomrule
 \end{longtable}
@@ -765,8 +777,8 @@ same contig.  Ties retain all tied TSS identifiers.  Classes are descriptive:
 \toprule
 Class & Absolute summit--TSS distance \\
 \midrule
-\texttt{promoter\_associated} & \(\leq250\) bp \\
-\texttt{proximal\_enhancer\_like} & 251--1,000 bp \\
+\texttt{promoter\_associated} & \(\leq500\) bp \\
+\texttt{proximal\_enhancer\_like} & 501--1,000 bp \\
 \texttt{distal\_enhancer\_like} & \(>1{,}000\) bp \\
 \texttt{unclassified\_no\_tss\_on\_contig} & no annotated TSS on contig \\
 \bottomrule
@@ -866,7 +878,89 @@ diagnostic view of the same accepted libraries, units, factors, and coordinates.
 Generating both from shared inputs minimizes the risk that a visually
 attractive track represents a different normalization or sample selection.
 
-\section{Context contacts and candidate genes}
+\section{Candidate gene branches}
+
+\subsection{Default contact-independent nearest-TSS table}
+
+The completed regulatory catalog feeds two independent link branches
+(Figure~\ref{fig:catalog-link-branches}).  The default branch requires the
+reference GTF and chromosome sizes but no contact NGS data.  It writes
+\filep{activity/links/nearest\_tss/enhancer\_nearest\_tss\_candidates\_wide.tsv.gz}
+with exactly one row for every catalog element classified
+\texttt{proximal\_enhancer\_like} or \texttt{distal\_enhancer\_like}.  The
+enhancer is not filtered by its H3K27ac posterior in this atlas-wide table.
+
+For enhancer summit \(s_i\), the candidate promoter set is
+\[
+  \mathcal{N}_i =
+  \left\{p:\left|s_i-t_p\right|=
+  \min_{q\text{ on the same chromosome}}\left|s_i-t_q\right|\right\},
+\]
+where \(t_p\) is an exact annotated TSS on any GTF chromosome represented in
+the reference chromosome-sizes file.  Thus every exact distance tie is
+retained.  Multiple tied promoter, gene, TSS, strand, and transcript values
+are stored in aligned fields in the same enhancer row; ties never duplicate
+the enhancer row.  This selection uses annotated TSS distance, not promoter
+activity, and has no maximum-distance cutoff.
+
+Shared columns contain master-DHS coordinates and class, minimum distance,
+tie count, promoter IDs, gene IDs/names, TSS positions/strands, and transcript
+IDs.  For each configured context, a prefixed column block contains the
+enhancer's membership, ATAC signal, H3K27ac posterior, activity state, and
+combined activity.  The same block reports whether any promoter in
+\(\mathcal{N}_i\) is active, the active tied promoter IDs, their supporting
+master-DHS IDs, and maximum promoter ATAC, H3K27ac-posterior, combined-activity,
+and activity-score values.  Summary columns list all contexts in which at
+least one tied nearest promoter is active.
+
+Promoter activity uses the same explicit rule throughout the two branches:
+a context-member master-DHS summit must lie within inclusive \(\pm500\) bp of
+the exact TSS, and the maximum H3K27ac high-component posterior over those
+supporting DHSs must be at least 0.5.  Activity annotates the already selected
+nearest promoter; it does not replace it with a more distant active promoter.
+The sibling promoter table and JSON metrics record the GTF/reference hashes,
+thresholds, tie counts, per-context active-nearest-promoter counts, and output
+hash.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  >=Latex,
+  every node/.style={font=\small,align=center},
+  source/.style={draw=pipelineblue,rounded corners,thick,fill=lightgold,
+    text width=4.9cm,minimum height=1.05cm,inner sep=6pt},
+  branch/.style={draw=pipelineblue,rounded corners,thick,
+    text width=5.4cm,minimum height=1.55cm,inner sep=6pt},
+  product/.style={draw=gray!65,rounded corners,text width=5.4cm,
+    minimum height=1.35cm,inner sep=6pt},
+  flow/.style={->,thick,color=pipelineblue}
+]
+  \node[source] (catalog) {Completed context-resolved catalog\\
+    master-DHS coordinates, TSS class, and activity};
+  \node[branch,fill=lightgreen,below left=16mm and 11mm of catalog] (nearest) {
+    Default branch: no contact data\\nearest annotated TSS on the chromosome\\
+    all exact ties, promoter activity by context};
+  \node[branch,fill=lightblue,below right=16mm and 11mm of catalog] (contact) {
+    Optional \texttt{--with-contacts} branch\\seven observed Micro-C/Hi-C
+    contexts\\two labeled atlas power-law contexts};
+  \node[product,below=9mm of nearest] (nearestout) {
+    One enhancer per row\\shared nearest-gene fields +
+    context-prefixed enhancer/promoter activity};
+  \node[product,below=9mm of contact] (contactout) {
+    Per-context nodes, promoter edges, gene ranks, focused observed-contact
+    and power-law tables};
+  \draw[flow] (catalog) -- (nearest);
+  \draw[flow] (catalog) -- (contact);
+  \draw[flow] (nearest) -- (nearestout);
+  \draw[flow] (contact) -- (contactout);
+\end{tikzpicture}
+}
+\caption{The catalog is the common immutable boundary.  The nearest-TSS
+branch is the default and has no contact dependency.  Contact normalization
+and contact/power-law candidate tables form a separate explicit opt-in branch.}
+\label{fig:catalog-link-branches}
+\end{figure}
 
 \subsection{Starting from a completed catalog}
 
@@ -877,11 +971,13 @@ catalog, catalog metrics, catalog provenance, and source resolved configuration
 by SHA-256.  The manifest also records the source project, run, method, genome,
 context order, and semantic digest carried by the source configuration.
 
-At launch, the pipeline verifies all four files and their internal catalog hash,
-requires the supplied accession table to match the sample-sheet hash recorded by
-the source catalog, and requires the canonical nine-context dm6 set.  The link
-rules stream the long table and select only rows belonging to the requested
-context.  Quantification, mixture fitting, catalog construction, BigWig
+At launch, the pipeline verifies all four files and their internal catalog hash
+and requires the supplied accession table to match the sample-sheet hash
+recorded by the source catalog.  The default nearest-TSS branch works for a
+supported catalog/reference without requiring the canonical dm6 context set.
+Only the optional contact branch requires all nine canonical dm6 contexts.
+The link rules stream the long table and select only rows belonging to the
+requested context.  Quantification, mixture fitting, catalog construction, BigWig
 generation, and IGV-session generation are not placed in this DAG.  This makes
 the catalog a downstream artifact boundary without assigning the current BAM
 filtering contract to older alignments that were never processed under it.
@@ -894,12 +990,14 @@ labels this case as \texttt{legacy\_catalog\_default\_zero}.  The dummy means
 that overlap is unknown, not that the element was checked against the blacklist
 and found clear.
 
-\subsection{Context mapping and source acquisition}
+\subsection{Optional contact mapping and source acquisition}
 
-The link stage is enabled automatically only when the activity configuration
-contains the complete canonical nine-context dm6 atlas.  Its reviewed source
+The contact branch is enabled only by \texttt{--with-contacts} while creating
+a new master/quantification-to-links/report configuration or a new
+catalog-bundle-to-links configuration.  It additionally requires the complete
+canonical nine-context dm6 atlas.  Its reviewed source
 table is \filep{resources/atlas_contact_sources.tsv}, with structure documented
-by \filep{schemas/contact-sources.schema.yaml}.  Restricting the automatic
+by \filep{schemas/contact-sources.schema.yaml}.  Restricting this explicit
 mapping to that exact context set prevents an unrelated catalog from silently
 inheriting a biologically inappropriate contact experiment.
 
@@ -982,22 +1080,71 @@ contacts.  Every downstream row retains \texttt{contact\_strategy=powerlaw},
 The current dm6 GTF supplies one promoter node for every distinct
 gene/TSS/strand combination.  Alternative transcripts sharing a TSS are
 collapsed into that node while their transcript IDs are retained.  Promoter
-windows are 500 bp centered on the zero-based TSS and clipped at chromosome
+windows are 1,000 bp (plus/minus 500 bp) centered on the zero-based TSS and clipped at chromosome
 boundaries.
 
-For a given context, all context-member master DHSs overlapping a promoter
-window contribute to its annotation.  The node records their IDs, maximum ATAC
-signal, maximum H3K27ac high-component posterior, and maximum geometric
-activity $A_j=\sqrt{\mathrm{ATAC}_j\times\mathrm{H3K27ac}_j}$.  It is marked
-active when at least one context-member DHS overlaps and the maximum posterior
-is at least 0.5.  The continuous promoter activity score is
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  >=Latex,
+  every node/.style={font=\small,align=center},
+  object/.style={draw=pipelineblue,rounded corners,thick,minimum height=1.05cm,
+    text width=3.05cm,inner sep=6pt},
+  relation/.style={->,thick,color=pipelineblue},
+  evidence/.style={draw=gray!65,rounded corners,minimum height=0.95cm,
+    text width=3.2cm,inner sep=6pt}
+]
+  \node[object,fill=lightgold] (enhancer) {Master enhancer DHS\\
+    \texttt{DHS\ldots}\\original interval + summit};
+  \node[object,fill=lightblue,right=25mm of enhancer] (promoter) {
+    Annotated promoter node\\\texttt{DM6PROM\ldots}\\1,000-bp window ($\pm500$) + exact TSS};
+  \node[object,fill=lightgreen,right=18mm of promoter] (gene) {
+    GTF gene and transcripts\\\texttt{gene\_id}, \texttt{gene\_name}\\alternative TSSs stay distinct};
+  \node[object,fill=lightgold,below=12mm of promoter] (support) {
+    Promoter-supporting master DHS\\summit within $\pm500$ bp + context activity};
+  \node[evidence,fill=lightpurple,below=12mm of enhancer] (contact) {
+    Pair evidence\\observed matrix pixel or\\distance expectation $E(d)$};
+
+  \draw[relation] (support) -- node[right,font=\scriptsize] {
+    $|\mathrm{summit}-\mathrm{TSS}|\leq500$ bp $\rightarrow P_p$} (promoter);
+  \draw[relation] (enhancer) -- node[above,font=\scriptsize] {
+    summit-to-TSS distance $d$} (promoter);
+  \draw[relation] (promoter) -- node[above,font=\scriptsize] {GTF annotation} (gene);
+  \coordinate (pairmid) at ($(enhancer.east)!0.5!(promoter.west)$);
+  \draw[relation,dashed] (contact.north east) -- (pairmid);
+\end{tikzpicture}
+\caption{The master DHS and promoter registries are different data types.
+Master-element boundaries are never replaced by the fixed promoter window.
+Summit-to-TSS distance selects promoter-supporting DHSs and also anchors link
+distance and contact evidence.}
+\label{fig:contact-data-types}
+\end{figure}
+
+The class boundary and promoter-node window now express the same biological
+choice: a summit at most 500 bp from its nearest TSS is
+\texttt{promoter\_associated}, whereas enhancer-like labels begin beyond 500
+bp.  The class is stored in the regulatory catalog.  A links-only import of an
+older catalog therefore preserves its historical labels; applying the new
+boundary requires rebuilding the catalog under a new run namespace.  Promoter
+nodes themselves are regenerated from the GTF using the current window.  The
+support calculation uses the inclusive condition
+$|\mathrm{summit}-\mathrm{TSS}|\leq500$ bp directly; it is not an interval
+overlap between the DHS boundaries and the promoter BED interval.
+
+For a given context, all context-member master DHSs whose summits are at most
+500 bp from a promoter TSS contribute to its annotation.  The node records
+their IDs, maximum ATAC signal, maximum H3K27ac high-component posterior, and
+maximum geometric activity
+$A_j=\sqrt{\mathrm{ATAC}_j\times\mathrm{H3K27ac}_j}$.  It is marked active
+when at least one such DHS exists and the maximum posterior is at least 0.5.
+The continuous promoter activity score is
 
 \[
   P_p = \max_{j\in p}\left[A_j\Pr(\mathrm{high\ H3K27ac}\mid j)\right].
 \]
 
 Taking the product within each DHS prevents the maximum activity and maximum
-posterior from two different overlapping sites from being combined.  Using
+posterior from two different supporting sites from being combined.  Using
 both accessibility and acetylation distinguishes the user's motivating
 case---a contacted, active promoter from a contacted but inactive promoter---
 while preserving the underlying values for later thresholds.
@@ -1053,6 +1200,25 @@ normalizing contacts, refitting decay, or querying the contact matrices again.
 Its JSON sidecar records both input hashes, the two thresholds, retained
 element and gene counts, and the output hash.
 
+Within the optional contact branch, independently of its contact evidence,
+every context also receives the narrower supplementary table
+\filep{<context>.nearest_active_promoter_gene_candidates.tsv.gz}.  It uses the
+same 0.5 enhancer-posterior threshold, then chooses the closest active
+annotated promoter TSS on the same chromosome with no distance cutoff.  All
+exact distance ties are retained as separate promoter rows.  A promoter is
+active by the established summit-distance definition above.  Each output row
+therefore lists all active master DHSs supporting the 1,000-bp target promoter
+window and separately lists the subset whose catalog class is
+\texttt{promoter\_associated}.  With a catalog built under the current rules,
+all supporting DHSs necessarily have that class because the activity and class
+definitions use the same inclusive 500-bp threshold.  The subset remains an
+audit field for imported catalogs that retain historical labels.  The table has
+\texttt{evidence\_type=nearest\_active\_promoter\_tss}; it uses neither a
+matrix pixel nor $E(d)$.  It differs from the default wide table: it filters
+enhancers at posterior 0.5, chooses among promoters active in that context,
+and retains promoter/TSS ties as multiple rows rather than enforcing one
+enhancer row.
+
 For the distance-only contexts, a second focused projection is written as
 \filep{<context>.active\_distance\_enhancer\_gene\_candidates.tsv.gz}.  It
 uses the same enhancer posterior threshold, retains only promoters marked
@@ -1069,12 +1235,59 @@ sidecar.  Only \texttt{e13} and \texttt{hid} receive this product.  Like the
 observed-contact projection, it streams completed node and edge tables without
 repeating contact normalization or graph construction.
 
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  >=Latex,
+  every node/.style={font=\small,align=center},
+  source/.style={draw=pipelineblue,rounded corners,thick,fill=lightgold,
+    text width=6.1cm,minimum height=1cm,inner sep=6pt},
+  branch/.style={draw=pipelineblue,rounded corners,thick,text width=3.75cm,
+    minimum height=1.65cm,inner sep=6pt},
+  product/.style={draw=gray!65,rounded corners,text width=3.75cm,
+    minimum height=1.3cm,inner sep=5pt},
+  flow/.style={->,thick,color=pipelineblue}
+]
+  \node[source] (input) {Posterior-qualified proximal/distal enhancer DHS\\+
+    context-resolved annotated promoter nodes};
+  \node[branch,fill=lightblue,below=13mm of input,xshift=-4.45cm] (observed) {
+    Seven observed contexts\\ICE-balanced pixel $O$ and context expectation
+    $E_c(d)$\\retain promoter edges with $O/E_c(d)\geq1$};
+  \node[branch,fill=lightgreen,below=13mm of input] (nearest) {
+    All nine contexts\\choose minimum $|\mathrm{summit}-\mathrm{TSS}|$ among
+    active promoters\\no contact and no distance cutoff};
+  \node[branch,fill=lightpurple,below=13mm of input,xshift=4.45cm] (powerlaw) {
+    \texttt{e13} and \texttt{hid}\\atlas expectation
+    $E_{\mathrm{atlas}}(d)$ within 1 Mb\\rank by $E_{\mathrm{atlas}}(d)P_p$};
+  \node[product,below=8mm of observed] (observedout) {
+    Active-contact gene candidates\\alternative promoters collapsed};
+  \node[product,below=8mm of nearest] (nearestout) {
+    Nearest-active-TSS candidates\\exact promoter/TSS ties retained};
+  \node[product,below=8mm of powerlaw] (powerlawout) {
+    Distance-model gene candidates\\observed and $O/E$ fields blank};
+
+  \draw[flow] (input) -- (observed);
+  \draw[flow] (input) -- (nearest);
+  \draw[flow] (input) -- (powerlaw);
+  \draw[flow] (observed) -- (observedout);
+  \draw[flow] (nearest) -- (nearestout);
+  \draw[flow] (powerlaw) -- (powerlawout);
+\end{tikzpicture}
+\caption{Three supplementary reports within the optional contact branch.
+Observed contacts are measured context evidence, the nearest-active-TSS table
+uses no contact values, and the power-law table is a distance-based ranking
+rather than an imputed contact.  The unfiltered, one-row-per-enhancer default
+nearest-annotated-TSS product is shown in
+Figure~\ref{fig:catalog-link-branches}.}
+\label{fig:target-evidence-branches}
+\end{figure}
+
 The graph products per context are
 \filep{contexts/<context>.nodes.tsv.gz},
 \filep{<context>.element_promoter_edges.tsv.gz}, and
 \filep{<context>.element_gene_candidates.tsv.gz}, together with the focused
-active-contact enhancer--gene table and, for distance-only contexts, the
-active-distance table below
+active-contact and nearest-active-promoter tables and, for distance-only
+contexts, the active-distance table below
 \filep{activity/links/}.  They represent candidate relationships.  ICE values,
 the 1% pseudocount, promoter posterior, and distance model do not yield a
 calibrated interaction probability, and a high rank is not proof of regulation.
@@ -1091,9 +1304,12 @@ report construction.
 The integrated report summarizes input/output inventories, BAM and FRiP QC,
 ATAC TSS and fragment evidence, ChIP cross-correlation, master statistics, TMM
 factors, regulatory classes, mixture fits, exact guardrail warnings, and the
-catalog browser assets.  When contacts are configured, it also reports the
+catalog browser assets.  It always reports the default nearest-TSS enhancer
+count, tie count, and per-context number whose nearest promoter is active.
+When contacts are configured, it additionally reports the
 observed-versus-modeled contexts, active promoter counts, and edge/candidate
-counts.  Its JSON sidecar records every declared source and current output
+counts, including the supplementary nearest-active-TSS projection.  Its
+JSON sidecar records every declared source and current output
 hash, including BEDs, mean BigWigs, IGV sessions, and contact-link provenance.
 
 \subsection{Reproducibility mechanisms}
@@ -1168,12 +1384,17 @@ Browser bundle &
 \filep{activity/catalog/bed/}, \filep{activity/catalog/tracks/},
 \filep{activity/catalog/igv/<context>.xml}, and
 \filep{activity/catalog/all-contexts.igv.xml} \\
-Contact links &
+Default nearest-TSS links &
+\filep{activity/links/nearest_tss/promoters.tsv.gz},
+\filep{promoters.metrics.json},
+\filep{enhancer_nearest_tss_candidates_wide.tsv.gz}, and its metrics JSON \\
+Optional contact links &
 \filep{activity/links/contacts/*.balanced.cool},
 \filep{contacts/dm6_powerlaw.json}, \filep{promoters.tsv.gz},
 \filep{contexts/*.nodes.tsv.gz}, \filep{*.element_promoter_edges.tsv.gz},
 \filep{*.element_gene_candidates.tsv.gz},
-\filep{*.active_contact_enhancer_gene_candidates.tsv.gz}, and the
+\filep{*.active_contact_enhancer_gene_candidates.tsv.gz},
+\filep{*.nearest_active_promoter_gene_candidates.tsv.gz}, and the
 distance-context \filep{*.active_distance_enhancer_gene_candidates.tsv.gz}
 with metrics sidecars, aggregate metrics, and provenance JSON \\
 Integrated report &
@@ -1232,6 +1453,13 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
   --until-stage report --cores 16
 \end{lstlisting}
 
+As written, this creates the default nearest-TSS branch and performs no
+contact download.  Adding \texttt{--with-contacts} to this new configuration
+also creates the canonical dm6 contact branch.  The choice is part of the
+frozen scientific configuration and cannot be switched on during an in-place
+checkpoint resume.  To add contacts after catalog completion, export a catalog
+bundle and use a new run ID as below.
+
 \subsection{Completed catalog through contact links}
 
 \begin{lstlisting}
@@ -1244,7 +1472,7 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
   --catalog-manifest data/reviewed/atlas-catalog.reviewed.tsv \
   --project drosophila-atlas \
   --run-id contact-links-from-catalog-v1 --genome dm6 \
-  --cores 8 \
+  --with-contacts --cores 8 \
   --snakemake-arg=--resources \
   --snakemake-arg=mem_mb=16000 \
   --snakemake-arg=contact_download_slots=2
@@ -1256,8 +1484,10 @@ manifest and hashes.
 
 Re-running the same command and run ID resumes valid work.  Use
 \stage{quantification}, \stage{catalog}, or \stage{links} as an earlier
-endpoint.  For the canonical nine-context dm6 atlas, choosing \stage{links} or
-\stage{report} downloads and normalizes the versioned contact sources.  To
+endpoint.  Choosing \stage{links} or \stage{report} builds the default
+nearest-TSS table.  For the canonical nine-context dm6 atlas,
+\texttt{--with-contacts} additionally downloads and normalizes the versioned
+contact sources.  To
 advance later, pass an exported checkpoint as the completed start boundary:
 
 \begin{lstlisting}
@@ -1291,13 +1521,15 @@ TMM background bins & 10 kb autosomal & Composition-factor feature space \\
 H3K27ac windows & three 500-bp windows & Left, center, and right of the master summit \\
 Mixture minimum population & 200 positive members & Small contexts cannot support the bimodality claim \\
 Mixture evidence & \(\Delta\mathrm{BIC}\geq10\), \(D\geq2\), weights \(\geq0.10\) & Required together with unique crossing and nonzero variance \\
-Promoter/proximal boundaries & 250 / 1,000 bp & Absolute summit-to-nearest-TSS distance \\
-Contact promoter window & 500 bp & Centered on each distinct dm6 GTF gene/TSS node \\
+Promoter/proximal boundaries & 500 / 1,000 bp & Absolute summit-to-nearest-TSS distance \\
+Contact promoter window & 1,000 bp ($\pm500$) & Centered on each distinct dm6 GTF gene/TSS node \\
 Maximum link distance & 1 Mb & Same-chromosome element summit to promoter TSS \\
 Observed contact pseudocount & 1\% of fitted expectation & Finite weak weight for a zero matrix pixel \\
-Promoter active posterior & 0.5 & Requires an overlapping context-member DHS and H3K27ac high-component posterior \\
-Focused enhancer posterior & 0.5 & Element-level threshold for both focused gene tables \\
+Promoter active posterior & 0.5 & Requires a context-member DHS summit within 500 bp and H3K27ac high-component posterior \\
+Default nearest-TSS enhancer posterior & none & Every proximal/distal enhancer receives one row; activity remains a context annotation \\
+Optional focused enhancer posterior & 0.5 & Element-level threshold for observed-contact, nearest-active-TSS, and power-law projections \\
 Focused observed/expected contact & 1.0 & Applied to observed promoter edges before gene collapse \\
+Nearest active promoter & Chromosome-wide & Minimum summit-to-active-TSS distance; exact ties retained, no contact evidence \\
 Focused distance promoter activity & Active & Required for distance-only gene candidates \\
 \bottomrule
 \end{longtable}

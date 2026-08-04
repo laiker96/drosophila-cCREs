@@ -124,6 +124,17 @@ CONTACT_CONTEXT_FIELDS = {
     "resolution_bp",
     "caveat",
 }
+NEAREST_TSS_LINK_FIELDS = {
+    "schema_version",
+    "promoter_annotation",
+    "promoter_annotation_checksum",
+    "chromosome_scope",
+    "promoter_width_bp",
+    "promoter_posterior_threshold",
+    "enhancer_classes",
+    "promoter_activity",
+    "candidate_assignment",
+}
 REPORT_FIELDS = {"schema_version", "source_roots", "source_files"}
 REPORT_SOURCE_FIELDS = {"path", "sha256", "kind", "source_root"}
 REFERENCE_FIELDS = {
@@ -566,6 +577,59 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
     elif catalog_import is not None:
         raise AcquisitionError("catalog_import requires input_stage=catalog")
 
+    nearest_tss_links = config.get("nearest_tss_links")
+    if input_stage in {"quantification", "catalog"}:
+        if not isinstance(nearest_tss_links, dict):
+            raise AcquisitionError(
+                "Activity catalog/links configurations require nearest_tss_links"
+            )
+        _required(
+            nearest_tss_links,
+            NEAREST_TSS_LINK_FIELDS,
+            "Nearest-TSS links",
+        )
+        if nearest_tss_links["schema_version"] != 1:
+            raise AcquisitionError("Unsupported nearest-TSS links schema version")
+        if not nearest_tss_links["promoter_annotation"] or not CHECKSUM_RE.fullmatch(
+            str(nearest_tss_links["promoter_annotation_checksum"])
+        ):
+            raise AcquisitionError(
+                "Nearest-TSS promoter annotation path/checksum is invalid"
+            )
+        if (
+            nearest_tss_links["chromosome_scope"]
+            != "all_annotation_chromosomes_in_chrom_sizes"
+        ):
+            raise AcquisitionError("Unsupported nearest-TSS chromosome scope")
+        if int(nearest_tss_links["promoter_width_bp"]) != 1000:
+            raise AcquisitionError(
+                "Nearest-TSS promoter display width must be 1000 bp"
+            )
+        if not 0 <= float(
+            nearest_tss_links["promoter_posterior_threshold"]
+        ) <= 1:
+            raise AcquisitionError(
+                "Nearest-TSS promoter posterior threshold must be in [0, 1]"
+            )
+        if nearest_tss_links["enhancer_classes"] != [
+            "proximal_enhancer_like",
+            "distal_enhancer_like",
+        ]:
+            raise AcquisitionError("Unsupported nearest-TSS enhancer classes")
+        expected_nearest_methods = {
+            "promoter_activity": "summit_within_500bp_max_v2",
+            "candidate_assignment": "nearest_annotated_tss_all_ties_v1",
+        }
+        for field, expected in expected_nearest_methods.items():
+            if nearest_tss_links[field] != expected:
+                raise AcquisitionError(
+                    f"Unsupported nearest-TSS {field}: {nearest_tss_links[field]!r}"
+                )
+    elif nearest_tss_links is not None:
+        raise AcquisitionError(
+            "nearest_tss_links requires an activity catalog/links configuration"
+        )
+
     contacts = config.get("contacts")
     if contacts is not None:
         if input_stage not in {"quantification", "catalog"} or config["assay"] != "activity":
@@ -595,11 +659,12 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             or any(not str(chromosome).startswith("chr") for chromosome in canonical)
         ):
             raise AcquisitionError("Contact canonical chromosomes are invalid")
-        if (
-            int(contacts["promoter_width_bp"]) < 1
-            or int(contacts["maximum_distance_bp"]) < 1
-        ):
-            raise AcquisitionError("Contact promoter width and distance must be positive")
+        if int(contacts["promoter_width_bp"]) != 1000:
+            raise AcquisitionError(
+                "Contact promoter width must be 1000 bp (plus/minus 500 bp)"
+            )
+        if int(contacts["maximum_distance_bp"]) < 1:
+            raise AcquisitionError("Contact maximum distance must be positive")
         if not 0 <= float(contacts["pseudocount_fraction"]) <= 1:
             raise AcquisitionError("Contact pseudocount fraction must be in [0, 1]")
         if not 0 <= float(contacts["promoter_posterior_threshold"]) <= 1:
@@ -618,8 +683,8 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
             )
         expected_methods = {
             "normalization": "merge_counts_then_ice_retry_v2",
-            "promoter_activity": "overlapping_master_dhs_max_v1",
-            "link_score": "contact_weight_x_promoter_activity_posterior_v1",
+            "promoter_activity": "summit_within_500bp_max_v2",
+            "link_score": "contact_weight_x_promoter_activity_posterior_v2",
         }
         for field, expected in expected_methods.items():
             if contacts[field] != expected:
@@ -693,9 +758,6 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                         f"Contact source metadata differs from configured context "
                         f"{source['context']!r}"
                     )
-    elif start_stage == "links" or output_stage == "links":
-        raise AcquisitionError("The links stage requires contact configuration")
-
     qpois = config.get("atac_qpois")
     if (
         config["assay"] == "atac"
@@ -1022,6 +1084,12 @@ def resolve_input_paths(config: dict[str, Any], base: Path) -> None:
             contacts[key] = str(
                 path if path.is_absolute() else (base / path).resolve()
             )
+    nearest_tss_links = config.get("nearest_tss_links")
+    if nearest_tss_links:
+        path = Path(nearest_tss_links["promoter_annotation"])
+        nearest_tss_links["promoter_annotation"] = str(
+            path if path.is_absolute() else (base / path).resolve()
+        )
     report = config.get("report")
     if report:
         report["source_roots"] = [

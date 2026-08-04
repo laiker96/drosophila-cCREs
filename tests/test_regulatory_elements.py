@@ -132,12 +132,12 @@ def test_guarded_mixture_accepts_separated_modes_and_rejects_unimodal_values():
     assert component in {"low", "high"}
 
 
-def test_nearest_tss_classes_use_inclusive_250_and_1000_boundaries():
+def test_nearest_tss_classes_use_inclusive_500_and_1000_boundaries():
     tss = {"chr1": ([100, 500], {100: ["a", "b"], 500: ["c"]})}
     assert nearest_tss("chr1", 350, tss) == (150, "c")
     assert nearest_tss("chrX", 350, tss) == (None, "")
-    assert regulatory_class(250) == "promoter_associated"
-    assert regulatory_class(251) == "proximal_enhancer_like"
+    assert regulatory_class(500) == "promoter_associated"
+    assert regulatory_class(501) == "proximal_enhancer_like"
     assert regulatory_class(1000) == "proximal_enhancer_like"
     assert regulatory_class(1001) == "distal_enhancer_like"
     assert regulatory_class(None) == "unclassified_no_tss_on_contig"

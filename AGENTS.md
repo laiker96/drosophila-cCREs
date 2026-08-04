@@ -56,9 +56,13 @@ names, or sample relationships.
   clusters with representative summits less than 50 bp apart merge only when
   their context sets are disjoint; a shared context is evidence for two sites.
 - H3K27ac integration through context-resolved activity annotation is part of
-  this processing DAG. For the canonical nine-context dm6 atlas, contact-map
-  normalization and context-specific element--promoter candidate links are
-  also part of the DAG; ABC candidate resizing/scoring remains outside it.
+  this processing DAG. The default links branch is contact-independent and
+  assigns each proximal/distal enhancer to its nearest annotated TSS, retaining
+  exact ties in one enhancer row and annotating promoter activity by context.
+  For the canonical nine-context dm6 atlas, contact-map normalization and
+  context-specific element--promoter candidate links are an explicit optional
+  branch selected with `--with-contacts`; ABC candidate resizing/scoring
+  remains outside it.
 - Contact replicates are coarsened only by exact integer count summation and
   merged as raw counts before ICE balancing. Balancing starts with a
   200-iteration limit and restarts from uniform weights with a 2,000-iteration
@@ -68,7 +72,10 @@ names, or sample relationships.
 - Contact links connect context-member master DHSs to distinct GTF gene/TSS
   promoters within 1 Mb. Candidate scores combine contact weight with promoter
   ATAC/H3K27ac activity and are rankings, not calibrated probabilities or
-  causal target assignments. The focused enhancer--gene table retains only
+  causal target assignments. Promoter activity is supported by context-member
+  DHSs whose summits lie within an inclusive 500 bp of the exact TSS; it does
+  not use DHS-boundary overlap with the promoter BED interval. The focused
+  enhancer--gene table retains only
   proximal/distal enhancer-like elements with H3K27ac posterior at least 0.5
   and observed promoter edges with observed/expected contact at least 1 before
   gene collapse; its distance-modeled contexts are header-only. Distance-only

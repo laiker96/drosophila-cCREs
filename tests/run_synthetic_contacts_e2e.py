@@ -453,6 +453,11 @@ def patch_config(
         }
         for row in DM6_ATLAS_CONTACT_CONTEXTS
     ]
+    nearest_tss_links = config["nearest_tss_links"]
+    nearest_tss_links["promoter_annotation"] = str(annotation.resolve())
+    nearest_tss_links["promoter_annotation_checksum"] = (
+        f"sha256:{sha256(annotation)}"
+    )
     config["provenance"]["semantic_sha256"] = workflow_semantic_sha256(config)
     path.write_text(
         yaml.safe_dump(config, sort_keys=False, default_flow_style=False),
@@ -529,8 +534,19 @@ def validate_outputs(
     promoter_metrics = json.loads((links / "promoters.metrics.json").read_text(encoding="utf-8"))
     if promoter_metrics["promoter_count"] != 3:
         raise AssertionError("Synthetic GTF did not produce three promoters")
+    wide_fields, wide_rows = count_gzip_rows(
+        links / "nearest_tss" / "enhancer_nearest_tss_candidates_wide.tsv.gz"
+    )
+    if (
+        not wide_rows
+        or len({row["master_dhs_id"] for row in wide_rows}) != len(wide_rows)
+        or "ab__nearest_promoter_active" not in wide_fields
+        or "nearest_gene_names" not in wide_fields
+    ):
+        raise AssertionError("Invalid one-row-per-enhancer nearest-TSS table")
 
     focused_counts: dict[str, int] = {}
+    nearest_counts: dict[str, int] = {}
     distance_counts: dict[str, int] = {}
     for context in CONTEXTS:
         nodes_fields, nodes = count_gzip_rows(contexts_root / f"{context}.nodes.tsv.gz")
@@ -566,6 +582,24 @@ def validate_outputs(
                 raise AssertionError(f"Distance context contains observed contacts: {context}")
         focused_counts[context] = len(focused)
 
+        nearest_fields, nearest_rows = count_gzip_rows(
+            contexts_root
+            / f"{context}.nearest_active_promoter_gene_candidates.tsv.gz"
+        )
+        if (
+            not nearest_rows
+            or "active_promoter_supporting_element_ids" not in nearest_fields
+            or any(
+                row["evidence_type"] != "nearest_active_promoter_tss"
+                or not row["active_promoter_supporting_element_ids"]
+                for row in nearest_rows
+            )
+        ):
+            raise AssertionError(
+                f"Invalid nearest-active-promoter candidates: {context}"
+            )
+        nearest_counts[context] = len(nearest_rows)
+
         distance_path = contexts_root / f"{context}.active_distance_enhancer_gene_candidates.tsv.gz"
         if context in POWERLAW_CONTEXTS:
             distance_fields, distance_rows = count_gzip_rows(distance_path)
@@ -588,6 +622,7 @@ def validate_outputs(
         or aggregate["observed_context_count"] != 7
         or aggregate["powerlaw_context_count"] != 2
         or aggregate["active_contact_enhancer_gene_candidate_count"] < 1
+        or aggregate["nearest_active_promoter_gene_candidate_count"] < 1
         or aggregate["active_distance_enhancer_gene_candidate_count"] < 1
     ):
         raise AssertionError("Aggregate contact metrics are incomplete")
@@ -613,6 +648,7 @@ def validate_outputs(
         "exact_count_merge_verified": True,
         "balance_retry_contexts": retry_contexts,
         "focused_candidate_rows": focused_counts,
+        "nearest_active_promoter_candidate_rows": nearest_counts,
         "distance_candidate_rows": distance_counts,
         "aggregate_metrics": aggregate,
     }
@@ -675,6 +711,7 @@ def worker(runtime: Path, cores: int) -> int:
             "links-v3",
             "--genome",
             "dm6",
+            "--with-contacts",
             "--reference-root",
             str(reference_root),
             "--config-dir",
