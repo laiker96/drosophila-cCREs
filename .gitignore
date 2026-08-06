@@ -15,6 +15,11 @@ results/
 work/
 tests/workflow_results/
 
+# Human-reviewed local artifacts and generated multi-assay run configs
+data/reviewed/
+/configs/*.*.dm6.yaml
+/configs/*.*.hg38.yaml
+
 # Downloaded and generated reference/data assets
 data/raw/
 references/
