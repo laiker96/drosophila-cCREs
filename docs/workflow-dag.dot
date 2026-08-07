@@ -15,7 +15,7 @@ digraph workflow {
     download [label="Checksummed FASTQ\ndownload"];
     reference [label="Checksummed dm6/hg38\nreference preparation", fillcolor="#eef6ff"];
     trim [label="Raw/trimmed FastQC + Cutadapt\ntrimming checkpoint"];
-    align [label="Lane alignment + library merge\nduplicate mark + quality filter\nblacklist reads retained"];
+    align [label="Lane alignment\noptional restartable chunks\n+ library merge and duplicate mark\n+ quality filter; blacklist retained"];
     bammanifest [label="Pending final-BAM\nmanifest", fillcolor="#e5f1ff"];
     qc [label="Lenient replicate peaks + FRiP\nassay QC + MultiQC", fillcolor="#f1e9fa"];
     qccheckpoint [label="Checksummed QC checkpoint\npeak/refinement parameters", fillcolor="#f1e9fa"];

@@ -40,6 +40,9 @@ START_STAGE = str(config.get("start_stage", INPUT_STAGE))
 OUTPUT_STAGE = validate_stage_selection(START_STAGE, config.get("output_stage"))
 ACTIVITY = config.get("activity")
 CATALOG_IMPORT = config.get("catalog_import")
+EXECUTION = config.get("execution", {})
+ALIGNMENT_CHUNK_PAIRS = int(EXECUTION.get("alignment_chunk_pairs", 0))
+CHUNKED_ALIGNMENT_ENABLED = ALIGNMENT_CHUNK_PAIRS > 0
 RESULT_ROOT = str(Path(config["output_dir"]) / PROJECT / RUN_ID)
 WORK_ROOT = str(Path("work") / PROJECT / RUN_ID)
 RESOLVED_CONFIG = f"{RESULT_ROOT}/provenance/resolved_config.json"
@@ -165,6 +168,21 @@ for sample_id, lane in LANES:
 LANE_BAMS = {
     key: f"{WORK_ROOT}/alignment/lanes/{key[0]}.{key[1]}.coordsort.bam" for key in LANES
 }
+LANE_BY_UNIT = {f"{sample}.{lane}": (sample, lane) for sample, lane in LANES}
+CHUNK_ALIGNMENT_UNITS = (
+    [
+        unit
+        for unit, key in LANE_BY_UNIT.items()
+        if not Path(LANE_BAMS[key]).is_file()
+    ]
+    if CHUNKED_ALIGNMENT_ENABLED
+    else []
+)
+CHUNK_ALIGNMENT_UNIT_RE = wildcard_regex(CHUNK_ALIGNMENT_UNITS)
+ALIGNMENT_CHUNK_RE = r"chunk[0-9]{6}"
+ALIGNMENT_CHUNK_ROOT = (
+    f"{WORK_ROOT}/alignment/chunks/pairs-{ALIGNMENT_CHUNK_PAIRS}"
+)
 
 REFERENCE = config["reference"]
 REFERENCE_PREPARATION = REFERENCE.get("preparation")

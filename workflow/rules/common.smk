@@ -58,6 +58,105 @@ def sample_lane_bams(wildcards):
     ]
 
 
+def alignment_lane_from_unit(wildcards):
+    return LANE_BY_UNIT[str(wildcards.unit)]
+
+
+def chunked_lane_reads(wildcards):
+    sample, lane = alignment_lane_from_unit(wildcards)
+    reads = [TRIMMED_R1[(sample, lane)]]
+    if SAMPLES[sample]["layout"] == "paired":
+        reads.append(TRIMMED_R2[(sample, lane)])
+    return reads
+
+
+def chunked_lane_layout(wildcards):
+    sample, _lane = alignment_lane_from_unit(wildcards)
+    return SAMPLES[sample]["layout"]
+
+
+def alignment_chunk_manifest(wildcards):
+    checkpoint_result = checkpoints.split_lane_fastq.get(unit=str(wildcards.unit))
+    chunk_root = Path(str(checkpoint_result.output.manifest)).parent
+    manifest_path = chunk_root / "manifest.json"
+    with manifest_path.open(encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if manifest.get("unit") != str(wildcards.unit):
+        raise ValueError(f"Alignment chunk manifest unit mismatch: {manifest_path}")
+    if int(manifest.get("records_per_chunk", 0)) != ALIGNMENT_CHUNK_PAIRS:
+        raise ValueError(f"Alignment chunk size mismatch: {manifest_path}")
+    return chunk_root, manifest
+
+
+def alignment_chunk_entry(wildcards):
+    chunk_root, manifest = alignment_chunk_manifest(wildcards)
+    chunk_id = str(wildcards.chunk)
+    for entry in manifest["chunks"]:
+        if entry["id"] == chunk_id:
+            return chunk_root, entry
+    raise ValueError(
+        f"Alignment chunk {chunk_id!r} is absent from {chunk_root / 'manifest.json'}"
+    )
+
+
+def alignment_chunk_reads(wildcards):
+    chunk_root, entry = alignment_chunk_entry(wildcards)
+    reads = [str(chunk_root / entry["r1"])]
+    if entry.get("r2"):
+        reads.append(str(chunk_root / entry["r2"]))
+    return reads
+
+
+def alignment_chunk_bowtie_arguments(wildcards):
+    reads = [shlex.quote(path) for path in alignment_chunk_reads(wildcards)]
+    sample, _lane = alignment_lane_from_unit(wildcards)
+    if SAMPLES[sample]["layout"] == "paired":
+        return f"-1 {reads[0]} -2 {reads[1]}"
+    return f"-U {reads[0]}"
+
+
+def alignment_chunk_bams(wildcards):
+    _chunk_root, manifest = alignment_chunk_manifest(wildcards)
+    return [
+        (
+            f"{ALIGNMENT_CHUNK_ROOT}/bams/"
+            f"{wildcards.unit}.{entry['id']}.coordsort.bam"
+        )
+        for entry in manifest["chunks"]
+    ]
+
+
+def alignment_chunk_logs(wildcards):
+    _chunk_root, manifest = alignment_chunk_manifest(wildcards)
+    return [
+        (
+            f"{ALIGNMENT_CHUNK_ROOT}/logs/"
+            f"{wildcards.unit}.{entry['id']}.bowtie2.log"
+        )
+        for entry in manifest["chunks"]
+    ]
+
+
+def alignment_chunk_sample(wildcards):
+    sample, _lane = alignment_lane_from_unit(wildcards)
+    return sample
+
+
+def alignment_chunk_layout_arguments(wildcards):
+    sample, _lane = alignment_lane_from_unit(wildcards)
+    if SAMPLES[sample]["layout"] == "paired":
+        maximum = SAMPLES[sample]["parameters"]["alignment"][
+            "maximum_fragment_length"
+        ]
+        return f"--no-mixed --no-discordant -X {maximum}"
+    return ""
+
+
+def alignment_chunk_preset(wildcards):
+    sample, _lane = alignment_lane_from_unit(wildcards)
+    return f"--{SAMPLES[sample]['parameters']['alignment']['preset']}"
+
+
 def final_bam_validation_input(wildcards):
     validation = EXTERNAL_BAM_VALIDATIONS.get(wildcards.sample)
     return [validation] if validation else []

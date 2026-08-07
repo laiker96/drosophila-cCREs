@@ -41,6 +41,29 @@ def test_rule_thread_override_accepts_positive_count():
     assert rule_threads("align_lane=16") == "align_lane=16"
 
 
+def test_alignment_chunk_size_must_be_positive(monkeypatch, tmp_path):
+    sheet = tmp_path / "samples.tsv"
+    sheet.write_text(
+        "accession\tlibrary_id\tassay\tcontext\n"
+        "SRR100001\tatac_rep1\tatac\teye\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_pipeline.py",
+            str(sheet),
+            "--alignment-chunk-pairs",
+            "0",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        run_pipeline_main()
+
+    assert error.value.code == 2
+
+
 def test_final_bam_stage_requires_explicit_manifest(monkeypatch, tmp_path):
     sheet = tmp_path / "samples.tsv"
     sheet.write_text(

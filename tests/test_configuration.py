@@ -172,6 +172,35 @@ def test_config_records_requested_output_stage(tmp_path):
     assert yaml.safe_load(output.read_text())["output_stage"] == "qc"
 
 
+def test_alignment_chunking_is_recorded_but_not_scientific(tmp_path):
+    accessions = ("SRR123456", "SRR123457")
+    plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]
+    sheet = (
+        HEADER
+        + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t"
+        + "\nSRR123457\tatac_rep2\tatac\tembryo\ttreatment\t\t\n"
+    )
+    output = _generate(tmp_path, plans, sheet, alignment_chunk_pairs=2)[0]
+    config = yaml.safe_load(output.read_text())
+    without_execution = dict(config)
+    without_execution.pop("execution")
+
+    assert config["execution"] == {"alignment_chunk_pairs": 2}
+    assert workflow_semantic_sha256(config) == workflow_semantic_sha256(
+        without_execution
+    )
+    validate_workflow_config(config)
+
+
+@pytest.mark.parametrize("chunk_pairs", [0, -1])
+def test_alignment_chunking_rejects_nonpositive_sizes(tmp_path, chunk_pairs):
+    plan = _run_plan(tmp_path / "raw", "SRR123456", "SRR123456")
+    sheet = HEADER + "\nSRR123456\tatac_rep1\tatac\tembryo\ttreatment\t\t\n"
+
+    with pytest.raises(AcquisitionError, match="chunk pairs must be positive"):
+        _generate(tmp_path, [plan], sheet, alignment_chunk_pairs=chunk_pairs)
+
+
 def test_accession_input_cannot_construct_master_before_manual_review(tmp_path):
     accessions = ("SRR123456", "SRR123457")
     plans = [_run_plan(tmp_path / "raw", accession, accession) for accession in accessions]

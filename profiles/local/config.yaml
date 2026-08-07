@@ -4,6 +4,7 @@ software-deployment-method:
 conda-prefix: .snakemake/conda
 resources:
   mem_mb: 12000
+  fastq_split_jobs: 3
 latency-wait: 60
 printshellcmds: true
 show-failed-logs: true

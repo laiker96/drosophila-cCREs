@@ -158,6 +158,19 @@ requested. Advancing `--until-stage` does not change the scientific semantic
 digest. Incomplete outputs are rebuilt because the profiles retain
 `rerun-incomplete: true`.
 
+Whole-lane alignment is the default. For long runs, opt into restartable
+alignment with `--alignment-chunk-pairs N`, for example
+`--alignment-chunk-pairs 2000000`. The workflow splits each lane into
+deterministic mate-preserving chunks, aligns and verifies every chunk as an
+independent Snakemake job, then merges the coordinate-sorted chunk BAMs before
+technical-lane merging and library-wide duplicate marking. A restart reuses
+completed chunk BAMs and reruns only missing/incomplete chunks. Existing
+verified lane BAMs from an earlier whole-lane invocation are also reused when
+chunking is enabled later in the same run namespace. Chunk size is recorded as
+an execution setting and does not change the scientific semantic digest. The
+local profile limits FASTQ splitting to three concurrent lanes to avoid disk
+thrashing.
+
 `work/<project>/<run_id>/` contains reproducible intermediates rather than
 archive outputs. Large intermediates (trimmed FASTQs after alignment, lane and
 marked BAMs, shifted/short-fragment BAMs, peak-calling insertion BEDs, and
@@ -226,6 +239,9 @@ python src/run_pipeline.py resources/atlas_samples_ip_only.tsv \
   --project drosophila-atlas --run-id qc-v1 --genome dm6 \
   --until-stage qc --cores 16
 ```
+
+For lanes too large to comfortably restart from zero, add
+`--alignment-chunk-pairs 2000000` to this command.
 
 This first run:
 

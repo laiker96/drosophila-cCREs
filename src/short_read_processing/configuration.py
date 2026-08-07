@@ -330,6 +330,7 @@ def generate_configs(
     genome: str = "dm6",
     atac_minimum_replicates: int = 2,
     atac_overlap_fraction: float = 0.5,
+    alignment_chunk_pairs: int | None = None,
     input_stage: str = "accessions",
     start_stage: str | None = None,
     output_stage: str | None = None,
@@ -341,8 +342,14 @@ def generate_configs(
     run_id = _safe_id(run_id, "run ID")
     if genome not in GENOME_DEFAULTS:
         raise AcquisitionError(f"Unsupported genome: {genome!r}")
+    if alignment_chunk_pairs is not None and alignment_chunk_pairs < 1:
+        raise AcquisitionError("Alignment chunk pairs must be positive")
     if input_stage not in {"accessions", "final-bam", "master"}:
         raise AcquisitionError(f"Unsupported input stage: {input_stage!r}")
+    if alignment_chunk_pairs is not None and input_stage != "accessions":
+        raise AcquisitionError(
+            "Alignment chunking requires accession/FASTQ input"
+        )
     start_stage = start_stage or input_stage
     output_stage = validate_stage_selection(start_stage, output_stage)
     if input_stage == "accessions" and manifest_path is None:
@@ -662,6 +669,10 @@ def generate_configs(
                 "sample_sheet_schema_sha256": schema_sha256,
             },
         }
+        if alignment_chunk_pairs is not None:
+            config["execution"] = {
+                "alignment_chunk_pairs": alignment_chunk_pairs,
+            }
         if input_stage == "accessions":
             config["provenance"]["download_manifest"] = _display_path(
                 manifest_path, path_base
@@ -1182,6 +1193,7 @@ def generate_resume_config(
     sample_sheet_path: Path,
     output_dir: Path,
     path_base: Path,
+    alignment_chunk_pairs: int | None = None,
 ) -> Path:
     """Resume a completed boundary in its original result namespace."""
 
@@ -1210,6 +1222,18 @@ def generate_resume_config(
             "The supplied sample sheet differs from the checkpoint sample sheet"
         )
     resumed = copy.deepcopy(source)
+    if alignment_chunk_pairs is not None:
+        if alignment_chunk_pairs < 1:
+            raise AcquisitionError("Alignment chunk pairs must be positive")
+        if start_stage != "trimming" or output_stage not in {"alignment", "qc"}:
+            raise AcquisitionError(
+                "Alignment chunking requires a trimming checkpoint continuing "
+                "through alignment or QC"
+            )
+        resumed["execution"] = {
+            **resumed.get("execution", {}),
+            "alignment_chunk_pairs": alignment_chunk_pairs,
+        }
 
     def display(value: str) -> str:
         return _display_path(value, path_base)

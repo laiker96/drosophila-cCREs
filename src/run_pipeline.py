@@ -74,6 +74,14 @@ def main() -> int:
         metavar="RULE=THREADS",
         help="Override one rule's thread count; repeat for additional rules",
     )
+    parser.add_argument(
+        "--alignment-chunk-pairs",
+        type=int,
+        help=(
+            "Align each lane in restartable chunks of this many read pairs "
+            "(or reads for single-end data)"
+        ),
+    )
     parser.add_argument("--skip-download", action="store_true", help="Reuse --manifest")
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--config-only", action="store_true")
@@ -165,12 +173,22 @@ def main() -> int:
         parser.error("--jobs must be positive")
     if args.max_threads is not None and args.max_threads < 1:
         parser.error("--max-threads must be positive")
+    if args.alignment_chunk_pairs is not None and args.alignment_chunk_pairs < 1:
+        parser.error("--alignment-chunk-pairs must be positive")
     if args.download_only and args.config_only:
         parser.error("--download-only and --config-only are mutually exclusive")
     try:
         output_stage = validate_stage_selection(args.from_stage, args.until_stage)
     except AcquisitionError as error:
         parser.error(str(error))
+    if args.alignment_chunk_pairs is not None and not (
+        args.from_stage in {"accessions", "trimming"}
+        and output_stage in {"alignment", "qc"}
+    ):
+        parser.error(
+            "--alignment-chunk-pairs requires an accessions/trimming run "
+            "continuing through alignment or QC"
+        )
     if args.from_stage == "accessions":
         if (
             args.checkpoint_manifest
@@ -373,6 +391,7 @@ def main() -> int:
                 sample_sheet_path=sample_sheet,
                 output_dir=args.config_dir.resolve(),
                 path_base=REPO_ROOT,
+                alignment_chunk_pairs=args.alignment_chunk_pairs,
             )
         ]
     elif (
@@ -417,6 +436,7 @@ def main() -> int:
             genome=args.genome,
             atac_minimum_replicates=args.atac_minimum_replicates,
             atac_overlap_fraction=args.atac_overlap_fraction,
+            alignment_chunk_pairs=args.alignment_chunk_pairs,
             input_stage=(
                 "final-bam"
                 if args.from_stage in {"alignment", "qc", "final-bam"}

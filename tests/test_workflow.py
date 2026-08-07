@@ -316,6 +316,16 @@ def test_technical_lanes_align_separately_then_merge(tmp_path):
     assert re.search(r"merge_and_mark_duplicates\s+1", output)
 
 
+def test_restartable_alignment_splits_lanes_before_chunk_jobs(tmp_path):
+    config = copy.deepcopy(BASE_CONFIG)
+    config["execution"] = {"alignment_chunk_pairs": 1}
+
+    output = _dry_run(tmp_path, config, "restartable-alignment")
+
+    assert re.search(r"split_lane_fastq\s+1", output)
+    assert "--records-per-chunk 1" in output
+
+
 def test_workflow_config_rejects_scaled_atac_qpois_signal():
     config = copy.deepcopy(BASE_CONFIG)
     config["samples"][0]["peak_caller"]["spmr"] = True

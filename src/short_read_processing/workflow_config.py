@@ -204,7 +204,14 @@ def workflow_semantic_sha256(config: dict[str, Any]) -> str:
     semantic_input = {
         key: value
         for key, value in config.items()
-        if key not in {"provenance", "start_stage", "output_stage", "report"}
+        if key
+        not in {
+            "execution",
+            "provenance",
+            "start_stage",
+            "output_stage",
+            "report",
+        }
     }
     provenance = config.get("provenance", {})
     semantic_input["provenance_inputs"] = {
@@ -326,6 +333,27 @@ def validate_workflow_config(config: dict[str, Any]) -> None:
                 raise AcquisitionError(
                     "provenance semantic_sha256 does not match the resolved configuration"
                 )
+    execution = config.get("execution")
+    if execution is not None:
+        if not isinstance(execution, dict):
+            raise AcquisitionError("execution must be a mapping")
+        unknown_execution = sorted(set(execution) - {"alignment_chunk_pairs"})
+        if unknown_execution:
+            raise AcquisitionError(
+                "Unsupported execution option(s): " + ", ".join(unknown_execution)
+            )
+        chunk_pairs = execution.get("alignment_chunk_pairs")
+        if (
+            chunk_pairs is not None
+            and (
+                isinstance(chunk_pairs, bool)
+                or not isinstance(chunk_pairs, int)
+                or chunk_pairs < 1
+            )
+        ):
+            raise AcquisitionError(
+                "execution alignment_chunk_pairs must be a positive integer"
+            )
     external_master = config.get("external_master")
     if input_stage == "master":
         if config["assay"] != "atac":
